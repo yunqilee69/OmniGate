@@ -162,26 +162,26 @@ type RequestLogDaily struct {
 	CompletionTokens int64   `gorm:"not null;default:0"`
 	Cost             float64 `gorm:"not null;default:0"`
 	RetriesSum       int64   `gorm:"not null;default:0"`
-	TTFTB0           int64   `gorm:"not null;default:0"`
-	TTFTB1           int64   `gorm:"not null;default:0"`
-	TTFTB2           int64   `gorm:"not null;default:0"`
-	TTFTB3           int64   `gorm:"not null;default:0"`
-	TTFTB4           int64   `gorm:"not null;default:0"`
-	TTFTB5           int64   `gorm:"not null;default:0"`
-	TTFTB6           int64   `gorm:"not null;default:0"`
-	TTFTB7           int64   `gorm:"not null;default:0"`
-	TTFTB8           int64   `gorm:"not null;default:0"`
-	TTFTB9           int64   `gorm:"not null;default:0"`
-	TotalB0          int64   `gorm:"not null;default:0"`
-	TotalB1          int64   `gorm:"not null;default:0"`
-	TotalB2          int64   `gorm:"not null;default:0"`
-	TotalB3          int64   `gorm:"not null;default:0"`
-	TotalB4          int64   `gorm:"not null;default:0"`
-	TotalB5          int64   `gorm:"not null;default:0"`
-	TotalB6          int64   `gorm:"not null;default:0"`
-	TotalB7          int64   `gorm:"not null;default:0"`
-	TotalB8          int64   `gorm:"not null;default:0"`
-	TotalB9          int64   `gorm:"not null;default:0"`
+	TTFTB0           int64   `gorm:"not null;default:0;column:ttftb0"`
+	TTFTB1           int64   `gorm:"not null;default:0;column:ttftb1"`
+	TTFTB2           int64   `gorm:"not null;default:0;column:ttftb2"`
+	TTFTB3           int64   `gorm:"not null;default:0;column:ttftb3"`
+	TTFTB4           int64   `gorm:"not null;default:0;column:ttftb4"`
+	TTFTB5           int64   `gorm:"not null;default:0;column:ttftb5"`
+	TTFTB6           int64   `gorm:"not null;default:0;column:ttftb6"`
+	TTFTB7           int64   `gorm:"not null;default:0;column:ttftb7"`
+	TTFTB8           int64   `gorm:"not null;default:0;column:ttftb8"`
+	TTFTB9           int64   `gorm:"not null;default:0;column:ttftb9"`
+	TotalB0          int64   `gorm:"not null;default:0;column:totalb0"`
+	TotalB1          int64   `gorm:"not null;default:0;column:totalb1"`
+	TotalB2          int64   `gorm:"not null;default:0;column:totalb2"`
+	TotalB3          int64   `gorm:"not null;default:0;column:totalb3"`
+	TotalB4          int64   `gorm:"not null;default:0;column:totalb4"`
+	TotalB5          int64   `gorm:"not null;default:0;column:totalb5"`
+	TotalB6          int64   `gorm:"not null;default:0;column:totalb6"`
+	TotalB7          int64   `gorm:"not null;default:0;column:totalb7"`
+	TotalB8          int64   `gorm:"not null;default:0;column:totalb8"`
+	TotalB9          int64   `gorm:"not null;default:0;column:totalb9"`
 	UpdatedAt        int64   `gorm:"not null;default:0"`
 }
 

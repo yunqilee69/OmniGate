@@ -182,6 +182,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	go func() {
+		if err := store.Backfill(st.DB); err != nil {
+			slog.Warn("backfill request_log_daily failed", "err", err)
+			return
+		}
+		slog.Info("request_log_daily backfill ok")
+	}()
+
 	srv := api.New(st, rt, boot.Admin.Token, proxy.New(st, rt))
 	httpSrv := &http.Server{
 		Addr:              listen,
