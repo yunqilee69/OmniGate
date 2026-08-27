@@ -12,7 +12,6 @@ interface LogRow {
   route: string
   model: string
   provider: string
-  pool: string
   key_id: number
   status: string
   error_code: string
@@ -32,7 +31,7 @@ interface Attempt {
   attempt: number
   model: string
   provider: string
-  pool: string
+  key_id: number
   status: string
   http_status: number
   error_code: string
@@ -47,6 +46,7 @@ interface Attempt {
 interface DetailResp {
   log: LogRow
   key_value_masked: string
+  key_name?: string
   attempts: Attempt[]
 }
 
@@ -80,7 +80,7 @@ export default function LogDetail() {
     return <div style={{ padding: 40, textAlign: 'center' }}><Spin /></div>
   }
 
-  const { log, key_value_masked, attempts } = data
+  const { log, key_value_masked, key_name, attempts } = data
 
   return (
     <div>
@@ -101,8 +101,8 @@ export default function LogDetail() {
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small">
           <Descriptions.Item label="路由"><code>{log.route}</code></Descriptions.Item>
           <Descriptions.Item label="提供商/模型">{log.provider ? `${log.provider}/${log.model}` : log.model}</Descriptions.Item>
-          <Descriptions.Item label="池 / 密钥">
-            {log.pool || '-'} <code style={{ fontSize: 12, color: '#8f8f8f', marginLeft: 8 }}>{key_value_masked || (log.key_id ? `#${log.key_id}` : '-')}</code>
+          <Descriptions.Item label="密钥">
+            <code style={{ fontSize: 12, color: '#8f8f8f' }}>{key_name || key_value_masked || (log.key_id ? `#${log.key_id}` : '-')}</code>
           </Descriptions.Item>
           <Descriptions.Item label="错误码">{log.error_code || '-'}</Descriptions.Item>
           <Descriptions.Item label="Tokens">
@@ -137,7 +137,8 @@ export default function LogDetail() {
             <Table.Column title="#" dataIndex="attempt" width={60} />
             <Table.Column title="模型" dataIndex="model" width={200} ellipsis
               render={(_, a) => `${a.provider}/${a.model}`} />
-            <Table.Column title="池" dataIndex="pool" width={120} />
+            <Table.Column title="密钥" dataIndex="key_id" width={160}
+              render={(keyId) => <span className="mono">#{keyId}</span>} />
             <Table.Column title="状态" dataIndex="status" width={90} render={statusTag} />
             <Table.Column title="HTTP" dataIndex="http_status" width={70} />
             <Table.Column title="错误码" dataIndex="error_code" width={90} />

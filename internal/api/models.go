@@ -12,7 +12,7 @@ import (
 
 type modelResp struct {
 	store.Model
-	PoolIDs []int64 `json:"pool_ids"`
+	KeyIDs []int64 `json:"key_ids"`
 }
 
 var validProtocols = map[string]bool{"openai": true, "responses": true, "anthropic": true}
@@ -23,7 +23,7 @@ type modelCreateReq struct {
 	Protocol    string  `json:"protocol"`
 	InputPrice  float64 `json:"input_price"`
 	OutputPrice float64 `json:"output_price"`
-	PoolIDs     []int64 `json:"pool_ids"`
+	KeyIDs      []int64 `json:"key_ids"`
 }
 
 func (s *Server) listModels(w http.ResponseWriter, _ *http.Request) {
@@ -32,14 +32,14 @@ func (s *Server) listModels(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	var mps []store.ModelPool
-	if err := s.store.DB.Find(&mps).Error; err != nil {
+	var mks []store.ModelKey
+	if err := s.store.DB.Find(&mks).Error; err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
 	byModel := map[int64][]int64{}
-	for _, mp := range mps {
-		byModel[mp.ModelID] = append(byModel[mp.ModelID], mp.PoolID)
+	for _, mk := range mks {
+		byModel[mk.ModelID] = append(byModel[mk.ModelID], mk.KeyID)
 	}
 	out := make([]modelResp, 0, len(models))
 	for _, m := range models {
@@ -47,26 +47,26 @@ func (s *Server) listModels(w http.ResponseWriter, _ *http.Request) {
 		if ids == nil {
 			ids = []int64{}
 		}
-		out = append(out, modelResp{Model: m, PoolIDs: ids})
+		out = append(out, modelResp{Model: m, KeyIDs: ids})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// validatePoolsBelongToProvider 校验池存在且均属于指定提供商（密钥物理上无法服务另一提供商的模型）。
-func (s *Server) validatePoolsBelongToProvider(poolIDs []int64, providerID int64) (bool, string) {
-	if len(poolIDs) == 0 {
+// validateKeysBelongToProvider 校验密钥存在且均属于指定提供商（密钥物理上无法服务另一提供商的模型）。
+func (s *Server) validateKeysBelongToProvider(keyIDs []int64, providerID int64) (bool, string) {
+	if len(keyIDs) == 0 {
 		return true, ""
 	}
-	var pools []store.KeyPool
-	if err := s.store.DB.Where("id IN ?", poolIDs).Find(&pools).Error; err != nil {
+	var keys []store.ApiKey
+	if err := s.store.DB.Where("id IN ?", keyIDs).Find(&keys).Error; err != nil {
 		return false, err.Error()
 	}
-	if len(pools) != len(uniqueInt64(poolIDs)) {
-		return false, "one or more pools do not exist"
+	if len(keys) != len(uniqueInt64(keyIDs)) {
+		return false, "one or more keys do not exist"
 	}
-	for _, p := range pools {
-		if p.ProviderID != providerID {
-			return false, "pool '" + p.Name + "' belongs to a different provider"
+	for _, k := range keys {
+		if k.ProviderID != providerID {
+			return false, "key '" + maskKey(k.KeyValue) + "' belongs to a different provider"
 		}
 	}
 	return true, ""
@@ -115,12 +115,12 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	if ok, msg := s.validatePoolsBelongToProvider(req.PoolIDs, req.ProviderID); !ok {
+	if ok, msg := s.validateKeysBelongToProvider(req.KeyIDs, req.ProviderID); !ok {
 		writeErr(w, http.StatusBadRequest, "bad_request", msg)
 		return
 	}
-	if len(req.PoolIDs) == 0 {
-		writeErr(w, http.StatusBadRequest, "bad_request", "至少绑定一个密钥池（模型必须通过某个池的密钥访问上游）")
+	if len(req.KeyIDs) == 0 {
+		writeErr(w, http.StatusBadRequest, "bad_request", "至少绑定一个密钥（模型必须通过密钥访问上游）")
 		return
 	}
 	m := store.Model{
@@ -131,8 +131,8 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		if err := tx.Create(&m).Error; err != nil {
 			return err
 		}
-		for _, pid := range uniqueInt64(req.PoolIDs) {
-			if err := tx.Create(&store.ModelPool{ModelID: m.ID, PoolID: pid}).Error; err != nil {
+		for _, kid := range uniqueInt64(req.KeyIDs) {
+			if err := tx.Create(&store.ModelKey{ModelID: m.ID, KeyID: kid}).Error; err != nil {
 				return err
 			}
 		}
@@ -146,11 +146,11 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	ids := uniqueInt64(req.PoolIDs)
+	ids := uniqueInt64(req.KeyIDs)
 	if ids == nil {
 		ids = []int64{}
 	}
-	writeJSON(w, http.StatusCreated, modelResp{Model: m, PoolIDs: ids})
+	writeJSON(w, http.StatusCreated, modelResp{Model: m, KeyIDs: ids})
 }
 
 type modelUpdateReq struct {
@@ -159,7 +159,7 @@ type modelUpdateReq struct {
 	Protocol    *string  `json:"protocol"`
 	InputPrice  *float64 `json:"input_price"`
 	OutputPrice *float64 `json:"output_price"`
-	PoolIDs     []int64  `json:"pool_ids"`
+	KeyIDs      []int64  `json:"key_ids"`
 }
 
 func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
@@ -216,17 +216,17 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 		}
 		simple["output_price"] = *req.OutputPrice
 	}
-	if len(simple) == 0 && req.PoolIDs == nil {
+	if len(simple) == 0 && req.KeyIDs == nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", "no fields to update")
 		return
 	}
-	if req.PoolIDs != nil {
-		if ok, msg := s.validatePoolsBelongToProvider(req.PoolIDs, m.ProviderID); !ok {
+	if req.KeyIDs != nil {
+		if ok, msg := s.validateKeysBelongToProvider(req.KeyIDs, m.ProviderID); !ok {
 			writeErr(w, http.StatusBadRequest, "bad_request", msg)
 			return
 		}
-		if len(req.PoolIDs) == 0 {
-			writeErr(w, http.StatusBadRequest, "bad_request", "至少绑定一个密钥池（清空绑定请直接删除模型）")
+		if len(req.KeyIDs) == 0 {
+			writeErr(w, http.StatusBadRequest, "bad_request", "至少绑定一个密钥（清空绑定请直接删除模型）")
 			return
 		}
 	}
@@ -236,12 +236,12 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
-		if req.PoolIDs != nil {
-			if err := tx.Where("model_id = ?", id).Delete(&store.ModelPool{}).Error; err != nil {
+		if req.KeyIDs != nil {
+			if err := tx.Where("model_id = ?", id).Delete(&store.ModelKey{}).Error; err != nil {
 				return err
 			}
-			for _, pid := range uniqueInt64(req.PoolIDs) {
-				if err := tx.Create(&store.ModelPool{ModelID: id, PoolID: pid}).Error; err != nil {
+			for _, kid := range uniqueInt64(req.KeyIDs) {
+				if err := tx.Create(&store.ModelKey{ModelID: id, KeyID: kid}).Error; err != nil {
 					return err
 				}
 			}
@@ -257,12 +257,12 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.DB.First(&m, id).Error
-	var poolIDs []int64
-	_ = s.store.DB.Model(&store.ModelPool{}).Where("model_id = ?", id).Pluck("pool_id", &poolIDs).Error
-	if poolIDs == nil {
-		poolIDs = []int64{}
+	var keyIDs []int64
+	_ = s.store.DB.Model(&store.ModelKey{}).Where("model_id = ?", id).Pluck("key_id", &keyIDs).Error
+	if keyIDs == nil {
+		keyIDs = []int64{}
 	}
-	writeJSON(w, http.StatusOK, modelResp{Model: m, PoolIDs: poolIDs})
+	writeJSON(w, http.StatusOK, modelResp{Model: m, KeyIDs: keyIDs})
 }
 
 func (s *Server) deleteModel(w http.ResponseWriter, r *http.Request) {
@@ -284,7 +284,7 @@ func (s *Server) deleteModel(w http.ResponseWriter, r *http.Request) {
 		if err := tx.Where("model_id = ?", id).Delete(&store.RouteTarget{}).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("model_id = ?", id).Delete(&store.ModelPool{}).Error; err != nil {
+		if err := tx.Where("model_id = ?", id).Delete(&store.ModelKey{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&store.Model{}, id).Error

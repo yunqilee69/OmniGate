@@ -76,21 +76,19 @@ func TestNonStreamRoutingAndStats(t *testing.T) {
 
 	pA := store.Provider{Name: "zhipu", BaseURL: upA.URL}
 	st.DB.Create(&pA)
-	poolA := store.KeyPool{ProviderID: pA.ID, Name: "main"}
-	st.DB.Create(&poolA)
 	mA := store.Model{ProviderID: pA.ID, Name: "glm-4.6", InputPrice: 10, OutputPrice: 20}
 	st.DB.Create(&mA)
-	st.DB.Create(&store.ApiKey{PoolID: poolA.ID, KeyValue: "sk-x", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: mA.ID, PoolID: poolA.ID})
+	kA := store.ApiKey{ProviderID: pA.ID, KeyValue: "sk-x", Status: "active"}
+	st.DB.Create(&kA)
+	st.DB.Create(&store.ModelKey{ModelID: mA.ID, KeyID: kA.ID})
 
 	pB := store.Provider{Name: "other", BaseURL: upB.URL}
 	st.DB.Create(&pB)
-	poolB := store.KeyPool{ProviderID: pB.ID, Name: "main-b"}
-	st.DB.Create(&poolB)
 	mB := store.Model{ProviderID: pB.ID, Name: "glm-4.5-flash", InputPrice: 1, OutputPrice: 2}
 	st.DB.Create(&mB)
-	st.DB.Create(&store.ApiKey{PoolID: poolB.ID, KeyValue: "sk-y", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: mB.ID, PoolID: poolB.ID})
+	kB := store.ApiKey{ProviderID: pB.ID, KeyValue: "sk-y", Status: "active"}
+	st.DB.Create(&kB)
+	st.DB.Create(&store.ModelKey{ModelID: mB.ID, KeyID: kB.ID})
 
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
@@ -178,12 +176,11 @@ func TestStreamPassthroughAndUsage(t *testing.T) {
 
 	p := store.Provider{Name: "zhipu", BaseURL: up.URL}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
 	m := store.Model{ProviderID: p.ID, Name: "m0", InputPrice: 10, OutputPrice: 20}
 	st.DB.Create(&m)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-s", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-s", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
@@ -228,12 +225,11 @@ func TestStreamEstimationWithoutUsage(t *testing.T) {
 
 	p := store.Provider{Name: "zhipu", BaseURL: up.URL}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
 	m := store.Model{ProviderID: p.ID, Name: "m0"}
 	st.DB.Create(&m)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-e", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-e", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
@@ -266,21 +262,19 @@ func TestFailoverOn500(t *testing.T) {
 
 	p := store.Provider{Name: "zhipu", BaseURL: bad.URL}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
 	mBad := store.Model{ProviderID: p.ID, Name: "bad"}
 	st.DB.Create(&mBad)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-1", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: mBad.ID, PoolID: pool.ID})
+	kBad := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-1", Status: "active"}
+	st.DB.Create(&kBad)
+	st.DB.Create(&store.ModelKey{ModelID: mBad.ID, KeyID: kBad.ID})
 
 	pGood := store.Provider{Name: "good-prov", BaseURL: good.URL}
 	st.DB.Create(&pGood)
-	poolGood := store.KeyPool{ProviderID: pGood.ID, Name: "main-good"}
-	st.DB.Create(&poolGood)
 	mGood := store.Model{ProviderID: pGood.ID, Name: "good"}
 	st.DB.Create(&mGood)
-	st.DB.Create(&store.ApiKey{PoolID: poolGood.ID, KeyValue: "sk-2", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: mGood.ID, PoolID: poolGood.ID})
+	kGood := store.ApiKey{ProviderID: pGood.ID, KeyValue: "sk-2", Status: "active"}
+	st.DB.Create(&kGood)
+	st.DB.Create(&store.ModelKey{ModelID: mGood.ID, KeyID: kGood.ID})
 
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
@@ -317,14 +311,13 @@ func TestAllAttemptsFail(t *testing.T) {
 
 	p := store.Provider{Name: "zhipu", BaseURL: up.URL, TimeoutMs: 5000}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
 	m := store.Model{ProviderID: p.ID, Name: "m0"}
 	st.DB.Create(&m)
 	for i := 0; i < 5; i++ {
-		st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: fmt.Sprintf("sk-f%d", i), Status: "active"})
+		k := store.ApiKey{ProviderID: p.ID, KeyValue: fmt.Sprintf("sk-f%d", i), Status: "active"}
+		st.DB.Create(&k)
+		st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
 	}
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
@@ -358,21 +351,19 @@ func TestTimeoutTransfer(t *testing.T) {
 
 	p := store.Provider{Name: "zhipu", BaseURL: slow.URL, TimeoutMs: 80}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
 	mSlow := store.Model{ProviderID: p.ID, Name: "slow"}
 	st.DB.Create(&mSlow)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-t", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: mSlow.ID, PoolID: pool.ID})
+	kSlow := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-t", Status: "active"}
+	st.DB.Create(&kSlow)
+	st.DB.Create(&store.ModelKey{ModelID: mSlow.ID, KeyID: kSlow.ID})
 
 	p2 := store.Provider{Name: "fast", BaseURL: fast.URL, TimeoutMs: 5000}
 	st.DB.Create(&p2)
-	pool2 := store.KeyPool{ProviderID: p2.ID, Name: "main2"}
-	st.DB.Create(&pool2)
 	mFast := store.Model{ProviderID: p2.ID, Name: "fastm"}
 	st.DB.Create(&mFast)
-	st.DB.Create(&store.ApiKey{PoolID: pool2.ID, KeyValue: "sk-t2", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: mFast.ID, PoolID: pool2.ID})
+	kFast := store.ApiKey{ProviderID: p2.ID, KeyValue: "sk-t2", Status: "active"}
+	st.DB.Create(&kFast)
+	st.DB.Create(&store.ModelKey{ModelID: mFast.ID, KeyID: kFast.ID})
 
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
@@ -400,11 +391,8 @@ func TestAllBackendsUnavailable(t *testing.T) {
 	st, h := newTestStack(t)
 	p := store.Provider{Name: "zhipu", BaseURL: "http://127.0.0.1:1"}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
 	m := store.Model{ProviderID: p.ID, Name: "m0", Status: "disabled", DisableReason: "连续3次超时"}
 	st.DB.Create(&m)
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
@@ -438,12 +426,11 @@ func TestClientErrorPassthrough(t *testing.T) {
 
 	p := store.Provider{Name: "zhipu", BaseURL: up.URL}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
 	m := store.Model{ProviderID: p.ID, Name: "m0"}
 	st.DB.Create(&m)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-c", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-c", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})

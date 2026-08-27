@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Button, Card, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select,
   Space, Spin, Table, Tabs, Tag, Tooltip, message,
 } from 'antd'
-import { PlusOutlined, CloudServerOutlined } from '@ant-design/icons'
+import { PlusOutlined, CloudServerOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { api } from '../api'
 import StatusTag from '../components/StatusTag'
@@ -19,24 +19,16 @@ interface Provider {
 
 interface Key {
   id: number
-  pool_id: number
+  provider_id: number
   key_value: string
+  key_value_plain?: string
   name: string
-  status: string
+  status: 'active' | 'cooldown' | 'disabled'
   cooldown_until: number
   rate_limited_count: number
   disable_reason: string
   last_used_at: number
   last_error: string
-}
-
-interface Pool {
-  id: number
-  provider_id: number
-  name: string
-  weight: number
-  remark: string
-  keys: Key[]
 }
 
 interface Model {
@@ -51,7 +43,7 @@ interface Model {
   cooldown_until: number
   disable_reason: string
   last_error: string
-  pool_ids: number[]
+  key_ids: number[]
 }
 
 const protocolOptions = [
@@ -82,7 +74,7 @@ const keyStatusTag = (k: Key) => {
 
 export default function ConfigCenter() {
   const [providers, setProviders] = useState<Provider[]>([])
-  const [pools, setPools] = useState<Pool[]>([])
+  const [keys, setKeys] = useState<Key[]>([])
   const [models, setModels] = useState<Model[]>([])
   const [selected, setSelected] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
@@ -90,11 +82,11 @@ export default function ConfigCenter() {
   const load = async (prefer?: number) => {
     setLoading(true)
     try {
-      const [ps, pls, ms] = await Promise.all([
-        api('GET', '/api/providers'), api('GET', '/api/pools'), api('GET', '/api/models'),
+      const [ps, ks, ms] = await Promise.all([
+        api<Provider[]>('GET', '/api/providers'), api<Key[]>('GET', '/api/keys'), api<Model[]>('GET', '/api/models'),
       ])
       setProviders(ps)
-      setPools(pls)
+      setKeys(ks)
       setModels(ms)
       const cur = prefer ?? selected
       setSelected(cur && ps.some((p) => p.id === cur) ? cur : (ps[0]?.id ?? null))
@@ -107,7 +99,7 @@ export default function ConfigCenter() {
   useEffect(() => { load() }, [])
 
   const provider = providers.find((p) => p.id === selected) ?? null
-  const providerPools = pools.filter((p) => p.provider_id === selected)
+  const providerKeys = keys.filter((k) => k.provider_id === selected)
   const providerModels = models.filter((m) => m.provider_id === selected)
 
   return (
@@ -128,7 +120,7 @@ export default function ConfigCenter() {
                   p={p}
                   active={p.id === selected}
                   modelCount={models.filter((m) => m.provider_id === p.id).length}
-                  poolCount={pools.filter((x) => x.provider_id === p.id).length}
+                  keyCount={keys.filter((k) => k.provider_id === p.id).length}
                   onClick={() => setSelected(p.id)}
                   onSaved={() => load(p.id)}
                   onDeleted={() => load(providers.find((x) => x.id !== p.id)?.id)}
@@ -149,16 +141,16 @@ export default function ConfigCenter() {
                 children: (
                   <ModelsTab
                     provider={provider}
-                    pools={providerPools}
+                    keys={providerKeys}
                     models={providerModels}
                     onSaved={() => load(provider.id)}
                   />
                 ),
               },
               {
-                key: 'pools',
-                label: `密钥池（${providerPools.length}）`,
-                children: <PoolsTab provider={provider} pools={providerPools} onSaved={() => load(provider.id)} />,
+                key: 'keys',
+                label: `密钥（${providerKeys.length}）`,
+                children: <KeysTab provider={provider} keys={providerKeys} onSaved={() => load(provider.id)} />,
               },
             ]}
           />
@@ -170,11 +162,11 @@ export default function ConfigCenter() {
   )
 }
 
-function ProviderCardItem({ p, active, modelCount, poolCount, onClick, onSaved, onDeleted }: {
+function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, onDeleted }: {
   p: Provider
   active: boolean
   modelCount: number
-  poolCount: number
+  keyCount: number
   onClick: () => void
   onSaved: () => void
   onDeleted: () => void
@@ -209,7 +201,7 @@ function ProviderCardItem({ p, active, modelCount, poolCount, onClick, onSaved, 
         <Space onClick={(e) => e.stopPropagation()}>
           <a onClick={() => { form.setFieldsValue(p); setOpen(true) }}>编辑</a>
           <Popconfirm
-            title="删除将级联清理池/密钥/模型，确认？"
+            title="删除将级联清理密钥/模型，确认？"
             onConfirm={async () => {
               try { await api('DELETE', `/api/providers/${p.id}`); message.success('已删除'); onDeleted() } catch (e: any) { message.error(e.message) }
             }}
@@ -220,7 +212,7 @@ function ProviderCardItem({ p, active, modelCount, poolCount, onClick, onSaved, 
       </div>
       <div style={{ color: '#8f8f8f', fontSize: 12, marginTop: 4 }}>
         <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.base_url}</div>
-        <div style={{ marginTop: 2 }}>{modelCount} 模型 · {poolCount} 密钥池</div>
+        <div style={{ marginTop: 2 }}>{modelCount} 模型 · {keyCount} 密钥</div>
       </div>
 
       <Modal title={`编辑提供商 ${p.name}`} open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose>
@@ -273,9 +265,9 @@ function ProviderFormButton({ providers, onSaved }: { providers: Provider[]; onS
   )
 }
 
-function ModelsTab({ provider, pools, models, onSaved }: {
+function ModelsTab({ provider, keys, models, onSaved }: {
   provider: Provider
-  pools: Pool[]
+  keys: Key[]
   models: Model[]
   onSaved: () => void
 }) {
@@ -327,7 +319,7 @@ function ModelsTab({ provider, pools, models, onSaved }: {
     if (m) {
       form.setFieldsValue({
         name: m.name, protocol: m.protocol,
-        input_price: m.input_price, output_price: m.output_price, pool_ids: m.pool_ids,
+        input_price: m.input_price, output_price: m.output_price, key_ids: m.key_ids,
       })
     }
     setOpen(true)
@@ -369,8 +361,11 @@ function ModelsTab({ provider, pools, models, onSaved }: {
         <Table.Column title="协议" dataIndex="protocol" width={200} render={(v) => (
           <span className="mono" style={{ fontSize: 12, color: '#4d4d4d' }}>{v}</span>
         )} />
-        <Table.Column title="绑定池" dataIndex="pool_ids" render={(ids: number[]) =>
-          (ids ?? []).map((id) => <Tag key={id}>{pools.find((p) => p.id === id)?.name ?? `#${id}`}</Tag>)
+        <Table.Column title="绑定密钥" dataIndex="key_ids" render={(ids: number[]) =>
+          (ids ?? []).map((id) => {
+    const k = keys.find((x) => x.id === id)
+    return <Tag key={id}>{k ? (k.name || k.key_value) : `#${id}`}</Tag>
+  })
         } />
         <Table.Column title="输入/输出价(1M)" width={140} render={(_, m: Model) => `${m.input_price} / ${m.output_price}`} />
         <Table.Column title="状态" width={110} render={(_, m: Model) => modelStatusTag(m)} />
@@ -380,7 +375,7 @@ function ModelsTab({ provider, pools, models, onSaved }: {
             <Button size="small" loading={testing.has(m.id)} onClick={() => testOne(m)}>测试</Button>
             <Button size="small" onClick={() => openForm(m)}>编辑</Button>
             <Button size="small" onClick={() => toggle(m)}>{m.status === 'disabled' ? '解禁' : '禁用'}</Button>
-            <Popconfirm title="删除模型将清理路由目标与池绑定，确认？" onConfirm={async () => {
+            <Popconfirm title="删除模型将清理路由目标与密钥绑定，确认？" onConfirm={async () => {
               try { await api('DELETE', `/api/models/${m.id}`); onSaved() } catch (e: any) { message.error(e.message) }
             }}>
               <Button size="small" danger>删除</Button>
@@ -407,12 +402,15 @@ function ModelsTab({ provider, pools, models, onSaved }: {
               </Form.Item>
             </Space>
           </Form.Item>
-          <Form.Item name="pool_ids" label="绑定密钥池（多选）" extra="仅显示当前提供商下的池"
-            rules={[{ required: true, message: '至少绑定一个密钥池' }]}>
+          <Form.Item name="key_ids" label="绑定密钥（多选）" extra="仅显示当前提供商下的密钥"
+            rules={[{ required: true, message: '至少绑定一个密钥' }]}>
             <Select
               mode="multiple"
-              placeholder="选择可访问该模型的池"
-              options={pools.map((p) => ({ value: p.id, label: `${p.name}（权重${p.weight}）` }))}
+              placeholder="选择可访问该模型的密钥"
+              options={keys.map((k) => ({
+                value: k.id,
+                label: k.name || k.key_value,
+              }))}
             />
           </Form.Item>
         </Form>
@@ -441,95 +439,121 @@ function ModelsTab({ provider, pools, models, onSaved }: {
   )
 }
 
-function PoolsTab({ provider, pools, onSaved }: { provider: Provider; pools: Pool[]; onSaved: () => void }) {
-  const [poolOpen, setPoolOpen] = useState(false)
-  const [editing, setEditing] = useState<Pool | null>(null)
-  const [keyPool, setKeyPool] = useState<Pool | null>(null)
+function KeysTab({ provider, keys, onSaved }: { provider: Provider; keys: Key[]; onSaved: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [plainValues, setPlainValues] = useState<Map<number, string> | null>(null)
+  const [revealedIds, setRevealedIds] = useState<Set<number>>(new Set())
+  const [revealLoadingId, setRevealLoadingId] = useState<number | null>(null)
+  const revealAttempted = useRef(false)
   const [form] = Form.useForm()
-  const [keyForm] = Form.useForm()
-
-  const openPool = (p?: Pool) => {
-    setEditing(p ?? null)
-    form.resetFields()
-    if (p) form.setFieldsValue({ name: p.name, weight: p.weight, remark: p.remark })
-    setPoolOpen(true)
-  }
-
-  const submitPool = async () => {
-    const values = await form.validateFields()
-    try {
-      if (editing) {
-        await api('PUT', `/api/pools/${editing.id}`, values)
-      } else {
-        await api('POST', '/api/pools', { ...values, provider_id: provider.id })
-      }
-      message.success('已保存（即时生效）')
-      setPoolOpen(false)
-      onSaved()
-    } catch (e: any) {
-      message.error(e.message)
-    }
-  }
+  const [editingKey, setEditingKey] = useState<Key | null>(null)
+  const [editForm] = Form.useForm()
 
   const submitKeys = async () => {
-    const values = await keyForm.validateFields()
+    const values = await form.validateFields()
     try {
-      const res = await api('POST', '/api/keys', { pool_id: keyPool!.id, keys: values.keys, name: values.name ?? '' })
-      message.success(`导入 ${res.created} 个，跳过重复 ${res.skipped_duplicates} 个`)
-      setKeyPool(null)
-      keyForm.resetFields()
+      await api('POST', '/api/keys', {
+        provider_id: provider.id,
+        key_value: values.key_value.trim(),
+        name: values.name.trim(),
+      })
+      message.success('已新增')
+      setOpen(false)
+      form.resetFields()
       onSaved()
     } catch (e: any) {
       message.error(e.message)
     }
   }
 
-  const setKeyStatus = async (k: Key, status: 'active' | 'disabled') => {
+  const setKeyStatus = async (key: Key, status: 'active' | 'disabled') => {
     try {
-      await api('PUT', `/api/keys/${k.id}`, { status })
+      await api('PUT', `/api/keys/${key.id}`, { status })
       onSaved()
     } catch (e: any) {
       message.error(e.message)
     }
   }
+
+  const saveKeyEdit = async () => {
+    const values = await editForm.validateFields()
+    try {
+      await api('PUT', `/api/keys/${editingKey!.id}`, { name: values.name.trim(), key_value: values.key_value.trim() })
+      message.success('已保存')
+      setEditingKey(null)
+      onSaved()
+    } catch (e: any) {
+      message.error(e.message)
+    }
+  }
+
+  const toggleReveal = async (key: Key) => {
+    if (revealedIds.has(key.id)) {
+      setRevealedIds((current) => {
+        const next = new Set(current)
+        next.delete(key.id)
+        return next
+      })
+      return
+    }
+
+    let values = plainValues
+    if (!values) {
+      if (revealAttempted.current) return
+      revealAttempted.current = true
+      setRevealLoadingId(key.id)
+      try {
+        const revealedKeys = await api<Key[]>('GET', '/api/keys?reveal=1')
+        values = new Map(revealedKeys.map((item) => [item.id, item.key_value_plain ?? item.key_value]))
+        setPlainValues(values)
+      } catch (e: any) {
+        message.error(e.message)
+        return
+      } finally {
+        setRevealLoadingId(null)
+      }
+    }
+    setRevealedIds((current) => new Set(current).add(key.id))
+  }
+
+  const availableCount = keys.filter((key) => key.status === 'active').length
 
   return (
     <div>
-      <Button type="primary" onClick={() => openPool()} style={{ marginBottom: 16 }}>新增密钥池</Button>
-      <Table<Pool> rowKey="id" dataSource={pools} tableLayout="fixed" size="small" scroll={{ x: true }} expandable={{
-        expandedRowRender: (pool) => (
-          <Table<Key> rowKey="id" dataSource={pool.keys ?? []} pagination={false} size="small">
-            <Table.Column title="Key" dataIndex="key_value" width={200} render={(v) => <code>{v}</code>} />
-            <Table.Column title="状态" render={(_, k: Key) => keyStatusTag(k)} width={130} />
-            <Table.Column title="429次数" dataIndex="rate_limited_count" width={80} />
-            <Table.Column title="最近使用" dataIndex="last_used_at" width={150}
-              render={(v) => (v ? dayjs(v * 1000).format('MM-DD HH:mm:ss') : '-')} />
-            <Table.Column title="最近错误" dataIndex="last_error" ellipsis />
-            <Table.Column title="操作" width={190} render={(_, k: Key) => (
-              <Space>
-                {k.status !== 'active' && <Button size="small" onClick={() => setKeyStatus(k, 'active')}>启用</Button>}
-                {k.status !== 'disabled' && <Button size="small" danger ghost onClick={() => setKeyStatus(k, 'disabled')}>禁用</Button>}
-                <Popconfirm title="确认删除该密钥？" onConfirm={async () => {
-                  try { await api('DELETE', `/api/keys/${k.id}`); onSaved() } catch (e: any) { message.error(e.message) }
-                }}>
-                  <Button size="small" danger>删除</Button>
-                </Popconfirm>
-              </Space>
-            )} />
-          </Table>
-        ),
-      }}>
-        <Table.Column title="池名称" dataIndex="name" width={160} />
-        <Table.Column title="池权重" dataIndex="weight" width={90} />
-        <Table.Column title="密钥数" width={80} render={(_, p: Pool) => p.keys?.length ?? 0} />
-        <Table.Column title="可用数" width={80} render={(_, p: Pool) => (p.keys ?? []).filter((k) => k.status === 'active').length} />
-        <Table.Column title="备注" dataIndex="remark" ellipsis />
-        <Table.Column title="操作" width={250} render={(_, p: Pool) => (
+      <Space style={{ marginBottom: 16 }}>
+        <Button type="primary" onClick={() => { form.resetFields(); setOpen(true) }}>新增密钥</Button>
+        <span style={{ color: '#8f8f8f', fontSize: 12 }}>共 {keys.length} 个，可用 {availableCount} 个</span>
+      </Space>
+      <Table<Key> rowKey="id" dataSource={keys} tableLayout="fixed" size="small" scroll={{ x: true }}>
+        <Table.Column title="名称" dataIndex="name" width={140} render={(value) => value || '-'} />
+        <Table.Column title="密钥" dataIndex="key_value" width={260} render={(_, key: Key) => {
+          const revealed = revealedIds.has(key.id)
+          return (
+            <Space size={4}>
+              <code>{revealed ? (plainValues?.get(key.id) ?? key.key_value) : key.key_value}</code>
+              <Button
+                size="small"
+                type="text"
+                loading={revealLoadingId === key.id}
+                icon={revealed ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                onClick={() => toggleReveal(key)}
+                aria-label={revealed ? '隐藏密钥' : '显示密钥'}
+              />
+            </Space>
+          )
+        }} />
+        <Table.Column title="状态" render={(_, key: Key) => keyStatusTag(key)} width={130} />
+        <Table.Column title="429次数" dataIndex="rate_limited_count" width={80} />
+        <Table.Column title="最近使用" dataIndex="last_used_at" width={150}
+          render={(value) => (value ? dayjs(value * 1000).format('MM-DD HH:mm:ss') : '-')} />
+        <Table.Column title="最近错误" dataIndex="last_error" ellipsis render={(value) => value || '-'} />
+        <Table.Column title="操作" width={240} render={(_, key: Key) => (
           <Space>
-            <Button size="small" onClick={() => openPool(p)}>编辑</Button>
-            <Button size="small" type="primary" ghost onClick={() => { setKeyPool(p); keyForm.resetFields() }}>导入密钥</Button>
-            <Popconfirm title="删除池将清理池内密钥与模型绑定，确认？" onConfirm={async () => {
-              try { await api('DELETE', `/api/pools/${p.id}`); onSaved() } catch (e: any) { message.error(e.message) }
+            <Button size="small" onClick={() => { editForm.setFieldsValue({ name: key.name, key_value: key.key_value }); setEditingKey(key) }}>编辑</Button>
+            {key.status !== 'active' && <Button size="small" onClick={() => setKeyStatus(key, 'active')}>启用</Button>}
+            {key.status !== 'disabled' && <Button size="small" danger ghost onClick={() => setKeyStatus(key, 'disabled')}>禁用</Button>}
+            <Popconfirm title="确认删除该密钥？" onConfirm={async () => {
+              try { await api('DELETE', `/api/keys/${key.id}`); onSaved() } catch (e: any) { message.error(e.message) }
             }}>
               <Button size="small" danger>删除</Button>
             </Popconfirm>
@@ -537,22 +561,30 @@ function PoolsTab({ provider, pools, onSaved }: { provider: Provider; pools: Poo
         )} />
       </Table>
 
-      <Modal title={editing ? '编辑密钥池' : `新增密钥池（提供商：${provider.name}）`} open={poolOpen} onOk={submitPool} onCancel={() => setPoolOpen(false)} destroyOnClose>
-        <Form form={form} layout="vertical">
-          <Form.Item name="name" label="池名称" rules={[{ required: true }]}><Input placeholder="如 premium / basic" /></Form.Item>
-          <Form.Item name="weight" label="池间权重（同值即等概率轮询）" initialValue={1}>
-            <InputNumber min={1} style={{ width: '100%' }} />
+      <Modal title="编辑密钥" open={!!editingKey} onOk={saveKeyEdit} onCancel={() => setEditingKey(null)} destroyOnClose>
+        <Form form={editForm} layout="vertical">
+          <Form.Item name="name" label="名称（日志、统计、模型绑定处显示）" rules={[{ required: true, message: '请输入名称' }]}>
+            <Input placeholder="如：主力账号" maxLength={100} />
           </Form.Item>
-          <Form.Item name="remark" label="备注"><Input /></Form.Item>
+          <Form.Item
+            name="key_value"
+            label="密钥值"
+            extra="保持脱敏值（含 ****）不变则不修改原密钥；输入新值则替换"
+            rules={[{ required: true, message: '请输入密钥值' }]}
+          >
+            <Input placeholder="sk-..." />
+          </Form.Item>
         </Form>
       </Modal>
 
-      <Modal title={`导入密钥到池「${keyPool?.name ?? ''}」`} open={!!keyPool} onOk={submitKeys} onCancel={() => setKeyPool(null)} destroyOnClose>
-        <Form form={keyForm} layout="vertical">
-          <Form.Item name="keys" label="密钥（每行一个，自动去重）" rules={[{ required: true }]}>
-            <Input.TextArea rows={6} placeholder={'sk-aaaa\nsk-bbbb\nsk-cccc'} />
+      <Modal title={`新增密钥（提供商：${provider.name}）`} open={open} onOk={submitKeys} onCancel={() => setOpen(false)} destroyOnClose>
+        <Form form={form} layout="vertical">
+          <Form.Item name="name" label="名称（日志、统计、模型绑定处显示）" rules={[{ required: true, message: '请输入名称' }]}>
+            <Input placeholder="如：主力账号" maxLength={100} />
           </Form.Item>
-          <Form.Item name="name" label="备注名（可选）"><Input /></Form.Item>
+          <Form.Item name="key_value" label="密钥" rules={[{ required: true, message: '请输入密钥' }]}>
+            <Input placeholder="sk-..." />
+          </Form.Item>
         </Form>
       </Modal>
     </div>

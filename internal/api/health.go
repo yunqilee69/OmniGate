@@ -20,29 +20,20 @@ type healthModel struct {
 
 type healthKey struct {
 	ID            int64  `json:"id"`
-	PoolID        int64  `json:"pool_id"`
+	ProviderID    int64  `json:"provider_id"`
 	Name          string `json:"name"`
 	Status        string `json:"status"`
 	CooldownUntil int64  `json:"cooldown_until"`
 	DisableReason string `json:"disable_reason"`
 }
 
-type healthPool struct {
-	ID            int64  `json:"id"`
-	Name          string `json:"name"`
-	ProviderID    int64  `json:"provider_id"`
-	TotalKeys     int    `json:"total_keys"`
-	AvailableKeys int    `json:"available_keys"`
-}
-
 type healthResp struct {
 	Now    int64         `json:"now"`
 	Models []healthModel `json:"models"`
 	Keys   []healthKey   `json:"keys"`
-	Pools  []healthPool  `json:"pools"`
 }
 
-// effectiveModelStatus 根据模型熔断状态 + 绑定密钥池内可用 key 计算的真实可达性。
+// effectiveModelStatus 根据模型熔断状态 + 绑定密钥可用性计算的真实可达性。
 // 设计要点：仅显示“active”是不够的——所有 key 都处于 429 限流冷却中时，
 // 模型也无法响应，应明确标记 cooldown/disabled 给运维。
 func effectiveModelStatus(now int64, m store.Model, boundKeys []store.ApiKey) (status, reason string) {
@@ -52,7 +43,7 @@ func effectiveModelStatus(now int64, m store.Model, boundKeys []store.ApiKey) (s
 		return
 	}
 	if len(boundKeys) == 0 {
-		return "no_key", "未绑定密钥池"
+		return "no_key", "未绑定密钥"
 	}
 	avail, cooling, disabled := 0, 0, 0
 	for _, k := range boundKeys {
@@ -78,8 +69,8 @@ func effectiveModelStatus(now int64, m store.Model, boundKeys []store.ApiKey) (s
 	}
 }
 
-// getHealth 返回全量健康状态：模型熔断态、密钥态、池派生态（可用 key 计数）。
-// 模型的 status 字段会基于“实际可达性”重算（见 effectiveModelStatus）。
+// getHealth 返回全量健康状态：模型熔断态、密钥态。模型的 status 字段会基于
+// “实际可达性”重算（见 effectiveModelStatus）。
 func (s *Server) getHealth(w http.ResponseWriter, _ *http.Request) {
 	now := time.Now().Unix()
 
@@ -93,27 +84,23 @@ func (s *Server) getHealth(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	var pools []store.KeyPool
-	if err := s.store.DB.Order("id").Find(&pools).Error; err != nil {
+	var mks []store.ModelKey
+	if err := s.store.DB.Find(&mks).Error; err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
-	}
-
-	var mps []store.ModelPool
-	if err := s.store.DB.Find(&mps).Error; err != nil {
-		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
-		return
-	}
-	keysByPool := map[int64][]store.ApiKey{}
-	for _, k := range keys {
-		keysByPool[k.PoolID] = append(keysByPool[k.PoolID], k)
 	}
 	keysByModel := map[int64][]store.ApiKey{}
-	for _, mp := range mps {
-		keysByModel[mp.ModelID] = append(keysByModel[mp.ModelID], keysByPool[mp.PoolID]...)
+	keyByID := map[int64]store.ApiKey{}
+	for _, k := range keys {
+		keyByID[k.ID] = k
+	}
+	for _, mk := range mks {
+		if k, ok := keyByID[mk.KeyID]; ok {
+			keysByModel[mk.ModelID] = append(keysByModel[mk.ModelID], k)
+		}
 	}
 
-	resp := healthResp{Now: now, Models: []healthModel{}, Keys: []healthKey{}, Pools: []healthPool{}}
+	resp := healthResp{Now: now, Models: []healthModel{}, Keys: []healthKey{}}
 	for _, m := range models {
 		status, reason := effectiveModelStatus(now, m, keysByModel[m.ID])
 		resp.Models = append(resp.Models, healthModel{
@@ -124,24 +111,8 @@ func (s *Server) getHealth(w http.ResponseWriter, _ *http.Request) {
 	}
 	for _, k := range keys {
 		resp.Keys = append(resp.Keys, healthKey{
-			ID: k.ID, PoolID: k.PoolID, Name: k.Name, Status: k.Status,
+			ID: k.ID, ProviderID: k.ProviderID, Name: k.Name, Status: k.Status,
 			CooldownUntil: k.CooldownUntil, DisableReason: k.DisableReason,
-		})
-	}
-	availByPool := map[int64]int{}
-	for _, k := range keys {
-		if k.Status == "active" || (k.Status == "cooldown" && k.CooldownUntil <= now) {
-			availByPool[k.PoolID]++
-		}
-	}
-	totalByPool := map[int64]int{}
-	for _, k := range keys {
-		totalByPool[k.PoolID]++
-	}
-	for _, p := range pools {
-		resp.Pools = append(resp.Pools, healthPool{
-			ID: p.ID, Name: p.Name, ProviderID: p.ProviderID,
-			TotalKeys: totalByPool[p.ID], AvailableKeys: availByPool[p.ID],
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)

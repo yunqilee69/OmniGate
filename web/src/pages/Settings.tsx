@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Card, Form, InputNumber, Select, Switch, message } from 'antd'
+import { Alert, Button, Card, Form, Input, InputNumber, Select, Switch, message } from 'antd'
 import { api } from '../api'
 
 type Settings = Record<string, any>
@@ -13,6 +13,7 @@ const numericRanges: Record<string, [number, number]> = {
   'stream.idle_timeout_s': [1, 86400],
   'capture.retention_days': [1, 365],
   'log.retention_days': [0, 3650],
+  'affinity.ttl_s': [10, 86400],
 }
 
 export default function Settings() {
@@ -90,6 +91,21 @@ export default function Settings() {
         </Form.Item>
         <Form.Item label="请求日志保留天数（0 = 永久）" name="log.retention_days">
           <InputNumber min={0} max={3650} style={{ width: '100%' }} />
+        </Form.Item>
+
+        <Form.Item
+          label="会话亲和（同会话粘住上次成功的模型，最大化上游缓存命中）"
+          name="affinity.enabled"
+          valuePropName="checked"
+          extra="粘住的目标熔断或无可用密钥时自动回落加权随机，不影响可用性"
+        >
+          <Switch />
+        </Form.Item>
+        <Form.Item label="会话 ID 请求头（未传时按消息前缀哈希自动识别会话）" name="affinity.header">
+          <Input placeholder="X-Session-ID" maxLength={128} />
+        </Form.Item>
+        <Form.Item label="会话亲和记忆时长（秒）" name="affinity.ttl_s">
+          <InputNumber min={10} max={86400} style={{ width: '100%' }} />
         </Form.Item>
 
         <Button type="primary" onClick={save}>保存</Button>

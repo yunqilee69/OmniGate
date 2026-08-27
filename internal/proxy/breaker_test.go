@@ -34,13 +34,14 @@ func seedTwoKeys(t *testing.T, st *store.Store, url string) {
 	t.Helper()
 	p := store.Provider{Name: "zhipu", BaseURL: url}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
 	m := store.Model{ProviderID: p.ID, Name: "m0"}
 	st.DB.Create(&m)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-good", Status: "active"})
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-bad", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
+	kGood := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-good", Status: "active"}
+	kBad := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-bad", Status: "active"}
+	st.DB.Create(&kGood)
+	st.DB.Create(&kBad)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: kGood.ID})
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: kBad.ID})
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
@@ -125,12 +126,11 @@ func TestModelBreakerEscalationThroughProxy(t *testing.T) {
 
 	pBad := store.Provider{Name: "badp", BaseURL: broken.URL}
 	st.DB.Create(&pBad)
-	poolBad := store.KeyPool{ProviderID: pBad.ID, Name: "pb"}
-	st.DB.Create(&poolBad)
 	mBad := store.Model{ProviderID: pBad.ID, Name: "badm"}
 	st.DB.Create(&mBad)
-	st.DB.Create(&store.ApiKey{PoolID: poolBad.ID, KeyValue: "sk-x", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: mBad.ID, PoolID: poolBad.ID})
+	kBad := store.ApiKey{ProviderID: pBad.ID, KeyValue: "sk-x", Status: "active"}
+	st.DB.Create(&kBad)
+	st.DB.Create(&store.ModelKey{ModelID: mBad.ID, KeyID: kBad.ID})
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: mBad.ID, Weight: 1})
@@ -182,15 +182,10 @@ func TestModelBreakerEscalationThroughProxy(t *testing.T) {
 	})
 	pGood := store.Provider{Name: "goodp", BaseURL: up.URL}
 	st.DB.Create(&pGood)
-	var goodPool store.KeyPool
-	st.DB.Where("provider_id = ?", pGood.ID).First(&goodPool)
-	if goodPool.ID == 0 {
-		goodPool = store.KeyPool{ProviderID: pGood.ID, Name: "pg"}
-		st.DB.Create(&goodPool)
-	}
-	st.DB.Create(&store.ApiKey{PoolID: goodPool.ID, KeyValue: "sk-y", Status: "active"})
+	kGood := store.ApiKey{ProviderID: pGood.ID, KeyValue: "sk-y", Status: "active"}
+	st.DB.Create(&kGood)
 	st.DB.Model(&mBad).Update("provider_id", pGood.ID)
-	st.DB.Create(&store.ModelPool{ModelID: mBad.ID, PoolID: goodPool.ID})
+	st.DB.Create(&store.ModelKey{ModelID: mBad.ID, KeyID: kGood.ID})
 	if resp := post(t, h, chatBody(false)); resp.StatusCode != 200 {
 		t.Fatalf("probe request failed: %d", resp.StatusCode)
 	}
@@ -215,12 +210,11 @@ func TestHalfOpenProbeSuccessFlow(t *testing.T) {
 
 	p := store.Provider{Name: "zhipu", BaseURL: up.URL}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
 	m := store.Model{ProviderID: p.ID, Name: "m0"}
 	st.DB.Create(&m)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-h", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-h", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
@@ -254,12 +248,11 @@ func TestClientErrorNoBreakerRecord(t *testing.T) {
 
 	p := store.Provider{Name: "zhipu", BaseURL: up.URL}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
 	m := store.Model{ProviderID: p.ID, Name: "m0"}
 	st.DB.Create(&m)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-n", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
+	kN := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-n", Status: "active"}
+	st.DB.Create(&kN)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: kN.ID})
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})

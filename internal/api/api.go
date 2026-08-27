@@ -58,14 +58,6 @@ func (s *Server) Router() http.Handler {
 				ir.Post("/test", s.testProvider)
 			})
 		})
-		ar.Route("/pools", func(er chi.Router) {
-			er.Get("/", s.listPools)
-			er.Post("/", s.createPool)
-			er.Route("/{id}", func(ir chi.Router) {
-				ir.Put("/", s.updatePool)
-				ir.Delete("/", s.deletePool)
-			})
-		})
 		ar.Route("/keys", func(er chi.Router) {
 			er.Get("/", s.listKeys)
 			er.Post("/", s.createKeys)

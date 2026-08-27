@@ -22,12 +22,11 @@ func TestErrorBodyRecordedOnUpstreamFailure(t *testing.T) {
 
 	p := store.Provider{Name: "eb-prov", BaseURL: up.URL, TimeoutMs: 3000}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-eb", Status: "active"})
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-eb", Status: "active"}
+	st.DB.Create(&k)
 	m := store.Model{ProviderID: p.ID, Name: "m", Protocol: "openai"}
 	st.DB.Create(&m)
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
 	rt := store.Route{Name: "r"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})

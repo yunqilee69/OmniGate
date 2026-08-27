@@ -14,21 +14,11 @@ type Provider struct {
 	UpdatedAt int64  `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
-// KeyPool 密钥池：属于某提供商，池内 key 轮询，池间加权。
-type KeyPool struct {
-	ID         int64  `json:"id" gorm:"primaryKey;autoIncrement"`
-	ProviderID int64  `json:"provider_id" gorm:"not null;uniqueIndex:idx_pool_provider_name"`
-	Name       string `json:"name" gorm:"size:191;not null;uniqueIndex:idx_pool_provider_name"`
-	Weight     int    `json:"weight" gorm:"not null;default:1"`
-	Remark     string `json:"remark" gorm:"size:1024;not null;default:''"`
-	CreatedAt  int64  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt  int64  `json:"updated_at" gorm:"autoUpdateTime"`
-}
-
-// ApiKey 密钥。KeyValue 带 json:"-"，任何意外的 json 序列化都不会泄露密钥值。
+// ApiKey 密钥：直接归属某提供商，由模型通过 ModelKey 多对多绑定。KeyValue 带 json:"-"，
+// 任何意外的 json 序列化都不会泄露密钥值。
 type ApiKey struct {
 	ID             int64  `json:"id" gorm:"primaryKey;autoIncrement"`
-	PoolID         int64  `json:"pool_id" gorm:"not null;index"`
+	ProviderID     int64  `json:"provider_id" gorm:"not null;index"`
 	KeyValue       string `json:"-" gorm:"column:key_value;size:512;not null"`
 	Name           string `json:"name" gorm:"size:191;not null;default:''"`
 	Status         string `json:"status" gorm:"size:32;not null;default:active"` // active | cooldown | disabled
@@ -59,10 +49,10 @@ type Model struct {
 	UpdatedAt     int64   `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
-// ModelPool 模型 × 密钥池 多对多关联。
-type ModelPool struct {
+// ModelKey 模型 × 密钥 多对多关联。
+type ModelKey struct {
 	ModelID int64 `json:"model_id" gorm:"primaryKey"`
-	PoolID  int64 `json:"pool_id" gorm:"primaryKey"`
+	KeyID   int64 `json:"key_id" gorm:"primaryKey"`
 }
 
 // Route 逻辑路由（客户端请求的 modelId）。
@@ -98,7 +88,6 @@ type RequestLog struct {
 	Route            string  `json:"route" gorm:"size:191;not null;index:idx_rl_route"`
 	Model            string  `json:"model" gorm:"size:191;not null"`
 	Provider         string  `json:"provider" gorm:"size:191;not null;index:idx_rl_provider"`
-	Pool             string  `json:"pool" gorm:"size:191;not null;default:''"`
 	KeyID            int64   `json:"key_id" gorm:"not null;default:0;index:idx_rl_key"`
 	Status           string  `json:"status" gorm:"size:32;not null"`
 	ErrorCode        string  `json:"error_code" gorm:"size:64;not null;default:''"`
@@ -132,7 +121,6 @@ type RequestAttempt struct {
 	Route            string `json:"route" gorm:"size:191;not null"`
 	Model            string `json:"model" gorm:"size:191;not null"`
 	Provider         string `json:"provider" gorm:"size:191;not null"`
-	Pool             string `json:"pool" gorm:"size:191;not null;default:''"`
 	KeyID            int64  `json:"key_id" gorm:"not null;default:0"`
 	Status           string `json:"status" gorm:"size:32;not null"`
 	HTTPStatus       int    `json:"http_status" gorm:"not null;default:0"`
@@ -153,7 +141,6 @@ type RequestLogDaily struct {
 	Route            string  `gorm:"primaryKey;size:191;default:''"`
 	Model            string  `gorm:"primaryKey;size:191;default:''"`
 	Provider         string  `gorm:"primaryKey;size:191;default:''"`
-	Pool             string  `gorm:"primaryKey;size:191;default:''"`
 	Status           string  `gorm:"primaryKey;size:32;default:''"`
 	Total            int64   `gorm:"not null;default:0"`
 	Success          int64   `gorm:"not null;default:0"`

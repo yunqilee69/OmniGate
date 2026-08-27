@@ -17,12 +17,11 @@ func seedProbeTarget(t *testing.T, st *store.Store, url, protocol string) int64 
 	if err := st.DB.Create(&p).Error; err != nil {
 		t.Fatal(err)
 	}
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-probe", Status: "active"})
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-probe", Status: "active"}
+	st.DB.Create(&k)
 	m := store.Model{ProviderID: p.ID, Name: "m-" + protocol, Protocol: protocol}
 	st.DB.Create(&m)
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
 	return m.ID
 }
 
@@ -88,11 +87,11 @@ func TestProbeProvider(t *testing.T) {
 	seedProbeTarget(t, st, up.URL, "openai")
 	var p store.Provider
 	st.DB.Where("name = ?", "probe-prov-openai").First(&p)
-	var pool store.KeyPool
-	st.DB.Where("provider_id = ?", p.ID).First(&pool)
+	var k store.ApiKey
+	st.DB.Where("provider_id = ?", p.ID).First(&k)
 	m2 := store.Model{ProviderID: p.ID, Name: "m-second", Protocol: "openai"}
 	st.DB.Create(&m2)
-	st.DB.Create(&store.ModelPool{ModelID: m2.ID, PoolID: pool.ID})
+	st.DB.Create(&store.ModelKey{ModelID: m2.ID, KeyID: k.ID})
 	rtm, _ := config.NewRuntimeManager(st)
 	results, found := proxy.ProbeProvider(st, rtm, p.ID)
 	if !found || len(results) != 2 {

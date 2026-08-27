@@ -14,7 +14,7 @@ import (
 	"github.com/cloudomni/omnigate/internal/store"
 )
 
-func newTestServer(t *testing.T) http.Handler {
+func newTestServerWithStore(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	st, err := store.Open(dbPath)
@@ -25,7 +25,13 @@ func newTestServer(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatalf("init runtime config: %v", err)
 	}
-	return New(st, rt, "test-token", nil).Router()
+	return New(st, rt, "test-token", nil).Router(), st
+}
+
+func newTestServer(t *testing.T) http.Handler {
+	t.Helper()
+	h, _ := newTestServerWithStore(t)
+	return h
 }
 
 func do(t *testing.T, h http.Handler, method, path string, body any, token string) *httptest.ResponseRecorder {
@@ -97,54 +103,47 @@ func TestM1FullFlow(t *testing.T) {
 		t.Fatalf("expect 409 on duplicate provider name, got %d", rec.Code)
 	}
 
-	// --- 密钥池 ---
-	rec = do(t, h, "POST", "/api/pools", map[string]any{
-		"provider_id": provID, "name": "premium", "weight": 3,
-	}, "test-token")
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create pool: %d — %s", rec.Code, rec.Body.String())
+	// --- 密钥（单个新增：名称必填、同提供商唯一）---
+	createKey := func(name, value string) int64 {
+		t.Helper()
+		rec := do(t, h, "POST", "/api/keys", map[string]any{
+			"provider_id": provID, "key_value": value, "name": name,
+		}, "test-token")
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create key %s: %d — %s", name, rec.Code, rec.Body.String())
+		}
+		return idOf(t, decodeObj(t, rec))
 	}
-	premiumID := idOf(t, decodeObj(t, rec))
+	premiumKeys := []int64{createKey("premium-1", "sk-aaaa1111"), createKey("premium-2", "sk-bbbb2222"), createKey("premium-3", "sk-cccc3333")}
+	extraKeys := []int64{createKey("basic-1", "sk-dddd4444")}
 
-	rec = do(t, h, "POST", "/api/pools", map[string]any{
-		"provider_id": provID, "name": "basic",
-	}, "test-token")
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create pool basic: %d", rec.Code)
+	if rec = do(t, h, "POST", "/api/keys", map[string]any{"provider_id": provID, "key_value": "sk-eeee5555"}, "test-token"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("expect 400 missing name, got %d", rec.Code)
 	}
-	basicID := idOf(t, decodeObj(t, rec))
+	if rec = do(t, h, "POST", "/api/keys", map[string]any{"provider_id": provID, "key_value": "sk-eeee5555", "name": "premium-1"}, "test-token"); rec.Code != http.StatusConflict {
+		t.Fatalf("expect 409 duplicate name, got %d", rec.Code)
+	}
+	if rec = do(t, h, "POST", "/api/keys", map[string]any{"provider_id": provID, "key_value": "sk-aaaa1111", "name": "premium-9"}, "test-token"); rec.Code != http.StatusConflict {
+		t.Fatalf("expect 409 duplicate value, got %d", rec.Code)
+	}
 
-	// --- 密钥（批量 + 去重）---
-	rec = do(t, h, "POST", "/api/keys", map[string]any{
-		"pool_id": premiumID,
-		"keys":    "sk-aaaa1111\nsk-bbbb2222\nsk-cccc3333\n\n  \nsk-aaaa1111\n",
-	}, "test-token")
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create keys: %d — %s", rec.Code, rec.Body.String())
+	// 编辑：改名 + 改值；重复值 409；回传脱敏值视为不修改
+	rec = do(t, h, "PUT", fmt.Sprintf("/api/keys/%d", premiumKeys[0]), map[string]any{"name": "premium-1x", "key_value": "sk-aaaa9999"}, "test-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("edit key: %d — %s", rec.Code, rec.Body.String())
 	}
 	kb := decodeObj(t, rec)
-	if kb["created"].(float64) != 3 || kb["skipped_duplicates"].(float64) != 0 {
-		t.Fatalf("expect created=3 (in-request dedupe of 6 lines) skipped=0, got %v", kb)
+	if kb["key_value"] != "sk-aa****9999" || kb["name"] != "premium-1x" {
+		t.Fatalf("edit key response wrong: %v", kb)
 	}
-	rec = do(t, h, "POST", "/api/keys", map[string]any{
-		"pool_id": premiumID, "keys": "sk-aaaa1111",
-	}, "test-token")
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("re-post keys: %d", rec.Code)
+	if rec = do(t, h, "PUT", fmt.Sprintf("/api/keys/%d", premiumKeys[1]), map[string]any{"key_value": "sk-aaaa9999"}, "test-token"); rec.Code != http.StatusConflict {
+		t.Fatalf("expect 409 duplicate value on update, got %d", rec.Code)
 	}
-	kb = decodeObj(t, rec)
-	if kb["created"].(float64) != 0 || kb["skipped_duplicates"].(float64) != 1 {
-		t.Fatalf("expect created=0 skipped=1 for existing key, got %v", kb)
+	if rec = do(t, h, "PUT", fmt.Sprintf("/api/keys/%d", premiumKeys[0]), map[string]any{"key_value": "sk-aa****9999"}, "test-token"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("masked round-trip alone should hit no-fields-to-update, got %d", rec.Code)
 	}
 
-	rec = do(t, h, "POST", "/api/keys", map[string]any{
-		"pool_id": basicID, "keys": "sk-dddd4444",
-	}, "test-token")
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create basic keys: %d", rec.Code)
-	}
-
-	// 密钥脱敏
+	// 密钥脱敏（默认）与 reveal=1 明文（本地单人场景）
 	keys := decodeArr(t, do(t, h, "GET", "/api/keys", nil, "test-token"))
 	if len(keys) != 4 {
 		t.Fatalf("expect 4 keys, got %d", len(keys))
@@ -156,12 +155,19 @@ func TestM1FullFlow(t *testing.T) {
 	if _, leaked := keys[0].(map[string]any)["KeyValue"]; leaked {
 		t.Fatal("raw key value leaked in response")
 	}
+	if _, leaked := keys[0].(map[string]any)["key_value_plain"]; leaked {
+		t.Fatal("plain value must be absent without reveal=1")
+	}
+	keys = decodeArr(t, do(t, h, "GET", "/api/keys?reveal=1", nil, "test-token"))
+	if plain := keys[0].(map[string]any)["key_value_plain"].(string); plain != "sk-aaaa9999" {
+		t.Fatalf("reveal=1 must return plaintext, got %q", plain)
+	}
 
 	// --- 模型 ---
 	rec = do(t, h, "POST", "/api/models", map[string]any{
 		"provider_id": provID, "name": "glm-4.6",
 		"input_price": 10, "output_price": 20,
-		"pool_ids": []int64{premiumID, basicID},
+		"key_ids": append(append([]int64{}, premiumKeys...), extraKeys...),
 	}, "test-token")
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create model: %d — %s", rec.Code, rec.Body.String())
@@ -169,23 +175,26 @@ func TestM1FullFlow(t *testing.T) {
 	modelID := idOf(t, decodeObj(t, rec))
 
 	rec = do(t, h, "POST", "/api/models", map[string]any{
-		"provider_id": provID, "name": "glm-4.5-flash", "pool_ids": []int64{basicID},
+		"provider_id": provID, "name": "glm-4.5-flash", "key_ids": extraKeys,
 	}, "test-token")
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create model flash: %d", rec.Code)
 	}
 	flashID := idOf(t, decodeObj(t, rec))
 
-	// 跨提供商的池不允许绑定
+	// 跨提供商的密钥不允许绑定
 	rec = do(t, h, "POST", "/api/providers", map[string]any{"name": "other", "base_url": "https://y"}, "test-token")
 	otherProvID := idOf(t, decodeObj(t, rec))
-	rec = do(t, h, "POST", "/api/pools", map[string]any{"provider_id": otherProvID, "name": "op"}, "test-token")
-	otherPoolID := idOf(t, decodeObj(t, rec))
+	rec = do(t, h, "POST", "/api/keys", map[string]any{"provider_id": otherProvID, "key_value": "sk-other9999", "name": "premium-1"}, "test-token")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create other-provider key: %d — %s", rec.Code, rec.Body.String())
+	}
+	otherKeys := []int64{idOf(t, decodeObj(t, rec))}
 	rec = do(t, h, "PUT", fmt.Sprintf("/api/models/%d", modelID), map[string]any{
-		"pool_ids": []int64{otherPoolID},
+		"key_ids": otherKeys,
 	}, "test-token")
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expect 400 binding cross-provider pool, got %d", rec.Code)
+		t.Fatalf("expect 400 binding cross-provider key, got %d", rec.Code)
 	}
 
 	// --- 路由 ---
@@ -270,17 +279,16 @@ func TestM1FullFlow(t *testing.T) {
 	if hm["status"] != "active" || hm["fail_count"].(float64) != 0 {
 		t.Fatalf("model enable failed: %v", hm)
 	}
-	hp := health["pools"].([]any)[0].(map[string]any)
-	if hp["available_keys"].(float64) < 1 {
-		t.Fatalf("pool availability wrong: %v", hp)
+	if hks := health["keys"].([]any); len(hks) != 5 {
+		t.Fatalf("health keys wrong: %d", len(hks))
 	}
 
-	// --- 级联删除提供商：池/密钥/模型/路由目标全部清理 ---
+	// --- 级联删除提供商：密钥/模型/路由目标全部清理 ---
 	if rec := do(t, h, "DELETE", fmt.Sprintf("/api/providers/%d", provID), nil, "test-token"); rec.Code != http.StatusOK {
 		t.Fatalf("delete provider: %d", rec.Code)
 	}
-	if keys := decodeArr(t, do(t, h, "GET", "/api/keys", nil, "test-token")); len(keys) != 0 {
-		t.Fatalf("keys should cascade-delete, got %d", len(keys))
+	if keys := decodeArr(t, do(t, h, "GET", "/api/keys", nil, "test-token")); len(keys) != 1 {
+		t.Fatalf("zhipu keys should cascade-delete (only other-provider key remains), got %d", len(keys))
 	}
 	if models := decodeArr(t, do(t, h, "GET", "/api/models", nil, "test-token")); len(models) != 0 {
 		t.Fatalf("models should cascade-delete, got %d", len(models))
@@ -316,6 +324,61 @@ func indexOf(s, sub string) int {
 	return -1
 }
 
+// TestBreakdownKeyDimMaskedLabel 密钥回显链路须带名称与脱敏标签（裸 key#id 不可辨识密钥）
+func TestBreakdownKeyDimMaskedLabel(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+
+	prov := store.Provider{Name: "zhipu", BaseURL: "https://api.example.com", Protocol: "openai"}
+	if err := st.DB.Create(&prov).Error; err != nil {
+		t.Fatalf("seed provider: %v", err)
+	}
+	key := store.ApiKey{ProviderID: prov.ID, KeyValue: "sk-breakdown-key-987654", Name: "主力账号"}
+	if err := st.DB.Create(&key).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	if err := st.DB.Create(&store.RequestLog{
+		RequestID: "req-bd-1", Route: "glm", Model: "glm-4.6", Provider: "zhipu",
+		KeyID: key.ID, Status: "success",
+	}).Error; err != nil {
+		t.Fatalf("seed request log: %v", err)
+	}
+
+	items := decodeArr(t, do(t, h, "GET", "/api/stats/breakdown?dim=key", nil, "test-token"))
+	if len(items) != 1 {
+		t.Fatalf("breakdown dim=key items = %d, want 1", len(items))
+	}
+	it := items[0].(map[string]any)
+	if it["dim"] != fmt.Sprintf("%d", key.ID) {
+		t.Fatalf("dim = %v, want key id %d", it["dim"], key.ID)
+	}
+	if it["key_masked"] != "sk-br****7654" {
+		t.Fatalf("key_masked = %v, want sk-br****7654", it["key_masked"])
+	}
+	if it["key_name"] != "主力账号" {
+		t.Fatalf("key_name = %v, want 主力账号", it["key_name"])
+	}
+
+	// --- 日志列表回显名称 ---
+	logs := decodeObj(t, do(t, h, "GET", "/api/logs", nil, "test-token"))
+	logItems := logs["items"].([]any)
+	if len(logItems) != 1 {
+		t.Fatalf("logs items = %d, want 1", len(logItems))
+	}
+	l0 := logItems[0].(map[string]any)
+	if l0["key_name"] != "主力账号" || l0["key_value_masked"] != "sk-br****7654" {
+		t.Fatalf("log key echo = %v / %v", l0["key_name"], l0["key_value_masked"])
+	}
+
+	// --- 改名后回显跟随 ---
+	if rec := do(t, h, "PUT", fmt.Sprintf("/api/keys/%d", key.ID), map[string]any{"name": "备用"}, "test-token"); rec.Code != http.StatusOK {
+		t.Fatalf("rename key: %d — %s", rec.Code, rec.Body.String())
+	}
+	items = decodeArr(t, do(t, h, "GET", "/api/stats/breakdown?dim=key", nil, "test-token"))
+	if got := items[0].(map[string]any)["key_name"]; got != "备用" {
+		t.Fatalf("key_name after rename = %v, want 备用", got)
+	}
+}
+
 // TestStatsEmptyDBNoNullPanic 回归：空库时 SUM 返回 NULL 不得导致 Scan 报错
 func TestStatsEmptyDBNoNullPanic(t *testing.T) {
 	h := newTestServer(t)
@@ -337,35 +400,26 @@ func TestStatsEmptyDBNoNullPanic(t *testing.T) {
 	}
 }
 
-// TestEmptyPoolKeysNotNullArray 回归：空池的 keys 必须序列化为 [] 而非 null（前端 .length 会崩）
-func TestEmptyPoolKeysNotNullArray(t *testing.T) {
+// TestEmptyKeysNotNullArray 回归：空密钥列表必须序列化为 [] 而非 null（前端 .length 会崩）
+func TestEmptyKeysNotNullArray(t *testing.T) {
 	h := newTestServer(t)
-	do(t, h, "POST", "/api/providers", map[string]any{
-		"name": "zhipu", "base_url": "https://x",
-	}, "test-token")
-	rec := do(t, h, "POST", "/api/pools", map[string]any{
-		"provider_id": 1, "name": "empty-pool",
-	}, "test-token")
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create pool: %d — %s", rec.Code, rec.Body.String())
+	rec := do(t, h, "GET", "/api/keys", nil, "test-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list keys on empty db: %d — %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Body.String(); !strings.Contains(got, `"keys":[]`) {
-		t.Fatalf("create response keys must be [] not null: %s", got)
-	}
-	rec = do(t, h, "GET", "/api/pools", nil, "test-token")
-	if got := rec.Body.String(); !strings.Contains(got, `"keys":[]`) {
-		t.Fatalf("list response keys must be [] not null: %s", got)
+	if got := strings.TrimSpace(rec.Body.String()); !strings.HasPrefix(got, "[") {
+		t.Fatalf("keys must be [] not null: %s", got)
 	}
 }
 
-// TestModelRequiresPool 回归：模型必须绑定至少一个密钥池
-func TestModelRequiresPool(t *testing.T) {
+// TestModelRequiresKeys 回归：模型必须绑定至少一个密钥
+func TestModelRequiresKeys(t *testing.T) {
 	h := newTestServer(t)
 	do(t, h, "POST", "/api/providers", map[string]any{"name": "zhipu", "base_url": "https://x"}, "test-token")
 	rec := do(t, h, "POST", "/api/models", map[string]any{
-		"provider_id": 1, "name": "no-pool", "pool_ids": []int64{},
+		"provider_id": 1, "name": "no-key", "key_ids": []int64{},
 	}, "test-token")
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "密钥池") {
-		t.Fatalf("empty pool_ids must be rejected: %d — %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "至少绑定一个密钥") {
+		t.Fatalf("empty key_ids must be rejected: %d — %s", rec.Code, rec.Body.String())
 	}
 }

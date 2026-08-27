@@ -21,12 +21,11 @@ func TestContentCaptureOffByDefault(t *testing.T) {
 
 	p := store.Provider{Name: "cap-off-prov", BaseURL: up.URL}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
 	m := store.Model{ProviderID: p.ID, Name: "m"}
 	st.DB.Create(&m)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-1", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-1", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
@@ -55,12 +54,11 @@ func TestContentCaptureOnRecordsRequestAndResponse(t *testing.T) {
 
 	p := store.Provider{Name: "cap-on-prov", BaseURL: up.URL}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
 	m := store.Model{ProviderID: p.ID, Name: "m"}
 	st.DB.Create(&m)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-1", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-1", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
@@ -103,12 +101,11 @@ func TestContentCaptureRouteWhitelist(t *testing.T) {
 
 	p := store.Provider{Name: "wl-prov", BaseURL: up.URL}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
 	m := store.Model{ProviderID: p.ID, Name: "m"}
 	st.DB.Create(&m)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-1", Status: "active"})
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-1", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})

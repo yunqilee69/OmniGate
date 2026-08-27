@@ -28,13 +28,14 @@ func TestFailedAttemptRecorded(t *testing.T) {
 
 	p := store.Provider{Name: "fa-prov", BaseURL: up.URL, TimeoutMs: 3000}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-1", Status: "active"})
-	st.DB.Create(&store.ApiKey{PoolID: pool.ID, KeyValue: "sk-2", Status: "active"})
+	k1 := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-1", Status: "active"}
+	k2 := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-2", Status: "active"}
+	st.DB.Create(&k1)
+	st.DB.Create(&k2)
 	m := store.Model{ProviderID: p.ID, Name: "m", Protocol: "openai"}
 	st.DB.Create(&m)
-	st.DB.Create(&store.ModelPool{ModelID: m.ID, PoolID: pool.ID})
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k1.ID})
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k2.ID})
 	rt := store.Route{Name: "r"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})

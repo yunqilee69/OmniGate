@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -112,6 +113,48 @@ func estimateUsage(promptChars int, respText string) usageInfo {
 	}
 }
 
+// sessionKey 解析会话键：优先自定义请求头；缺失时按消息前缀哈希自动识别。
+// 两者皆无返回空串，调用方退化为普通加权随机。
+func sessionKey(r *http.Request, req map[string]any, header string) string {
+	if header != "" {
+		if v := strings.TrimSpace(r.Header.Get(header)); v != "" {
+			return "h:" + v
+		}
+	}
+	return messagePrefixKey(req)
+}
+
+// messagePrefixKey 哈希 messages 中第一条 assistant 消息之前的全部消息（role + content 规范化拼接）。
+// 该前缀在首轮请求即完整存在、后续每轮字节不变，是跨轮稳定且可从首轮算出的最大切面；
+// 首轮有多少条就吃多少条（长 system、few-shot 示例全部进入指纹）。空前缀返回空串。
+func messagePrefixKey(req map[string]any) string {
+	msgs, _ := req["messages"].([]any)
+	var b strings.Builder
+	for _, m := range msgs {
+		mm, ok := m.(map[string]any)
+		if !ok {
+			break
+		}
+		role, _ := mm["role"].(string)
+		if role == "assistant" {
+			break
+		}
+		content, err := json.Marshal(mm["content"])
+		if err != nil {
+			content = []byte{'?'}
+		}
+		b.WriteString(role)
+		b.WriteByte(0)
+		b.Write(content)
+		b.WriteByte(0)
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return "m:" + hex.EncodeToString(sum[:16])
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	requestID := newRequestID()
@@ -148,6 +191,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w = cw
 	}
 
+	var affKey string
+	var affModel int64
+	if rt.AffinityEnabled {
+		if sk := sessionKey(r, req, rt.AffinityHeader); sk != "" {
+			affKey = routeName + "\x00" + sk
+			affModel, _ = h.sel.Affinity(affKey, time.Now())
+		}
+	}
+
 	snap, found, err := h.sel.LoadSnapshot(routeName)
 	if err != nil {
 		slog.Error("load snapshot failed", "err", err, "route", routeName)
@@ -169,7 +221,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	priorFails := 0
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		att, ok := h.sel.Pick(snap, tried, time.Now())
+		att, ok := h.sel.Pick(snap, tried, time.Now(), affModel)
 		if !ok {
 			if attempt == 0 {
 				statuses := router.BackendStatuses(snap, time.Now())
@@ -198,6 +250,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errCodes = append(errCodes, res.errCode)
 		slog.Warn("attempt failed, transferring", "route", routeName,
 			"model", att.Model.Name, "key_id", att.Key.ID, "code", res.errCode)
+	}
+
+	// 亲和只在最终成功后回写：失败转移到别的模型成功时，记住的是缓存真正生效的落点。
+	if affKey != "" && last.att.Model.ID != 0 && last.status == "success" {
+		h.sel.SetAffinity(affKey, last.att.Model.ID, rt.AffinityTTL, time.Now())
 	}
 
 	if !last.committed {
@@ -463,7 +520,6 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 	if att.Model.ID != 0 {
 		entry.Model = att.Model.Name
 		entry.Provider = att.Provider.Name
-		entry.Pool = att.Pool.Name
 		entry.KeyID = att.Key.ID
 	}
 	if err := h.db.DB.Create(&entry).Error; err != nil {
@@ -485,7 +541,6 @@ func (h *Handler) writeAttempt(requestID, routeName string, attempt int, att rou
 		Attempt:          attempt,
 		Model:            att.Model.Name,
 		Provider:         att.Provider.Name,
-		Pool:             att.Pool.Name,
 		KeyID:            att.Key.ID,
 		Status:           res.status,
 		HTTPStatus:       res.httpStatus,

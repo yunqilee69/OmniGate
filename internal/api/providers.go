@@ -157,20 +157,17 @@ func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	// 级联：池（及池内 key、模型-池绑定）→ 模型（及路由目标、模型-池绑定）→ 提供商
+	// 级联：密钥（及模型-密钥绑定）→ 模型（及路由目标、模型-密钥绑定）→ 提供商
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
-		var poolIDs []int64
-		if err := tx.Model(&store.KeyPool{}).Where("provider_id = ?", id).Pluck("id", &poolIDs).Error; err != nil {
+		var keyIDs []int64
+		if err := tx.Model(&store.ApiKey{}).Where("provider_id = ?", id).Pluck("id", &keyIDs).Error; err != nil {
 			return err
 		}
-		if len(poolIDs) > 0 {
-			if err := tx.Where("pool_id IN ?", poolIDs).Delete(&store.ApiKey{}).Error; err != nil {
+		if len(keyIDs) > 0 {
+			if err := tx.Where("key_id IN ?", keyIDs).Delete(&store.ModelKey{}).Error; err != nil {
 				return err
 			}
-			if err := tx.Where("pool_id IN ?", poolIDs).Delete(&store.ModelPool{}).Error; err != nil {
-				return err
-			}
-			if err := tx.Where("provider_id = ?", id).Delete(&store.KeyPool{}).Error; err != nil {
+			if err := tx.Where("id IN ?", keyIDs).Delete(&store.ApiKey{}).Error; err != nil {
 				return err
 			}
 		}
@@ -182,7 +179,7 @@ func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
 			if err := tx.Where("model_id IN ?", modelIDs).Delete(&store.RouteTarget{}).Error; err != nil {
 				return err
 			}
-			if err := tx.Where("model_id IN ?", modelIDs).Delete(&store.ModelPool{}).Error; err != nil {
+			if err := tx.Where("model_id IN ?", modelIDs).Delete(&store.ModelKey{}).Error; err != nil {
 				return err
 			}
 			if err := tx.Where("provider_id = ?", id).Delete(&store.Model{}).Error; err != nil {

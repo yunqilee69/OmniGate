@@ -26,6 +26,9 @@ type Runtime struct {
 	CaptureRoutes           []string
 	CaptureRetentionDays    int
 	LogRetentionDays        int
+	AffinityEnabled         bool
+	AffinityHeader          string
+	AffinityTTL             time.Duration
 }
 
 type settingSpec struct {
@@ -82,6 +85,24 @@ func strArr(v any) error {
 	return nil
 }
 
+// headerName 校验 HTTP 头名：非空、无空白与冒号、可打印 ASCII。
+func headerName(v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return errors.New("must be a header name string")
+	}
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) > 128 {
+		return errors.New("must be a non-empty header name (max 128 chars)")
+	}
+	for _, r := range s {
+		if r <= ' ' || r >= 127 || r == ':' {
+			return errors.New("must not contain whitespace, ':' or non-ASCII characters")
+		}
+	}
+	return nil
+}
+
 var settingSpecs = []settingSpec{
 	{key: "breaker.cooldown_ladder", def: `["30s","1m","3m"]`, validate: durArr},
 	{key: "breaker.disable_threshold", def: `3`, validate: intRange(1, 100)},
@@ -93,6 +114,9 @@ var settingSpecs = []settingSpec{
 	{key: "capture.routes", def: `[]`, validate: strArr},
 	{key: "capture.retention_days", def: `3`, validate: intRange(1, 365)},
 	{key: "log.retention_days", def: `0`, validate: intRange(0, 3650)},
+	{key: "affinity.enabled", def: `false`, validate: boolVal},
+	{key: "affinity.header", def: `"X-Session-ID"`, validate: headerName},
+	{key: "affinity.ttl_s", def: `3600`, validate: intRange(10, 86400)},
 }
 
 // RuntimeManager 管理运行层配置：DB 为事实来源，内存快照 atomic 替换（保存即热生效）。
@@ -192,6 +216,11 @@ func (m *RuntimeManager) rebuild() error {
 	_ = json.Unmarshal([]byte(raw["capture.routes"]), &rt.CaptureRoutes)
 	rt.CaptureRetentionDays = getInt("capture.retention_days")
 	rt.LogRetentionDays = getInt("log.retention_days")
+	rt.AffinityEnabled = getBool("affinity.enabled")
+	var affHdr string
+	_ = json.Unmarshal([]byte(raw["affinity.header"]), &affHdr)
+	rt.AffinityHeader = strings.TrimSpace(affHdr)
+	rt.AffinityTTL = time.Duration(getInt("affinity.ttl_s")) * time.Second
 
 	m.snap.Store(rt)
 	return nil

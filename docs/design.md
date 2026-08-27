@@ -1,6 +1,6 @@
 # OmniGate 设计文档
 
-> 本地大模型代理：聚合多个模型提供商，提供加权负载均衡、密钥池轮询、阶梯熔断与多维统计。
+> 本地大模型代理：聚合多个模型提供商，提供加权负载均衡、密钥轮询、阶梯熔断与多维统计。
 > 单进程 + 单二进制 + SQLite，零外部依赖，默认不记录任何请求内容。
 
 - 版本：v1.0（设计定稿）
@@ -16,10 +16,10 @@
 | # | 能力 | 说明 |
 |---|------|------|
 | G1 | OpenAI 兼容代理 | 对下游暴露 `/v1/chat/completions`（含 SSE 流式）、`/v1/models` |
-| G2 | 逻辑模型路由 | 请求一个逻辑 modelId（如 `glm-pool`），按权重分发到 N 个真实模型（可以是不同模型） |
-| G3 | 提供商/密钥池/模型三层实体 | Provider → KeyPool → ApiKey；模型与池多对多绑定；池内 key 轮询，池间加权 |
+| G2 | 逻辑模型路由 | 请求一个逻辑 modelId（如 `glm`），按权重分发到 N 个真实模型（可以是不同模型） |
+| G3 | 提供商/密钥/模型实体 | Provider → ApiKey；模型与密钥多对多绑定（须同提供商）；模型内 key 轮询 |
 | G4 | 阶梯熔断 | 模型级：30s → 1m → 3m，连续 3 次禁用并明确报错；key 级：401/403 立即禁用，429 短冷却 |
-| G5 | 多维统计 | 次数 / token / 首字延迟 / 总耗时 / 费用，按 路由·模型·提供商·池·key·状态·时间 聚合 |
+| G5 | 多维统计 | 次数 / token / 首字延迟 / 总耗时 / 费用，按 路由·模型·提供商·key·状态·时间 聚合 |
 | G6 | 隐私默认 | 默认仅记录元数据；请求内容捕获为显式开关（默认关，全局 + 按路由两级） |
 | G7 | Web 管理界面 | 实体 CRUD、健康状态、手动解禁、统计报表、请求日志查询 |
 | G8 | 分层配置 + 热生效 | 启动层（监听地址、管理 token）在本地 config.yaml/命令行；运行层（熔断、限流、捕获等）全存 SQLite，管理面保存即生效 |
@@ -46,10 +46,10 @@
 │  ┌────────────┐   ┌──────────────────────────┐   ┌────────────────────┐  │
 │  │ /v1/chat/  │──▶│ 路由解析(逻辑modelId)      │   │ Admin REST API     │  │
 │  │ completions│   │  → 加权选模型目标          │   │  实体CRUD/统计/健康 │  │
-│  │ /v1/models │   │  → 加权选池               │   └─────────┬──────────┘  │
-│  └────────────┘   │  → 池内key轮询            │             │ 写库后事件    │
+│  │ /v1/models │   │  → key轮询(按模型)        │   └─────────┬──────────┘  │
+│  └────────────┘   │  → 熔断态key跳过          │             │ 写库后事件    │
 │        │          │  → 转发+SSE透传           │             ▼             │
-│        ▼          │  → 失败重试(三级转移)      │   ┌────────────────────┐  │
+│        ▼          │  → 失败转移重试            │   ┌────────────────────┐  │
 │  ┌────────────┐   └──────────┬───────────────┘   │ 配置快照原子替换     │  │
 │  │ 统计记录器  │◀─────────────┘  生命周期埋点      │ (RWMutex/atomic)   │  │
 │  └─────┬──────┘                                  └────────────────────┘  │
@@ -63,8 +63,8 @@
           │                          │
           ▼                          ▼
    提供商 A（智谱）              提供商 B（任意 OpenAI 兼容）
-   ├─ 高级池[key1..keyN]         ├─ 池 X[key1..keyM]
-   └─ 基础池[key1..keyK]         └─ ...
+   ├─ 密钥[key1..keyN]           ├─ 密钥[key1..keyM]
+   └─ ...                        └─ ...
 ```
 
 ---
@@ -74,9 +74,9 @@
 ### 3.1 实体关系
 
 ```
-Provider(提供商) 1──N KeyPool(密钥池) 1──N ApiKey(密钥)
+Provider(提供商) 1──N ApiKey(密钥)
 Provider 1──N Model(真实模型，熔断状态挂在这一层)
-Model M──N KeyPool            ← model_pool 关联表
+Model M──N ApiKey             ← model_key 关联表（须同提供商）
 Route(逻辑modelId) 1──N RouteTarget ──N──1 Model（带 weight）
 ```
 
@@ -98,24 +98,12 @@ CREATE TABLE provider (
   updated_at  INTEGER NOT NULL
 );
 
--- 密钥池
-CREATE TABLE key_pool (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider_id INTEGER NOT NULL REFERENCES provider(id) ON DELETE CASCADE,
-  name        TEXT NOT NULL,
-  weight      INTEGER NOT NULL DEFAULT 1,         -- 池间选择权重，全 1 即等价轮询
-  remark      TEXT NOT NULL DEFAULT '',
-  created_at  INTEGER NOT NULL,
-  updated_at  INTEGER NOT NULL,
-  UNIQUE(provider_id, name)
-);
-
 -- 密钥
 CREATE TABLE api_key (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  pool_id        INTEGER NOT NULL REFERENCES key_pool(id) ON DELETE CASCADE,
-  key_value      TEXT NOT NULL,                   -- 明文存储（本地工具），UI 脱敏展示
-  name           TEXT NOT NULL DEFAULT '',
+  provider_id    INTEGER NOT NULL REFERENCES provider(id) ON DELETE CASCADE,
+  key_value      TEXT NOT NULL,                   -- 明文存储（本地工具），UI 脱敏展示 + 显式明文查看按钮
+  name           TEXT NOT NULL DEFAULT '',         -- 名称（新增必填、同提供商内唯一）：日志/统计/模型绑定处的回显标识
   status         TEXT NOT NULL DEFAULT 'active',  -- active | cooldown | disabled
   cooldown_until INTEGER NOT NULL DEFAULT 0,      -- 429 短冷却截止时间戳
   rate_limited_count INTEGER NOT NULL DEFAULT 0,  -- 429 限流次数（统计用）
@@ -145,17 +133,17 @@ CREATE TABLE model (
   UNIQUE(provider_id, name)
 );
 
--- 模型 × 池 多对多
-CREATE TABLE model_pool (
+-- 模型 × 密钥 多对多（密钥须与模型同提供商）
+CREATE TABLE model_key (
   model_id INTEGER NOT NULL REFERENCES model(id) ON DELETE CASCADE,
-  pool_id  INTEGER NOT NULL REFERENCES key_pool(id) ON DELETE CASCADE,
-  PRIMARY KEY (model_id, pool_id)
+  key_id   INTEGER NOT NULL REFERENCES api_key(id) ON DELETE CASCADE,
+  PRIMARY KEY (model_id, key_id)
 );
 
 -- 逻辑路由
 CREATE TABLE route (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  name       TEXT NOT NULL UNIQUE,                -- 逻辑 modelId，如 glm-pool
+  name       TEXT NOT NULL UNIQUE,                -- 逻辑 modelId，如 glm
   remark     TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -183,7 +171,6 @@ CREATE TABLE request_log (
   route              TEXT NOT NULL,               -- 逻辑 modelId
   model              TEXT NOT NULL,               -- 真实模型名
   provider           TEXT NOT NULL,
-  pool               TEXT NOT NULL DEFAULT '',
   key_id             INTEGER NOT NULL DEFAULT 0,  -- 命中的密钥 id（脱敏，不存 key 值）
   status             TEXT NOT NULL,               -- success | error | client_error
   error_code         TEXT NOT NULL DEFAULT '',    -- http 状态码 / timeout / conn / all_backends
@@ -194,7 +181,7 @@ CREATE TABLE request_log (
   ttft_ms            INTEGER NOT NULL DEFAULT 0,  -- 首 token 延迟（非流式=总耗时）
   total_ms           INTEGER NOT NULL DEFAULT 0,
   cost               REAL NOT NULL DEFAULT 0,     -- 按 model 价格计算
-  retries            INTEGER NOT NULL DEFAULT 0,  -- 本次请求发生的目标/池/key 转移次数
+  retries            INTEGER NOT NULL DEFAULT 0,  -- 本次请求发生的目标/key 转移次数
   created_at         INTEGER NOT NULL
 );
 CREATE INDEX idx_rl_time       ON request_log(created_at);
@@ -225,27 +212,26 @@ CREATE TABLE content_log (
    加权随机：r = rand(Σw)，顺序累减命中
    （LiteLLM simple-shuffle 同款语义；全被过滤 → §5.4 全不可用流程）
 
-② 命中 model → 取其绑定的候选 key_pool 列表
-   过滤：池内所有 key 均 disabled/cooldown → 跳过该池
-   池间加权随机（池 weight，全 1 即等概率）
+② 命中 model → 取其绑定的候选 api_key 列表（模型与密钥须同提供商）
+   过滤：disabled / cooldown 中的 key
 
-③ 命中 pool → 池内 key 轮询（每池独立原子游标）
-   跳过 disabled / cooldown 中的 key，游标环扫一周全跳过 → 该池视为不可用，回到②换池
+③ 模型内 key 轮询（每模型独立原子游标）
+   游标环扫一周全跳过 → 该模型视为不可用，回到①换目标
 ```
 
 进行中请求持有当前配置快照（atomic.Pointer 加载的不可变视图），配置热替换不影响已开始的请求。
 
 ### 4.2 权重语义示例
 
-路由 `glm-pool`：
+路由 `glm`：
 
 | 目标模型 | 权重 | 期望流量 |
 |---|---|---|
 | 智谱 / glm-4.6 | 7 | 70% |
 | 智谱 / glm-4.5-flash | 3 | 30% |
 
-glm-4.6 绑定「高级池」（3 个企业 key），glm-4.5-flash 绑定「高级池 + 基础池」（池权重各 1）。
-高级池的 key 全部冷却时，glm-4.6 的流量自然全部落到 glm-4.5-flash 的可用池上。
+glm-4.6 绑定 3 个企业 key，glm-4.5-flash 绑定 2 个轻量 key（各自模型内轮询）。
+glm-4.6 的 key 全部冷却时，glm-4.6 临时不可用，流量自然全部落到 glm-4.5-flash 上。
 
 ---
 
@@ -279,9 +265,9 @@ glm-4.6 绑定「高级池」（3 个企业 key），glm-4.5-flash 绑定「高�
 - **disabled 仅能手动恢复**：Web UI / `POST /api/models/{id}/enable`；重启不丢（状态在 DB）
 - 状态转移即时落库（本地 SQLite 写放大可忽略）
 
-### 5.3 池级（派生状态，无独立状态机）
+### 5.3 密钥级（状态机见 §5.1，无独立阶梯）
 
-池可用性 = 池内是否存在可用 key。全部不可用 → 路由选择时跳过。不落库、不告警池本身，key 状态即事实来源。
+模型可达性 = 其绑定密钥中是否存在可用 key。全部不可用 → 路由选择时跳过该模型。不落库、不告警派生态，key 状态即事实来源。
 
 ### 5.4 全部不可用（防阻断兜底）
 
@@ -292,7 +278,7 @@ HTTP 503
 {
   "error": {
     "code": "all_backends_unavailable",
-    "message": "路由 'glm-pool' 无可用后端：glm-4.6 已禁用（连续3次超时，最近错误: dial tcp ...）；glm-4.5-flash 冷却中（剩余42s）",
+    "message": "路由 'glm' 无可用后端：glm-4.6 已禁用（连续3次超时，最近错误: dial tcp ...）；glm-4.5-flash 冷却中（剩余42s）",
     "backends": [
       {"model": "glm-4.6", "status": "disabled", "reason": "连续3次超时，最近错误: dial tcp ..."},
       {"model": "glm-4.5-flash", "status": "cooldown", "retry_after_s": 42}
@@ -311,11 +297,11 @@ HTTP 503
 收到请求
   ├─ 解析逻辑 modelId（body.model）→ 未配置 → 404 model_not_found
   ├─ 转移预算检查（max_hops 默认 3 次）
-  ├─ 【尝试】选目标模型 → 选池 → 选 key → 改写 body.model 为真实模型名 → 转发
+  ├─ 【尝试】选目标模型 → 选 key → 改写 body.model 为真实模型名 → 转发
   │    ├─ 首字节前失败（超时/conn/5xx/429/401/403）
   │    │     ├─ 按 §5 归因更新状态
   │    │     ├─ 429/401/403/5xx/超时 → 消耗一跳，回到【尝试】
-  │    │     │    转移顺序：同池下一个 key → 下一个池 → 下一个目标模型
+  │    │     │    转移顺序：同模型下一个 key → 下一个目标模型
   │    │     └─ 4xx 其他 → 透传错误给客户端，结束
   │    ├─ 首字节到达（流式：首个 SSE data；非流式：响应完整）
   │    │     ├─ 记录 ttft_ms —— ⚠️ 从此不可再换后端重试
@@ -342,28 +328,26 @@ HTTP 503
 | POST | `/v1/chat/completions` | 聊天补全，支持 `stream:true` SSE |
 | GET  | `/v1/models` | 返回所有逻辑路由名（客户端模型列表） |
 
-上游鉴权：代理替换 `Authorization: Bearer <选中池的key>`，客户端无需带真实 key。
+上游鉴权：代理替换 `Authorization: Bearer <选中的key>`，客户端无需带真实 key。
 
 ### 7.2 管理面（`/api/*`，若 config.yaml 配置了 `admin.token` 则需携带 `X-Admin-Token` 头）
 
 ```
 # 实体 CRUD（均为标准 REST，保存后配置快照原子重建、即时生效）
 GET/POST         /api/providers            PUT/DELETE /api/providers/{id}
-GET/POST         /api/pools                PUT/DELETE /api/pools/{id}
-GET/POST         /api/keys                 PUT/DELETE /api/keys/{id}     # 创建支持批量粘贴多行 key
+GET/POST         /api/keys                 PUT/DELETE /api/keys/{id}     # 新增单个 key（名称必填、同提供商内唯一）；GET ?reveal=1 返回明文
 GET/POST         /api/models               PUT/DELETE /api/models/{id}
 GET/POST         /api/routes               PUT/DELETE /api/routes/{id}
 
 # 健康与恢复
-GET              /api/health               # 全量状态：模型熔断态、key 态、池派生态、冷却倒计时
+GET              /api/health               # 全量状态：模型熔断态、key 态、冷却倒计时
 POST             /api/models/{id}/enable   # 手动解禁（重置 fail_count/status）
 POST             /api/models/{id}/disable
-POST             /api/keys/{id}/enable
-POST             /api/keys/{id}/disable
+# 密钥启停无独立端点：PUT /api/keys/{id} 可改 name/key_value/status（回传脱敏值则不修改 key_value）
 
 # 统计查询
 GET  /api/stats/overview?from=&to=            # 总次数/成功率/token/费用/平均TTFT/平均耗时/p95
-GET  /api/stats/timeseries?dim=&from=&to=&bucket=1h   # dim: route|model|provider|pool|key|status
+GET  /api/stats/timeseries?dim=&from=&to=&bucket=1h   # dim: route|model|provider|key|status
 GET  /api/stats/breakdown?dim=&from=&to=     # 按维度分组聚合（含错误率、token、费用、延迟分位）
 
 # 请求日志
@@ -387,7 +371,7 @@ GET/PUT  /api/settings                        # §9 全部配置项；保存即�
 | 时间 | created_at（支持任意时间窗、bucket 聚合） |
 | 逻辑模型 | route |
 | 真实模型 / 提供商 | model / provider |
-| 密钥池 / 密钥 | pool / key_id（可算单 key 错误率、使用倾斜） |
+| 密钥 | key_id（可算单 key 错误率、使用倾斜） |
 | 成败 | status（success/error/client_error）+ error_code |
 | token | prompt_tokens / completion_tokens / tokens_estimated |
 | 延迟 | ttft_ms（首 token）/ total_ms |
@@ -445,9 +429,9 @@ GET/PUT  /api/settings                        # §9 全部配置项；保存即�
 | 页面 | 内容 |
 |---|---|
 | Dashboard | 今日请求量/成功率/token/费用卡片；TTFT 与耗时趋势图；后端健康卡片（熔断态一目了然，禁用项红色+解禁按钮） |
-| 配置中心 | 左右布局：左侧提供商卡片（选中高亮、编辑/删除）；右侧 Tab = 模型 / 密钥池，内容随左侧选中过滤。模型表单含上游协议（openai/responses/anthropic）+ 密钥池多选 |
+| 配置中心 | 左右布局：左侧提供商卡片（选中高亮、编辑/删除）；右侧 Tab = 模型 / 密钥，内容随左侧选中过滤。模型表单含上游协议（openai/responses/anthropic）+ 绑定密钥多选 |
 | 路由管理 | 逻辑 modelId CRUD + 目标模型加权编辑器（可视化权重占比条） |
-| 统计报表 | 维度切换（路由/模型/提供商/池/key/状态）+ 时间范围；分位数延迟；错误码分布 |
+| 统计报表 | 维度切换（路由/模型/提供商/key/状态）+ 时间范围；分位数延迟；错误码分布 |
 | 请求日志 | 筛选列表；详情抽屉（元数据 + 捕获内容查看，未开启时明确提示） |
 | 设置 | 全部配置项表单；危险操作（清空统计）二次确认 |
 
@@ -471,7 +455,7 @@ OmniGate/
 ├── internal/
 │   ├── store/                     # SQLite 初始化、GORM 模型、迁移
 │   ├── config/                    # app_config 读写 + 快照构建 + 热更新事件
-│   ├── router/                    # 三级选择算法（目标→池→key）
+│   ├── router/                    # 两级选择算法（模型→key）
 │   ├── breaker/                   # 模型级阶梯状态机 + key 状态流转
 │   ├── proxy/                     # OpenAI 兼容转发、SSE 透传、重试转移
 │   ├── stats/                     # 请求日志写入、聚合查询、成本计算
@@ -487,9 +471,9 @@ OmniGate/
 
 | 阶段 | 内容 | 验收标准 |
 |---|---|---|
-| M1 脚手架 | 项目结构、建表迁移、实体 CRUD API、配置快照机制 | curl 完成 provider/pool/key/model/route 全链路配置，保存即生效 |
-| M2 代理核心 | 三级加权选择、转发、SSE 透传、token/延迟统计落库 | 两个不同真实模型按 7:3 分流（100 次采样偏差 <10%），流式可用 |
-| M3 熔断重试 | 阶梯状态机、三级转移、全不可用报错、手动恢复 | mock 上游注入 超时/429/401 验证全部路径与状态转移 |
+| M1 脚手架 | 项目结构、建表迁移、实体 CRUD API、配置快照机制 | curl 完成 provider/key/model/route 全链路配置，保存即生效 |
+| M2 代理核心 | 两级加权选择、转发、SSE 透传、token/延迟统计落库 | 两个不同真实模型按 7:3 分流（100 次采样偏差 <10%），流式可用 |
+| M3 熔断重试 | 阶梯状态机、失败转移、全不可用报错、手动恢复 | mock 上游注入 超时/429/401 验证全部路径与状态转移 |
 | M4 Web UI | React+AntD 8 个页面全部完成 | 浏览器完成全部管理操作与统计查看 |
 | M5 收尾 | 内容捕获、保留期清理、单元/集成测试 | 覆盖选择算法与状态机的测试通过 |
 

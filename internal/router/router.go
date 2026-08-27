@@ -1,4 +1,4 @@
-// Package router 实现三级选择：路由目标(加权) → 密钥池(加权) → key(轮询)。
+// Package router 实现请求的两级选择：路由目标模型加权随机，模型绑定密钥轮询。
 package router
 
 import (
@@ -16,7 +16,6 @@ import (
 type Attempt struct {
 	Model    store.Model
 	Provider store.Provider
-	Pool     store.KeyPool
 	Key      store.ApiKey
 }
 
@@ -26,19 +25,29 @@ type Snapshot struct {
 	Targets   []store.RouteTarget
 	Models    map[int64]store.Model
 	Providers map[int64]store.Provider
-	Pools     map[int64][]store.KeyPool
-	Keys      map[int64][]store.ApiKey
+	Keys      map[int64][]store.ApiKey // modelID → 绑定密钥
 	Weights   map[int64]int
 }
 
-// Selector 无状态加权选择器；轮询游标按池全局共享。
+// Selector 加权选择器；轮询游标按模型全局共享，另维护会话亲和记忆（会话 → 上次成功模型）。
 type Selector struct {
 	db *store.Store
 	rr sync.Map
+	affMu sync.Mutex
+	aff   map[string]affinityEntry
+}
+
+// affinityCap 亲和表容量上限。写满时先清过期条目，仍满则整体重置——
+// 亲和是尽力而为的短期记忆，随时可由后续请求重建，不值得引入复杂淘汰结构。
+const affinityCap = 1 << 16
+
+type affinityEntry struct {
+	modelID  int64
+	expireAt int64
 }
 
 func NewSelector(db *store.Store) *Selector {
-	return &Selector{db: db}
+	return &Selector{db: db, aff: map[string]affinityEntry{}}
 }
 
 func (s *Selector) LoadSnapshot(routeName string) (*Snapshot, bool, error) {
@@ -53,8 +62,7 @@ func (s *Selector) LoadSnapshot(routeName string) (*Snapshot, bool, error) {
 	snap := &Snapshot{
 		Route: route, Targets: route.Targets,
 		Models: map[int64]store.Model{}, Providers: map[int64]store.Provider{},
-		Pools: map[int64][]store.KeyPool{}, Keys: map[int64][]store.ApiKey{},
-		Weights: map[int64]int{},
+		Keys: map[int64][]store.ApiKey{}, Weights: map[int64]int{},
 	}
 	modelIDs := make([]int64, 0, len(route.Targets))
 	for _, t := range route.Targets {
@@ -82,37 +90,43 @@ func (s *Selector) LoadSnapshot(routeName string) (*Snapshot, bool, error) {
 	for _, p := range providers {
 		snap.Providers[p.ID] = p
 	}
-	var mps []store.ModelPool
-	if err := s.db.DB.Where("model_id IN ?", modelIDs).Find(&mps).Error; err != nil {
+	if err := loadModelKeys(s.db.DB, snap, modelIDs); err != nil {
 		return nil, false, err
 	}
-	poolIDs := make([]int64, 0, len(mps))
-	for _, mp := range mps {
-		poolIDs = append(poolIDs, mp.PoolID)
-	}
-	if len(poolIDs) > 0 {
-		var pools []store.KeyPool
-		if err := s.db.DB.Where("id IN ?", poolIDs).Find(&pools).Error; err != nil {
-			return nil, false, err
-		}
-		poolByID := map[int64]store.KeyPool{}
-		for _, p := range pools {
-			poolByID[p.ID] = p
-		}
-		for _, mp := range mps {
-			if p, ok := poolByID[mp.PoolID]; ok {
-				snap.Pools[mp.ModelID] = append(snap.Pools[mp.ModelID], p)
-			}
-		}
-		var keys []store.ApiKey
-		if err := s.db.DB.Where("pool_id IN ?", poolIDs).Order("id").Find(&keys).Error; err != nil {
-			return nil, false, err
-		}
-		for _, k := range keys {
-			snap.Keys[k.PoolID] = append(snap.Keys[k.PoolID], k)
-		}
-	}
 	return snap, true, nil
+}
+
+// loadModelKeys 载入模型 × 密钥绑定；防御性过滤掉与模型不同提供商的 key。
+func loadModelKeys(db *gorm.DB, snap *Snapshot, modelIDs []int64) error {
+	var mks []store.ModelKey
+	if err := db.Where("model_id IN ?", modelIDs).Find(&mks).Error; err != nil {
+		return err
+	}
+	keyIDs := make([]int64, 0, len(mks))
+	for _, mk := range mks {
+		keyIDs = append(keyIDs, mk.KeyID)
+	}
+	if len(keyIDs) == 0 {
+		return nil
+	}
+	var keys []store.ApiKey
+	if err := db.Where("id IN ?", keyIDs).Order("id").Find(&keys).Error; err != nil {
+		return err
+	}
+	keyByID := map[int64]store.ApiKey{}
+	for _, k := range keys {
+		keyByID[k.ID] = k
+	}
+	for _, mk := range mks {
+		m, ok := snap.Models[mk.ModelID]
+		if !ok {
+			continue
+		}
+		if k, ok := keyByID[mk.KeyID]; ok && k.ProviderID == m.ProviderID {
+			snap.Keys[mk.ModelID] = append(snap.Keys[mk.ModelID], k)
+		}
+	}
+	return nil
 }
 
 // ModelAvailable 冷却到期即视为半开可用；disabled 永不可用。
@@ -148,8 +162,8 @@ func availableKeys(keys []store.ApiKey, tried map[int64]bool, now time.Time) []s
 	return out
 }
 
-func (s *Selector) nextRR(poolID int64, n int) int {
-	v, _ := s.rr.LoadOrStore(poolID, new(atomic.Uint64))
+func (s *Selector) nextRR(modelID int64, n int) int {
+	v, _ := s.rr.LoadOrStore(modelID, new(atomic.Uint64))
 	return int(v.(*atomic.Uint64).Add(1) % uint64(n))
 }
 
@@ -168,12 +182,12 @@ func weightedPick(weights []int) int {
 	return len(weights) - 1
 }
 
-// Pick 在排除 tried 中 key 的候选集内做三级选择；无候选返回 ok=false。
-func (s *Selector) Pick(snap *Snapshot, tried map[int64]bool, now time.Time) (Attempt, bool) {
+// Pick 在排除 tried 中 key 的候选集内做两级选择（模型加权 → 模型内 key 轮询）；无候选返回 ok=false。
+// preferModel 为会话亲和的首选模型（0 表示无）：可用时直接锁定，不可用时无感落入加权路径。
+func (s *Selector) Pick(snap *Snapshot, tried map[int64]bool, now time.Time, preferModel int64) (Attempt, bool) {
 	type candModel struct {
 		model store.Model
-		pools []store.KeyPool
-		keys  map[int64][]store.ApiKey
+		keys  []store.ApiKey
 	}
 	var cands []candModel
 	var weights []int
@@ -185,34 +199,63 @@ func (s *Selector) Pick(snap *Snapshot, tried map[int64]bool, now time.Time) (At
 		if _, hasProvider := snap.Providers[m.ProviderID]; !hasProvider {
 			continue
 		}
-		cm := candModel{model: m, keys: map[int64][]store.ApiKey{}}
-		for _, p := range snap.Pools[m.ID] {
-			if ks := availableKeys(snap.Keys[p.ID], tried, now); len(ks) > 0 {
-				cm.pools = append(cm.pools, p)
-				cm.keys[p.ID] = ks
+		if ks := availableKeys(snap.Keys[m.ID], tried, now); len(ks) > 0 {
+			if preferModel != 0 && m.ID == preferModel {
+				key := ks[s.nextRR(m.ID, len(ks))]
+				return Attempt{Model: m, Provider: snap.Providers[m.ProviderID], Key: key}, true
 			}
+			cands = append(cands, candModel{model: m, keys: ks})
+			weights = append(weights, snap.Weights[m.ID])
 		}
-		if len(cm.pools) == 0 {
-			continue
-		}
-		cands = append(cands, cm)
-		weights = append(weights, snap.Weights[m.ID])
 	}
 	if len(cands) == 0 {
 		return Attempt{}, false
 	}
 	cm := cands[weightedPick(weights)]
-	poolWeights := make([]int, len(cm.pools))
-	for i, p := range cm.pools {
-		poolWeights[i] = p.Weight
-	}
-	pool := cm.pools[weightedPick(poolWeights)]
-	keys := cm.keys[pool.ID]
-	key := keys[s.nextRR(pool.ID, len(keys))]
-	return Attempt{Model: cm.model, Provider: snap.Providers[cm.model.ProviderID], Pool: pool, Key: key}, true
+	key := cm.keys[s.nextRR(cm.model.ID, len(cm.keys))]
+	return Attempt{Model: cm.model, Provider: snap.Providers[cm.model.ProviderID], Key: key}, true
 }
 
-// LoadSnapshotByModel 为探测场景构建单模型视图（模型+提供商+绑定池与其 key）。
+// Affinity 返回会话上次成功落地的模型；过期条目惰性删除。
+func (s *Selector) Affinity(key string, now time.Time) (int64, bool) {
+	s.affMu.Lock()
+	defer s.affMu.Unlock()
+	e, ok := s.aff[key]
+	if !ok {
+		return 0, false
+	}
+	if e.expireAt <= now.Unix() {
+		delete(s.aff, key)
+		return 0, false
+	}
+	return e.modelID, true
+}
+
+// SetAffinity 记录会话 → 模型映射，刷新 TTL。
+func (s *Selector) SetAffinity(key string, modelID int64, ttl time.Duration, now time.Time) {
+	if ttl <= 0 {
+		return
+	}
+	s.affMu.Lock()
+	defer s.affMu.Unlock()
+	if len(s.aff) >= affinityCap && !s.sweepExpiredLocked(now) {
+		s.aff = map[string]affinityEntry{}
+	}
+	s.aff[key] = affinityEntry{modelID: modelID, expireAt: now.Add(ttl).Unix()}
+}
+
+func (s *Selector) sweepExpiredLocked(now time.Time) bool {
+	swept := false
+	for k, e := range s.aff {
+		if e.expireAt <= now.Unix() {
+			delete(s.aff, k)
+			swept = true
+		}
+	}
+	return swept
+}
+
+// LoadSnapshotByModel 为探测场景构建单模型视图（模型+提供商+绑定密钥）。
 func (s *Selector) LoadSnapshotByModel(modelID int64) (*Snapshot, bool, error) {
 	var m store.Model
 	err := s.db.DB.First(&m, modelID).Error
@@ -229,55 +272,25 @@ func (s *Selector) LoadSnapshotByModel(modelID int64) (*Snapshot, bool, error) {
 	snap := &Snapshot{
 		Models:    map[int64]store.Model{m.ID: m},
 		Providers: map[int64]store.Provider{provider.ID: provider},
-		Pools:     map[int64][]store.KeyPool{},
 		Keys:      map[int64][]store.ApiKey{},
 		Weights:   map[int64]int{m.ID: 1},
 		Targets:   []store.RouteTarget{{ModelID: m.ID, Weight: 1}},
 	}
-	var mps []store.ModelPool
-	if err := s.db.DB.Where("model_id = ?", m.ID).Find(&mps).Error; err != nil {
+	if err := loadModelKeys(s.db.DB, snap, []int64{m.ID}); err != nil {
 		return nil, false, err
-	}
-	poolIDs := make([]int64, 0, len(mps))
-	for _, mp := range mps {
-		poolIDs = append(poolIDs, mp.PoolID)
-	}
-	if len(poolIDs) > 0 {
-		var pools []store.KeyPool
-		if err := s.db.DB.Where("id IN ?", poolIDs).Find(&pools).Error; err != nil {
-			return nil, false, err
-		}
-		for _, p := range pools {
-			snap.Pools[m.ID] = append(snap.Pools[m.ID], p)
-		}
-		var keys []store.ApiKey
-		if err := s.db.DB.Where("pool_id IN ?", poolIDs).Order("id").Find(&keys).Error; err != nil {
-			return nil, false, err
-		}
-		for _, k := range keys {
-			snap.Keys[k.PoolID] = append(snap.Keys[k.PoolID], k)
-		}
 	}
 	return snap, true, nil
 }
 
-// PickForModel 在单模型快照内选池与 key（探测用；逻辑与 Pick 的②③级一致）。
+// PickForModel 在单模型快照内选 key（探测用；轮询语义与 Pick 第二级一致）。
 func (s *Selector) PickForModel(snap *Snapshot, now time.Time) (Attempt, bool) {
 	m := snap.Targets[0].ModelID
-	var poolWeights []int
-	for _, p := range snap.Pools[m] {
-		poolWeights = append(poolWeights, p.Weight)
-	}
-	if len(snap.Pools[m]) == 0 {
-		return Attempt{}, false
-	}
-	pool := snap.Pools[m][weightedPick(poolWeights)]
-	keys := availableKeys(snap.Keys[pool.ID], nil, now)
+	keys := availableKeys(snap.Keys[m], nil, now)
 	if len(keys) == 0 {
 		return Attempt{}, false
 	}
-	key := keys[s.nextRR(pool.ID, len(keys))]
-	return Attempt{Model: snap.Models[m], Provider: snap.Providers[snap.Models[m].ProviderID], Pool: pool, Key: key}, true
+	key := keys[s.nextRR(m, len(keys))]
+	return Attempt{Model: snap.Models[m], Provider: snap.Providers[snap.Models[m].ProviderID], Key: key}, true
 }
 
 // BackendStatus 用于 all_backends_unavailable 错误详情。
@@ -302,21 +315,12 @@ func BackendStatuses(snap *Snapshot, now time.Time) []BackendStatus {
 		case m.Status == "cooldown" && m.CooldownUntil > now.Unix():
 			bs.RetryAfter = m.CooldownUntil - now.Unix()
 		default:
-			if len(availableKeys(snap.KeysFor(m.ID), nil, now)) == 0 && len(snap.Pools[m.ID]) > 0 {
+			if len(snap.Keys[m.ID]) > 0 && len(availableKeys(snap.Keys[m.ID], nil, now)) == 0 {
 				bs.Status = "no_available_key"
-				bs.Reason = "所有绑定密钥池内无可用 key"
+				bs.Reason = "所有绑定密钥不可用（禁用/冷却中）"
 			}
 		}
 		out = append(out, bs)
-	}
-	return out
-}
-
-// KeysFor 供 BackendStatuses 汇总模型全部候选 key。
-func (s *Snapshot) KeysFor(modelID int64) []store.ApiKey {
-	var out []store.ApiKey
-	for _, p := range s.Pools[modelID] {
-		out = append(out, s.Keys[p.ID]...)
 	}
 	return out
 }

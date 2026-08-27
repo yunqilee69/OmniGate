@@ -80,10 +80,8 @@ func TestKeyDispositions(t *testing.T) {
 	_ = rt
 	p := store.Provider{Name: "zhipu", BaseURL: "https://x"}
 	st.DB.Create(&p)
-	pool := store.KeyPool{ProviderID: p.ID, Name: "main"}
-	st.DB.Create(&pool)
-	bad := store.ApiKey{PoolID: pool.ID, KeyValue: "sk-bad"}
-	limited := store.ApiKey{PoolID: pool.ID, KeyValue: "sk-lim"}
+	bad := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-bad"}
+	limited := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-lim"}
 	st.DB.Create(&bad)
 	st.DB.Create(&limited)
 

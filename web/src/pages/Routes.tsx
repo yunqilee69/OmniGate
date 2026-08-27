@@ -133,7 +133,7 @@ export default function RoutesPage() {
       <Modal title={editing ? '编辑路由' : '新增路由'} open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose width={640}>
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="逻辑 modelId（客户端请求时填写）" rules={[{ required: true }]}>
-            <Input placeholder="如 glm-pool" />
+            <Input placeholder="如 glm" />
           </Form.Item>
           <Form.Item name="remark" label="备注"><Input /></Form.Item>
           <Form.Item label="目标模型与权重">

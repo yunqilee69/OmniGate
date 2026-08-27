@@ -59,17 +59,17 @@ func UpsertDaily(db *gorm.DB, log *RequestLog) {
 	now := time.Now().Unix()
 	err := db.Exec(`
 INSERT INTO request_log_daily
-  (day, route, model, provider, pool, status,
+  (day, route, model, provider, status,
    total, success, errors, prompt_tokens, completion_tokens, cost, retries_sum,
    ttftb0, ttftb1, ttftb2, ttftb3, ttftb4, ttftb5, ttftb6, ttftb7, ttftb8, ttftb9,
    totalb0, totalb1, totalb2, totalb3, totalb4, totalb5, totalb6, totalb7, totalb8, totalb9,
    updated_at)
-VALUES (?,?,?,?,?,?,
+VALUES (?,?,?,?,?,
         1,?,?,?,?,?,?,
         ?,?,?,?,?,?,?,?,?,?,
         ?,?,?,?,?,?,?,?,?,?,
         ?)
-ON CONFLICT(day, route, model, provider, pool, status) DO UPDATE SET
+ON CONFLICT(day, route, model, provider, status) DO UPDATE SET
   total            = total            + 1,
   success          = success          + excluded.success,
   errors           = errors           + excluded.errors,
@@ -89,7 +89,7 @@ ON CONFLICT(day, route, model, provider, pool, status) DO UPDATE SET
   totalb8 = totalb8 + excluded.totalb8, totalb9 = totalb9 + excluded.totalb9,
   updated_at       = excluded.updated_at
 `,
-		day, log.Route, log.Model, log.Provider, log.Pool, status,
+		day, log.Route, log.Model, log.Provider, status,
 		successDelta, errorDelta, log.PromptTokens, log.CompletionTokens, log.Cost, log.Retries,
 		boolToInt64(ti == 0), boolToInt64(ti == 1), boolToInt64(ti == 2), boolToInt64(ti == 3),
 		boolToInt64(ti == 4), boolToInt64(ti == 5), boolToInt64(ti == 6), boolToInt64(ti == 7),
@@ -121,7 +121,7 @@ SELECT
   (CAST(strftime('%Y', created_at, 'unixepoch') AS INTEGER)) * 10000
 + (CAST(strftime('%m', created_at, 'unixepoch') AS INTEGER)) * 100
 + (CAST(strftime('%d', created_at, 'unixepoch') AS INTEGER))         AS day,
-  route, model, provider, COALESCE(pool,'') AS pool, status,
+  route, model, provider, status,
   COUNT(*) AS total,
   SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
   SUM(CASE WHEN status='error'   THEN 1 ELSE 0 END) AS errors,
@@ -130,13 +130,13 @@ SELECT
   COALESCE(SUM(cost),0)              AS cost,
   COALESCE(SUM(retries),0)           AS retries_sum
 FROM request_log
-GROUP BY day, route, model, provider, pool, status`).Rows()
+GROUP BY day, route, model, provider, status`).Rows()
 	if err != nil {
 		return err
 	}
 	type agg struct {
 		Day              int64
-		Route, Model, Provider, Pool, Status string
+		Route, Model, Provider, Status string
 		Total, Success, Errors, PTok, CTok, RetriesSum int64
 		Cost             float64
 	}
@@ -144,7 +144,7 @@ GROUP BY day, route, model, provider, pool, status`).Rows()
 	var aggs []agg
 	for rows.Next() {
 		var a agg
-		if err := rows.Scan(&a.Day, &a.Route, &a.Model, &a.Provider, &a.Pool, &a.Status,
+		if err := rows.Scan(&a.Day, &a.Route, &a.Model, &a.Provider, &a.Status,
 			&a.Total, &a.Success, &a.Errors, &a.PTok, &a.CTok, &a.Cost, &a.RetriesSum); err != nil {
 			return err
 		}
@@ -160,7 +160,7 @@ SELECT
   (CAST(strftime('%Y', created_at, 'unixepoch') AS INTEGER)) * 10000
 + (CAST(strftime('%m', created_at, 'unixepoch') AS INTEGER)) * 100
 + (CAST(strftime('%d', created_at, 'unixepoch') AS INTEGER))         AS day,
-  route, model, provider, COALESCE(pool,'') AS pool, status,
+  route, model, provider, status,
   SUM(CASE WHEN ttft_ms < 50                       THEN 1 ELSE 0 END) AS t0,
   SUM(CASE WHEN ttft_ms >= 50     AND ttft_ms < 100     THEN 1 ELSE 0 END) AS t1,
   SUM(CASE WHEN ttft_ms >= 100    AND ttft_ms < 200     THEN 1 ELSE 0 END) AS t2,
@@ -182,17 +182,17 @@ SELECT
   SUM(CASE WHEN total_ms >= 120000 AND total_ms < 300000 THEN 1 ELSE 0 END) AS T8,
   SUM(CASE WHEN total_ms >= 300000                       THEN 1 ELSE 0 END) AS T9
 FROM request_log
-GROUP BY day, route, model, provider, pool, status`).Rows()
+GROUP BY day, route, model, provider, status`).Rows()
 	if err != nil {
 		return err
 	}
-	type histKey struct{ Day int64; Route, Model, Provider, Pool, Status string }
+	type histKey struct{ Day int64; Route, Model, Provider, Status string }
 	hists := map[histKey][20]int64{}
 	defer histRows.Close()
 	for histRows.Next() {
 		var k histKey
 		var h [20]int64
-		if err := histRows.Scan(&k.Day, &k.Route, &k.Model, &k.Provider, &k.Pool, &k.Status,
+		if err := histRows.Scan(&k.Day, &k.Route, &k.Model, &k.Provider, &k.Status,
 			&h[0], &h[1], &h[2], &h[3], &h[4], &h[5], &h[6], &h[7], &h[8], &h[9],
 			&h[10], &h[11], &h[12], &h[13], &h[14], &h[15], &h[16], &h[17], &h[18], &h[19]); err != nil {
 			return err
@@ -204,16 +204,16 @@ GROUP BY day, route, model, provider, pool, status`).Rows()
 	tx := db.Begin()
 	defer tx.Rollback()
 	for _, a := range aggs {
-		h := hists[histKey{a.Day, a.Route, a.Model, a.Provider, a.Pool, a.Status}]
+		h := hists[histKey{a.Day, a.Route, a.Model, a.Provider, a.Status}]
 		err := tx.Exec(`
 INSERT INTO request_log_daily
-  (day, route, model, provider, pool, status,
+  (day, route, model, provider, status,
    total, success, errors, prompt_tokens, completion_tokens, cost, retries_sum,
    ttftb0, ttftb1, ttftb2, ttftb3, ttftb4, ttftb5, ttftb6, ttftb7, ttftb8, ttftb9,
    totalb0, totalb1, totalb2, totalb3, totalb4, totalb5, totalb6, totalb7, totalb8, totalb9,
    updated_at)
-VALUES (?,?,?,?,?,?, ?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?, ?)
-ON CONFLICT(day, route, model, provider, pool, status) DO UPDATE SET
+VALUES (?,?,?,?,?, ?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?, ?)
+ON CONFLICT(day, route, model, provider, status) DO UPDATE SET
   total=excluded.total, success=excluded.success, errors=excluded.errors,
   prompt_tokens=excluded.prompt_tokens, completion_tokens=excluded.completion_tokens,
   cost=excluded.cost, retries_sum=excluded.retries_sum,
@@ -224,7 +224,7 @@ ON CONFLICT(day, route, model, provider, pool, status) DO UPDATE SET
   totalb4=excluded.totalb4, totalb5=excluded.totalb5, totalb6=excluded.totalb6, totalb7=excluded.totalb7,
   totalb8=excluded.totalb8, totalb9=excluded.totalb9,
   updated_at=excluded.updated_at`,
-			a.Day, a.Route, a.Model, a.Provider, a.Pool, a.Status,
+			a.Day, a.Route, a.Model, a.Provider, a.Status,
 			a.Total, a.Success, a.Errors, a.PTok, a.CTok, a.Cost, a.RetriesSum,
 			h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8], h[9],
 			h[10], h[11], h[12], h[13], h[14], h[15], h[16], h[17], h[18], h[19],

@@ -10,116 +10,94 @@ import (
 	"github.com/cloudomni/omnigate/internal/store"
 )
 
-type keyListResp struct {
-	keyResp
-	PoolName string `json:"pool_name"`
+// keyResp ApiKey 的对外展示：内嵌实体（KeyValue 带 json:"-"）+ 脱敏值；reveal=1 时附带明文
+//（本地单人场景，明文仅供配置页“显示密钥”按钮使用）。
+type keyResp struct {
+	store.ApiKey
+	KeyValueMasked string  `json:"key_value"`
+	KeyValuePlain  *string `json:"key_value_plain,omitempty"`
 }
 
 type keyCreateReq struct {
-	PoolID   int64  `json:"pool_id"`
-	Keys     string `json:"keys"`      // 批量导入：换行分隔
-	KeyValue string `json:"key_value"` // 单个导入
-	Name     string `json:"name"`
+	ProviderID int64  `json:"provider_id"`
+	KeyValue   string `json:"key_value"`
+	Name       string `json:"name"`
 }
 
-func (s *Server) listKeys(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) listKeys(w http.ResponseWriter, r *http.Request) {
 	var keys []store.ApiKey
 	if err := s.store.DB.Order("id").Find(&keys).Error; err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	var pools []store.KeyPool
-	if err := s.store.DB.Find(&pools).Error; err != nil {
-		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
-		return
-	}
-	poolName := map[int64]string{}
-	for _, p := range pools {
-		poolName[p.ID] = p.Name
-	}
-	out := make([]keyListResp, 0, len(keys))
+	reveal := r.URL.Query().Get("reveal") == "1"
+	out := make([]keyResp, 0, len(keys))
 	for _, k := range keys {
-		out = append(out, keyListResp{
-			keyResp:  keyResp{ApiKey: k, KeyValueMasked: maskKey(k.KeyValue)},
-			PoolName: poolName[k.PoolID],
-		})
+		item := keyResp{ApiKey: k, KeyValueMasked: maskKey(k.KeyValue)}
+		if reveal {
+			plain := k.KeyValue
+			item.KeyValuePlain = &plain
+		}
+		out = append(out, item)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// createKeys 支持单发（key_value）与批量（keys，换行分隔）导入；请求内与库内重复值自动跳过。
+// createKeys 新增单个密钥：名称必填且同提供商内唯一；密钥值重复返回 409。
 func (s *Server) createKeys(w http.ResponseWriter, r *http.Request) {
 	var req keyCreateReq
 	if err := decodeBody(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	if req.PoolID <= 0 {
-		writeErr(w, http.StatusBadRequest, "bad_request", "pool_id is required")
+	if req.ProviderID <= 0 {
+		writeErr(w, http.StatusBadRequest, "bad_request", "provider_id is required")
 		return
 	}
-	var pool store.KeyPool
-	if err := s.store.DB.First(&pool, req.PoolID).Error; err != nil {
+	var provider store.Provider
+	if err := s.store.DB.First(&provider, req.ProviderID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			writeErr(w, http.StatusNotFound, "not_found", "pool not found")
+			writeErr(w, http.StatusNotFound, "not_found", "provider not found")
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	var values []string
-	seen := map[string]bool{}
-	add := func(v string) {
-		v = strings.TrimSpace(v)
-		if v != "" && !seen[v] {
-			seen[v] = true
-			values = append(values, v)
-		}
-	}
-	for _, line := range strings.Split(req.Keys, "\n") {
-		add(line)
-	}
-	add(req.KeyValue)
-	if len(values) == 0 {
-		writeErr(w, http.StatusBadRequest, "bad_request", "no keys provided (use key_value or newline-separated keys)")
+	name := strings.TrimSpace(req.Name)
+	value := strings.TrimSpace(req.KeyValue)
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "name is required")
 		return
 	}
-	var existing []store.ApiKey
-	if err := s.store.DB.Where("pool_id = ? AND key_value IN ?", req.PoolID, values).Find(&existing).Error; err != nil {
+	if value == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "key_value is required")
+		return
+	}
+	var cnt int64
+	if err := s.store.DB.Model(&store.ApiKey{}).
+		Where("provider_id = ? AND name = ?", req.ProviderID, name).Count(&cnt).Error; err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	dup := map[string]bool{}
-	for _, e := range existing {
-		dup[e.KeyValue] = true
+	if cnt > 0 {
+		writeErr(w, http.StatusConflict, "conflict", "key name already exists in this provider")
+		return
 	}
-	var created []store.ApiKey
-	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
-		for _, v := range values {
-			if dup[v] {
-				continue
-			}
-			k := store.ApiKey{PoolID: req.PoolID, KeyValue: v, Name: req.Name, Status: "active"}
-			if err := tx.Create(&k).Error; err != nil {
-				return err
-			}
-			created = append(created, k)
-		}
-		return nil
-	})
-	if err != nil {
+	if err := s.store.DB.Model(&store.ApiKey{}).
+		Where("provider_id = ? AND key_value = ?", req.ProviderID, value).Count(&cnt).Error; err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	resp := make([]keyResp, len(created))
-	for i, k := range created {
-		resp[i] = keyResp{ApiKey: k, KeyValueMasked: maskKey(k.KeyValue)}
+	if cnt > 0 {
+		writeErr(w, http.StatusConflict, "conflict", "key value already exists in this provider")
+		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"created":            len(resp),
-		"skipped_duplicates": len(values) - len(resp),
-		"keys":               resp,
-	})
+	k := store.ApiKey{ProviderID: req.ProviderID, KeyValue: value, Name: name, Status: "active"}
+	if err := s.store.DB.Create(&k).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, keyResp{ApiKey: k, KeyValueMasked: maskKey(k.KeyValue)})
 }
 
 type keyUpdateReq struct {
@@ -155,10 +133,37 @@ func (s *Server) updateKey(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "bad_request", "key_value must not be empty")
 			return
 		}
+		var cnt int64
+		if err := s.store.DB.Model(&store.ApiKey{}).
+			Where("provider_id = ? AND key_value = ? AND id <> ?", k.ProviderID, v, k.ID).
+			Count(&cnt).Error; err != nil {
+			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+		if cnt > 0 {
+			writeErr(w, http.StatusConflict, "conflict", "key value already exists in this provider")
+			return
+		}
 		updates["key_value"] = v
 	}
 	if req.Name != nil {
-		updates["name"] = *req.Name
+		name := strings.TrimSpace(*req.Name)
+		if name == "" {
+			writeErr(w, http.StatusBadRequest, "bad_request", "name must not be empty")
+			return
+		}
+		var cnt int64
+		if err := s.store.DB.Model(&store.ApiKey{}).
+			Where("provider_id = ? AND name = ? AND id <> ?", k.ProviderID, name, k.ID).
+			Count(&cnt).Error; err != nil {
+			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+		if cnt > 0 {
+			writeErr(w, http.StatusConflict, "conflict", "key name already exists in this provider")
+			return
+		}
+		updates["name"] = name
 	}
 	if req.Status != nil {
 		switch *req.Status {
@@ -192,13 +197,25 @@ func (s *Server) deleteKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "invalid id")
 		return
 	}
-	res := s.store.DB.Delete(&store.ApiKey{}, id)
-	if res.Error != nil {
-		writeErr(w, http.StatusInternalServerError, "db_error", res.Error.Error())
+	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("key_id = ?", id).Delete(&store.ModelKey{}).Error; err != nil {
+			return err
+		}
+		res := tx.Delete(&store.ApiKey{}, id)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		writeErr(w, http.StatusNotFound, "not_found", "key not found")
 		return
 	}
-	if res.RowsAffected == 0 {
-		writeErr(w, http.StatusNotFound, "not_found", "key not found")
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})

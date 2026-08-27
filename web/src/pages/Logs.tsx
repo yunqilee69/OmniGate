@@ -11,9 +11,9 @@ interface Log {
   route: string
   model: string
   provider: string
-  pool: string
   key_id: number
   key_value_masked?: string
+  key_name?: string
   status: string
   error_code: string
   error_body?: string
@@ -82,7 +82,7 @@ export default function Logs() {
             { value: 'client_error', label: '客户端错误' },
           ]}
         />
-        <DatePicker.RangePicker value={range} onChange={(v) => v && setRange(v)} />
+        <DatePicker.RangePicker value={range} onChange={(v) => v?.[0] && v[1] && setRange([v[0], v[1]])} />
         <Button onClick={() => load()}>刷新</Button>
       </Space>
       <Table<Log>
@@ -105,11 +105,8 @@ export default function Logs() {
           render={(v) => <code>{v}</code>} />
         <Table.Column title="提供商/模型" dataIndex="model" width={200} ellipsis
           render={(_, l) => l.provider ? `${l.provider}/${l.model}` : l.model} />
-        <Table.Column title="池 / 密钥" width={260} render={(_, l: Log) => (
-          <div>
-            <div style={{ color: '#171717' }}>{l.pool || '-'}</div>
-            <code style={{ fontSize: 11, color: '#8f8f8f' }}>{l.key_value_masked || (l.key_id ? `#${l.key_id}` : '-')}</code>
-          </div>
+        <Table.Column title="密钥" width={180} render={(_, l: Log) => (
+          <code style={{ fontSize: 11, color: '#8f8f8f' }}>{l.key_name || l.key_value_masked || (l.key_id ? `#${l.key_id}` : '-')}</code>
         )} />
         <Table.Column title="状态" dataIndex="status" width={90} render={(_, l) => statusTag(l.status)} />
         <Table.Column title="错误码" dataIndex="error_code" width={90} />

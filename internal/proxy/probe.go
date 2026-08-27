@@ -60,7 +60,7 @@ func ProbeModel(db *store.Store, rt *config.RuntimeManager, modelID int64) Probe
 	sel := router.NewSelector(db)
 	snap, found, err := sel.LoadSnapshotByModel(m.ID)
 	if err != nil || !found {
-		res.ErrCode, res.Message = "no_key", "无绑定密钥池或密钥"
+		res.ErrCode, res.Message = "no_key", "未绑定密钥"
 		return res
 	}
 	att, ok := sel.PickForModel(snap, time.Now())

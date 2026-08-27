@@ -7,7 +7,7 @@
 [![Release](https://img.shields.io/github/v/release/cloudomni/omnigate)](https://github.com/cloudomni/omnigate/releases)
 [![MCP](https://img.shields.io/badge/MCP-规划中-orange)](#路线图)
 
-OmniGate 把多个模型提供方聚合成一个 OpenAI 兼容端点,提供加权负载均衡、密钥池轮询、阶梯熔断和多维统计,内嵌管理控制台——全部打包在一个 34 MB 的静态二进制里。
+OmniGate 把多个模型提供方聚合成一个 OpenAI 兼容端点,提供加权负载均衡、密钥轮询、阶梯熔断和多维统计,内嵌管理控制台——全部打包在一个 34 MB 的静态二进制里。
 
 ![banner](docs/images/banner.png)
 
@@ -18,9 +18,9 @@ OmniGate 把多个模型提供方聚合成一个 OpenAI 兼容端点,提供加�
 | | |
 |---|---|
 | **OpenAI 兼容代理** | `/v1/chat/completions(SSE 流式)`、`/v1/models`,`/v1/embeddings` 规划中 |
-| **三层路由** | 逻辑模型 → 加权选池 → 池内 key 轮询。请求 `glm-pool`,落地到背后任意真实模型 |
+| **两级路由** | 逻辑模型 → 加权选模型 → 模型内 key 轮询。请求 `glm`,落地到背后任意真实模型 |
 | **阶梯熔断** | 模型级 30s → 1m → 3m;key 级 401/403 立即禁用,429 短冷却 |
-| **多维统计** | 次数 / token / 首字延迟 / 总耗时 / 费用,按 路由·模型·提供方·池·key·状态·时间 聚合 |
+| **多维统计** | 次数 / token / 首字延迟 / 总耗时 / 费用,按 路由·模型·提供方·key·状态·时间 聚合 |
 | **隐私默认** | 只记元数据。请求内容捕获是显式开关(全局 + 按路由两级),默认关闭 |
 | **内嵌管理台** | React 18 + Ant Design 5,`go:embed` 嵌入二进制,无独立前端部署 |
 | **两层配置** | 启动层(监听地址、管理令牌)走 `config.yaml`;运行层(熔断/捕获/限流等)走 SQLite,管理界面保存即热生效 |
@@ -70,7 +70,7 @@ rm -rf ~/.omnigate        # 数据一并清理(可选)
 
 ```
 客户端(任意 OpenAI SDK)
-       │  POST /v1/chat/completions  model="glm-pool"
+       │  POST /v1/chat/completions  model="glm"
        ▼
 ┌────────────────────────── OmniGate(单进程) ──────────────────────────┐
 │                                                                       │
@@ -78,10 +78,10 @@ rm -rf ~/.omnigate        # 数据一并清理(可选)
 │  ┌────────────┐   ┌──────────────────────────┐   ┌─────────────────┐  │
 │  │ /v1/chat/  │──▶│ 解析逻辑 modelId          │   │  REST API       │  │
 │  │ completions│   │ → 加权选模型目标          │   │  实体 CRUD / 统计│  │
-│  │ /v1/models │   │ → 加权选池               │   └─────────┬───────┘  │
-│  └────────────┘   │ → 池内 key 轮询           │             │ 写库+事件 │
+│  │ /v1/models │   │ → key 轮询(按模型)        │   └─────────┬───────┘  │
+│  └────────────┘   │ → 熔断态 key 跳过         │             │ 写库+事件 │
 │        │          │ → 转发 + SSE 透传         │             ▼           │
-│        ▼          │ → 三级转移重试            │   ┌─────────────────┐   │
+│        ▼          │ → 失败转移重试            │   ┌─────────────────┐   │
 │  ┌────────────┐   └──────────┬───────────────┘   │ 配置快照        │   │
 │  │  统计埋点  │◀─────────────┘                   │ (atomic.Pointer)│   │
 │  └─────┬──────┘                                  └─────────────────┘   │
@@ -95,8 +95,8 @@ rm -rf ~/.omnigate        # 数据一并清理(可选)
        │                                │
        ▼                                ▼
   提供方 A(智谱)                提供方 B(任意 OpenAI 兼容)
-  ├─ 高级池 [k1..kN]             ├─ 池 X [k1..kM]
-  └─ 基础池 [k1..kK]             └─ ...
+  ├─ 密钥 [k1..kN]               ├─ 密钥 [k1..kM]
+  └─ ...                         └─ ...
 ```
 
 完整设计见 [`docs/design.md`](./docs/design.md)(实体模型、熔断状态机、重试策略、Schema、里程碑)。
@@ -144,8 +144,8 @@ admin:
 git clone https://github.com/cloudomni/omnigate
 cd omnigate
 
-./start.sh             # 开发模式:后端 :17778 + Vite 热更新 :17777
-./start.sh --prod      # 生产模式:后端 + 内嵌前端 :17778
+./start.sh             # 开发模式:后端 :17777 + Vite 热更新 :17778
+./start.sh --prod      # 生产模式:后端 + 内嵌前端 :17777
 ```
 
 只编后端:

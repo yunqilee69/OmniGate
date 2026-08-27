@@ -207,20 +207,21 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64) {
 
 var breakdownDims = map[string]string{
 	"route": "route", "model": "model", "provider": "provider",
-	"pool": "pool", "status": "status", "key": "CAST(key_id AS TEXT)",
+	"status": "status", "key": "CAST(key_id AS TEXT)",
 }
 
 func (s *Server) getStatsBreakdown(w http.ResponseWriter, r *http.Request) {
 	col, ok := breakdownDims[r.URL.Query().Get("dim")]
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "bad_request",
-			"dim must be one of route|model|provider|pool|status|key")
+			"dim must be one of route|model|provider|status|key")
 		return
 	}
 	from, to := parseTimeRange(r)
 	dayFrom, dayTo := dayRange(from, to)
 
-	if s.rollupHasData(dayFrom, dayTo) {
+	// request_log_daily 预聚合表没有 key 维度，dim=key 必须走原始表
+	if r.URL.Query().Get("dim") != "key" && s.rollupHasData(dayFrom, dayTo) {
 		s.breakdownFromRollup(w, col, dayFrom, dayTo)
 		return
 	}
@@ -316,6 +317,8 @@ func (s *Server) breakdownFromRaw(w http.ResponseWriter, col string, from, to in
 		AvgTTFT    float64 `json:"avg_ttft_ms"`
 		AvgTotal   float64 `json:"avg_total_ms"`
 		AvgRetries float64 `json:"avg_retries"`
+		KeyMasked  string  `json:"key_masked,omitempty"`
+		KeyName    string  `json:"key_name,omitempty"`
 	}
 	items := []item{}
 	for rows.Next() {
@@ -330,6 +333,31 @@ func (s *Server) breakdownFromRaw(w http.ResponseWriter, col string, from, to in
 		it.Dim = dim.String
 		it.AvgTTFT, it.AvgTotal = ttft.Float64, total.Float64
 		items = append(items, it)
+	}
+	// dim=key 的 dim 是裸 key_id，附名称与脱敏值让客户端不查库即可辨认密钥
+	if col == breakdownDims["key"] {
+		ids := make([]int64, 0, len(items))
+		for i := range items {
+			if n, err := strconv.ParseInt(items[i].Dim, 10, 64); err == nil && n > 0 {
+				ids = append(ids, n)
+			}
+		}
+		type keyLabel struct{ masked, name string }
+		labels := map[int64]keyLabel{}
+		if len(ids) > 0 {
+			var keys []store.ApiKey
+			if err := s.store.DB.Select("id", "key_value", "name").Where("id IN ?", ids).Find(&keys).Error; err == nil {
+				for _, k := range keys {
+					labels[k.ID] = keyLabel{maskKey(k.KeyValue), k.Name}
+				}
+			}
+		}
+		for i := range items {
+			if n, err := strconv.ParseInt(items[i].Dim, 10, 64); err == nil {
+				items[i].KeyMasked = labels[n].masked
+				items[i].KeyName = labels[n].name
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, items)
 }
@@ -429,11 +457,12 @@ func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
 
 	type logRow struct {
 		store.RequestLog
-		RawKey string `gorm:"column:raw_key"`
+		RawKey  string `gorm:"column:raw_key"`
+		KeyName string `gorm:"column:key_name"`
 	}
 	var rows []logRow
 	if err := s.store.DB.Table("request_log r").
-		Select("r.*, COALESCE(k.key_value, '') AS raw_key").
+		Select("r.*, COALESCE(k.key_value, '') AS raw_key, COALESCE(k.name, '') AS key_name").
 		Joins("LEFT JOIN api_key k ON r.key_id = k.id").
 		Where(where, args...).Order("r.id DESC").Limit(pageSize).Offset(offset).Find(&rows).Error; err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
@@ -442,10 +471,11 @@ func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
 	type logItem struct {
 		store.RequestLog
 		KeyValueMasked string `json:"key_value_masked"`
+		KeyName        string `json:"key_name"`
 	}
 	items := make([]logItem, 0, len(rows))
 	for _, r := range rows {
-		item := logItem{RequestLog: r.RequestLog, KeyValueMasked: maskKey(r.RawKey)}
+		item := logItem{RequestLog: r.RequestLog, KeyValueMasked: maskKey(r.RawKey), KeyName: r.KeyName}
 		items = append(items, item)
 	}
 	if items == nil {
@@ -482,10 +512,12 @@ func (s *Server) getLogByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	maskedKey := ""
+	keyName := ""
 	if log.KeyID > 0 {
 		var k store.ApiKey
 		if err := s.store.DB.First(&k, log.KeyID).Error; err == nil {
 			maskedKey = maskKey(k.KeyValue)
+			keyName = k.Name
 		}
 	}
 	var attempts []store.RequestAttempt
@@ -500,6 +532,7 @@ func (s *Server) getLogByID(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"log":              log,
 		"key_value_masked": maskedKey,
+		"key_name":         keyName,
 		"attempts":         attempts,
 	})
 }

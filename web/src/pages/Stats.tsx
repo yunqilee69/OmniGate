@@ -7,6 +7,8 @@ import { formatNumber, formatCost } from '../utils/format'
 
 interface Item {
   dim: string
+  key_masked?: string
+  key_name?: string
   total: number
   success: number
   errors: number
@@ -33,7 +35,6 @@ const dims = [
   { value: 'route', label: '路由' },
   { value: 'model', label: '模型' },
   { value: 'provider', label: '提供商' },
-  { value: 'pool', label: '密钥池' },
   { value: 'key', label: '密钥' },
   { value: 'status', label: '状态' },
 ]
@@ -141,7 +142,7 @@ export default function Stats() {
         <DatePicker.RangePicker
           style={{ marginLeft: 16 }}
           value={range}
-          onChange={(v) => v && setRange(v)}
+          onChange={(v) => v?.[0] && v[1] && setRange([v[0], v[1]])}
         />
       </Card>
       <Card title="每日请求趋势" style={{ marginBottom: 16 }}>
@@ -149,7 +150,11 @@ export default function Stats() {
       </Card>
       <Card title="维度明细">
         <Table<Item> rowKey="dim" dataSource={items} size="small" pagination={{ pageSize: 20 }}>
-          <Table.Column title="维度值" dataIndex="dim" render={(v) => (dim === 'key' ? `key#${v}` : v)} />
+            <Table.Column title="维度值" dataIndex="dim" render={(_, it: Item) => {
+              if (dim !== 'key') return it.dim
+              const label = it.key_name || it.key_masked
+              return label ? <code style={{ fontSize: 12 }}>{label}</code> : `key#${it.dim}`
+            }} />
           <Table.Column title="请求" dataIndex="total" sorter={(a: Item, b: Item) => a.total - b.total} />
           <Table.Column title="成功" dataIndex="success" />
           <Table.Column title="错误" dataIndex="errors" />
