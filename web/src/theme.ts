@@ -63,7 +63,13 @@ export const geistTheme: ThemeConfig = {
       itemSelectedColor: '#171717',
     },
     Input: { borderRadius: 6 },
-    Select: { borderRadius: 6 },
+    // 选中项用墨底白字（默认由 #171717 主色推导出 #575757 灰底，与 #4d4d4d 文字对比度仅 ~1.1:1，不可读）
+    Select: {
+      borderRadius: 6,
+      optionSelectedBg: '#171717',
+      optionSelectedColor: '#ffffff',
+      optionSelectedFontWeight: 500,
+    },
     Modal: { borderRadiusLG: 12 },
     Drawer: { borderRadiusLG: 12 },
     Tooltip: { borderRadius: 6 },
