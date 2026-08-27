@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # OmniGate 一键启动脚本
-#   ./start.sh          开发模式：后端 127.0.0.1:17778 + 前端 vite 热更新 17777
+#   ./start.sh          开发模式：后端 127.0.0.1:17777 + 前端 vite 热更新 17778
 #   ./start.sh --prod   生产模式：仅后端（内嵌前端产物），浏览器访问 17778
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -30,15 +30,48 @@ find_npm() {
   echo ""
 }
 
-port_busy() { ss -tln 2>/dev/null | grep -q ":$1 "; }
+port_busy() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -tln 2>/dev/null | grep -q ":$1 "
+  else
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+  fi
+}
 
 PIDS=()
+CLEANED=0
+# kill_tree 递归终止 pid 及其全部后代（macOS 无 setsid 且非组长时，组杀不可用，按进程树收割）
+kill_tree() {
+  local kids
+  kids=$(pgrep -P "$1" 2>/dev/null || true)
+  kill "$1" 2>/dev/null || true
+  for k in $kids; do kill_tree "$k"; done
+}
 cleanup() {
+  [ "$CLEANED" -eq 1 ] && return
+  CLEANED=1
   for pid in "${PIDS[@]:-}"; do
-    [ -n "$pid" ] && kill -- "-$pid" 2>/dev/null || true
+    [ -n "$pid" ] || continue
+    kill -- "-$pid" 2>/dev/null || true
+    kill_tree "$pid"
   done
+  # 脚本自身为组长（交互终端启动）时，整组带走兜底
+  if [ "$$" = "$(ps -o pgid= -p $$ | tr -d ' ')" ]; then
+    kill -- -$$ 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT INT TERM
+
+# run_bg 后台启动：有 setsid（Linux）时脱离为独立进程组；macOS 无 setsid 则普通后台，
+# 子进程留在脚本进程组内，由 cleanup 统一收割。
+run_bg() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" &
+  else
+    "$@" &
+  fi
+  PIDS+=($!)
+}
 
 wait_healthy() {
   local port=$1 name=$2 i=0
@@ -68,9 +101,8 @@ else
   # 开发模式:db / config 用仓库内本地路径(便于 rm -rf data/ 重置),
   # 日志走 stdout 由 shell 重定向到 backend.log(避免双重写文件)。
   echo "[..] 启动后端 (db: $DATA_DIR/omnigate.db)"
-  setsid "$BIN" --db "$DATA_DIR/omnigate.db" --config "$ROOT/config.yaml" --log stdout \
-    > "$LOG_DIR/backend.log" 2>&1 &
-  PIDS+=($!)
+  run_bg "$BIN" --db "$DATA_DIR/omnigate.db" --config "$ROOT/config.yaml" --log stdout \
+    > "$LOG_DIR/backend.log" 2>&1
   wait_healthy "$BACKEND_PORT" "后端"
 fi
 
@@ -98,8 +130,7 @@ else
       || (cd web && "$NPM_BIN" install --no-audit --no-fund --registry=https://registry.npmmirror.com)
   fi
   echo "[..] 启动前端 vite (热更新)"
-  setsid bash -c "cd '$ROOT/web' && '$NPM_BIN' run dev" > "$LOG_DIR/frontend.log" 2>&1 &
-  PIDS+=($!)
+  run_bg bash -c "cd '$ROOT/web' && '$NPM_BIN' run dev" > "$LOG_DIR/frontend.log" 2>&1
   wait_healthy "$FRONTEND_PORT" "前端"
 fi
 
