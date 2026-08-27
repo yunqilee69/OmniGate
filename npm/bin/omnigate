@@ -1,0 +1,32 @@
+#!/usr/bin/env node
+// Node shim: 找到 vendor/ 下的原生二进制并 exec 出去。
+// 透明转发 stdio + 退出码。
+const path = require('path');
+const fs = require('fs');
+const isWin = process.platform === 'win32';
+const binName = isWin ? 'omnigate.exe' : 'omnigate';
+
+const candidates = [
+  path.join(__dirname, '..', 'vendor', binName),
+  path.join(process.env.HOME || process.env.USERPROFILE || '', '.omnigate', binName),
+];
+
+let binary;
+for (const p of candidates) {
+  try {
+    if (fs.statSync(p).isFile()) { binary = p; break; }
+  } catch (_) { /* not exist */ }
+}
+
+if (!binary) {
+  console.error('[omnigate] binary not found. Reinstall: npm i -g @cloudomni/omnigate');
+  console.error('  searched:', candidates.join(', '));
+  process.exit(1);
+}
+
+const { spawn } = require('child_process');
+const child = spawn(binary, process.argv.slice(2), { stdio: 'inherit' });
+child.on('exit', (code, sig) => {
+  if (sig) process.kill(process.pid, sig);
+  else process.exit(code == null ? 1 : code);
+});

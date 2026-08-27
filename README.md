@@ -1,0 +1,255 @@
+# OmniGate
+
+**OpenAI 兼容的 AI 网关。** 本地优先,单二进制,零外部依赖。
+
+[![Go](https://img.shields.io/badge/go-1.27-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Release](https://img.shields.io/github/v/release/cloudomni/omnigate)](https://github.com/cloudomni/omnigate/releases)
+[![MCP](https://img.shields.io/badge/MCP-规划中-orange)](#路线图)
+
+OmniGate 把多个模型提供方聚合成一个 OpenAI 兼容端点,提供加权负载均衡、密钥池轮询、阶梯熔断和多维统计,内嵌管理控制台——全部打包在一个 34 MB 的静态二进制里。
+
+![banner](docs/images/banner.png)
+
+---
+
+## 特性
+
+| | |
+|---|---|
+| **OpenAI 兼容代理** | `/v1/chat/completions(SSE 流式)`、`/v1/models`,`/v1/embeddings` 规划中 |
+| **三层路由** | 逻辑模型 → 加权选池 → 池内 key 轮询。请求 `glm-pool`,落地到背后任意真实模型 |
+| **阶梯熔断** | 模型级 30s → 1m → 3m;key 级 401/403 立即禁用,429 短冷却 |
+| **多维统计** | 次数 / token / 首字延迟 / 总耗时 / 费用,按 路由·模型·提供方·池·key·状态·时间 聚合 |
+| **隐私默认** | 只记元数据。请求内容捕获是显式开关(全局 + 按路由两级),默认关闭 |
+| **内嵌管理台** | React 18 + Ant Design 5,`go:embed` 嵌入二进制,无独立前端部署 |
+| **两层配置** | 启动层(监听地址、管理令牌)走 `config.yaml`;运行层(熔断/捕获/限流等)走 SQLite,管理界面保存即热生效 |
+| **单二进制** | 纯 Go SQLite(`modernc.org/sqlite`,无 CGO),一处构建,处处运行 |
+| **零配置启动** | 首次运行自动创建 `~/.omnigate/`,落盘 db / config / log 三件套 |
+
+---
+
+## 快速开始
+
+```bash
+npm install -g @cloudomni/omnigate
+omnigate
+```
+
+浏览器打开 <http://127.0.0.1:17777> 进入管理台。
+
+> 首次运行会在 `~/.omnigate/` 下自动创建数据目录、初始化 SQLite、生成默认 `config.yaml`、开始记录日志,**完全无需手工准备**。
+
+### 数据布局
+
+```
+~/.omnigate/
+├── omnigate.db           # SQLite(实体、运行层配置、请求日志、可选内容日志)
+├── omnigate.db-wal       # SQLite WAL(写入中,正常关闭后会被清理)
+├── omnigate.db-shm       # SQLite 共享内存
+├── config.yaml           # 启动层:监听地址 / 管理令牌(自动生成)
+└── omnigate.log          # 结构化日志(slog,stderr 同写)
+```
+
+所有路径都用 `--db` / `--config` / `--log` 覆盖,也接受 `~`:
+
+```bash
+omnigate --db ~/workbench/og.db --config ~/workbench/cfg.yaml --log stdout
+```
+
+### 卸载
+
+```bash
+npm uninstall -g @cloudomni/omnigate
+rm -rf ~/.omnigate        # 数据一并清理(可选)
+```
+
+---
+
+## 架构
+
+```
+客户端(任意 OpenAI SDK)
+       │  POST /v1/chat/completions  model="glm-pool"
+       ▼
+┌────────────────────────── OmniGate(单进程) ──────────────────────────┐
+│                                                                       │
+│  代理面                    核心引擎                  管理面             │
+│  ┌────────────┐   ┌──────────────────────────┐   ┌─────────────────┐  │
+│  │ /v1/chat/  │──▶│ 解析逻辑 modelId          │   │  REST API       │  │
+│  │ completions│   │ → 加权选模型目标          │   │  实体 CRUD / 统计│  │
+│  │ /v1/models │   │ → 加权选池               │   └─────────┬───────┘  │
+│  └────────────┘   │ → 池内 key 轮询           │             │ 写库+事件 │
+│        │          │ → 转发 + SSE 透传         │             ▼           │
+│        ▼          │ → 三级转移重试            │   ┌─────────────────┐   │
+│  ┌────────────┐   └──────────┬───────────────┘   │ 配置快照        │   │
+│  │  统计埋点  │◀─────────────┘                   │ (atomic.Pointer)│   │
+│  └─────┬──────┘                                  └─────────────────┘   │
+│        ▼                                            ▲                  │
+│  ┌────────────────────────────────────┐             │                  │
+│  │ SQLite(纯 Go,无 CGO)               │◀── 熔断(模型级 + key 级)          │
+│  │ 实体 / 配置 / 请求日志 / (可选内容)│                                   │
+│  └────────────────────────────────────┘                                   │
+│  管理台 UI(React + AntD,go:embed)                                       │
+└───────────────────────────────────────────────────────────────────────────┘
+       │                                │
+       ▼                                ▼
+  提供方 A(智谱)                提供方 B(任意 OpenAI 兼容)
+  ├─ 高级池 [k1..kN]             ├─ 池 X [k1..kM]
+  └─ 基础池 [k1..kK]             └─ ...
+```
+
+完整设计见 [`docs/design.md`](./docs/design.md)(实体模型、熔断状态机、重试策略、Schema、里程碑)。
+
+---
+
+## 截图
+
+| 仪表盘 | 统计 |
+|---|---|
+| ![dashboard](docs/images/dashboard.png) | ![stats](docs/images/stats.png) |
+
+---
+
+## 配置:两层分离
+
+**启动层** — `config.yaml`,进程启动时读取。决定"进程怎么起来"。
+
+```yaml
+server:
+  listen: 127.0.0.1:17777   # 局域网访问改成 0.0.0.0
+admin:
+  token: ""                 # 留空 = 管理面无鉴权(纯本地)
+```
+
+**运行层** — 管理界面改、SQLite 存、`atomic.Pointer` 快照无锁热替换。
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| 模型熔断 | 开启 | 30s → 1m → 3m 阶梯退避 |
+| key 熔断 | 开启 | 401/403 立即禁用,429 短冷却 |
+| 请求内容捕获 | **关闭** | 全局 + 按路由两级开关;元数据始终记录 |
+| 日志保留期 | 30 天 | 手动清理,自动清理 hook 规划中 |
+| Token / 费用定价 | 按模型 | 价格随模型元数据持久化 |
+
+启动层和运行层刻意分开:改 `config.yaml` 要重启;在 UI 调熔断/捕获/限流对下一个请求立即生效,无需重启。
+
+---
+
+## 开发
+
+前置:Go 1.22+、Node 18+(仅 web 构建需要)。
+
+```bash
+git clone https://github.com/cloudomni/omnigate
+cd omnigate
+
+./start.sh             # 开发模式:后端 :17778 + Vite 热更新 :17777
+./start.sh --prod      # 生产模式:后端 + 内嵌前端 :17778
+```
+
+只编后端:
+
+```bash
+go build -o omnigate ./cmd/omnigate
+```
+
+只编前端(产物落到 `internal/webui/dist/`,由 Go 嵌入):
+
+```bash
+cd web && pnpm install && pnpm build
+```
+
+跑测试:
+
+```bash
+go test ./...
+```
+
+---
+
+## 目录结构
+
+```
+.
+├── cmd/omnigate/             # 入口(flag 解析、信号处理、装配)
+├── internal/
+│   ├── api/                  # 管理 REST + /v1/* 代理 handler
+│   ├── breaker/              # 模型级 + key 级状态机
+│   ├── config/               # 启动层(YAML) + 运行层(SQLite 快照)
+│   ├── proxy/                # 转发、SSE 透传、重试策略
+│   ├── router/               # 三级选择算法
+│   ├── store/                # GORM 模型、迁移
+│   └── webui/                # 内嵌 React 产物(go:embed)
+├── web/                      # React + Ant Design 源码
+├── docs/
+│   ├── design.md             # 设计文档(实体、熔断、Schema)
+│   ├── RELEASE.md            # 发布与分发流程
+│   └── images/               # README 配图
+├── .goreleaser.yaml
+└── .github/workflows/        # CI + 发布
+```
+
+---
+
+## 与同类项目对比
+
+| | OmniGate | one-api / new-api | OpenRouter | LiteLLM |
+|---|---|---|---|---|
+| **运行时** | Go 单二进制 | Go 二进制 | 托管 SaaS | Python 服务 |
+| **存储** | SQLite(单文件) | SQLite / MySQL / PG | 云端 | 配置文件 |
+| **协议** | MIT | AGPL-3.0 | 专有 | MIT |
+| **自部署** | ✅ 丢上去就跑 | ✅ | ❌ | ✅ |
+| **管理 UI** | 内嵌 | 独立前端 | 云端 | 无 |
+| **MCP 网关** | 规划中 | ❌ | ❌ | ❌ |
+
+`one-api` / `new-api` 仅作**行为参考,零行拷贝**——详见 `docs/design.md` §11 的协议合规说明。
+
+---
+
+## 路线图
+
+- [x] **v1.0** — 设计定稿(实体模型、路由、熔断、统计、UI)
+- [ ] **v1.1** — MCP(Model Context Protocol)网关
+- [ ] **v1.2** — Anthropic / Gemini 原生协议适配
+- [ ] **v1.3** — Token 用量预算与软配额
+- [ ] **v2.0** — 多实例集群模式(读写分离、配置共享)
+
+实时待办见 [issues](https://github.com/cloudomni/omnigate/issues)。
+
+---
+
+## 技术栈
+
+| 层 | 选型 | 理由 |
+|---|---|---|
+| 语言 | Go 1.22+ | 单静态二进制、低内存、冷启动快 |
+| HTTP | `net/http` + `chi` | 标准库够用;chi 中间件顺手 |
+| ORM / 存储 | GORM + `modernc.org/sqlite` | 纯 Go 无 CGO,交叉编译零摩擦 |
+| 热更新 | `atomic.Pointer[Snapshot]` | 读路径无锁,进行中请求不受影响 |
+| SDK 复用 | `anthropic-sdk-go`(MIT)+ `sashabaranov/go-openai`(Apache-2.0) | 直接复用 wire/SSE 类型 |
+| UI | React 18 + Ant Design 5 + ECharts | `go:embed` 内嵌 |
+| 日志 | `log/slog`(结构化) | 标准库 |
+
+---
+
+## 贡献
+
+欢迎 PR。两条约定:
+
+1. **`go test ./...` 必须通过**才进 review。新逻辑带表驱动单测。
+2. **`internal/webui/dist/` 不要进特性 commit**——它由 `pnpm build` 重新生成。push 前 `git status` 检查,如有改动 revert。
+
+较大改动先开 issue 讨论,PR 关联 issue 号。
+
+---
+
+## 协议
+
+[MIT](./LICENSE) — Copyright (c) 2026 CloudOmni。
+
+---
+
+## 致谢
+
+设计参考:[`one-api`](https://github.com/songquanpeng/one-api)(MIT)、[`Bifrost`](https://github.com/maximhq/bifrost)(MIT)、[`BricksLLM`](https://github.com/bricks-cloud/bricksllm)(Apache-2.0)。协议类型适配自 [`anthropic-sdk-go`](https://github.com/anthropics/anthropic-sdk-go) 与 [`sashabaranov/go-openai`](https://github.com/sashabaranov/go-openai)。

@@ -1,0 +1,29 @@
+# AI agent / dev tooling state
+.omo/
+.playwright-mcp/
+
+# Runtime data & local config
+/data/
+/logs/
+/config.yaml
+/mock.*
+/srv.pid
+
+# SQLite
+*.db
+*.db-wal
+*.db-shm
+
+# Build artifacts
+/omnigate
+/omnigate-*
+
+# Frontend deps (pnpm-lock + src 仍入仓)
+/web/node_modules/
+
+# npm wrapper: 下载的二进制(由 postinstall 重新拉取,不入仓)
+/npm/vendor/
+
+# OS noise
+.DS_Store
+Thumbs.db

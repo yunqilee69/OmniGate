@@ -1,0 +1,70 @@
+@import '@fontsource/geist-sans/400.css';
+@import '@fontsource/geist-sans/500.css';
+@import '@fontsource/geist-sans/600.css';
+@import '@fontsource/geist-mono/400.css';
+@import '@fontsource/geist-mono/500.css';
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: #fafafa;
+  color: #4d4d4d;
+  font-family:
+    'Geist Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial,
+    sans-serif;
+  font-size: 14px;
+  line-height: 20px;
+  -webkit-font-smoothing: antialiased;
+}
+
+code,
+.mono {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+.page-title {
+  font-family: 'Geist Sans', 'Inter', sans-serif;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  letter-spacing: -0.4px;
+  color: #171717;
+}
+
+.section-title {
+  font-family: 'Geist Sans', 'Inter', sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  letter-spacing: -0.2px;
+  color: #171717;
+}
+
+.eyebrow {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  text-transform: uppercase;
+  color: #8f8f8f;
+}
+
+.meta-text {
+  font-size: 12px;
+  line-height: 16px;
+  color: #8f8f8f;
+}
+
+.log-row-error > td {
+  background: rgba(238, 0, 0, 0.04) !important;
+}
+.log-row-error:hover > td {
+  background: rgba(238, 0, 0, 0.08) !important;
+}

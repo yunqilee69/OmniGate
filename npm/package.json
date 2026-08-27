@@ -1,0 +1,47 @@
+{
+  "name": "@cloudomni/omnigate",
+  "version": "0.1.0",
+  "description": "OmniGate — OpenAI 兼容的 AI 网关(npm 包装,postinstall 自动下载 Go 二进制)",
+  "license": "MIT",
+  "keywords": [
+    "ai",
+    "gateway",
+    "llm",
+    "openai",
+    "router",
+    "proxy",
+    "cloudomni",
+    "omnigate"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloudomni/omnigate.git",
+    "directory": "npm"
+  },
+  "homepage": "https://github.com/cloudomni/omnigate",
+  "bugs": {
+    "url": "https://github.com/cloudomni/omnigate/issues"
+  },
+  "bin": {
+    "omnigate": "./bin/omnigate"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "tar": "^7.4.3"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

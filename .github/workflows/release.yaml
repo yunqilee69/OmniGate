@@ -1,0 +1,70 @@
+name: release
+
+# 仅在推送形如 v* 的 tag 时触发
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # 创建 GitHub Release
+  packages: write   # 推送 Docker 镜像到 ghcr.io
+  id-token: write   # OIDC(预留,后续接 cosign 签名)
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false  # 不要中断正在进行的发布
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # goreleaser 生成 changelog 需要完整历史
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install pnpm
+        run: npm install -g pnpm@10
+
+      # goreleaser 的 before.hooks 会自动跑 pnpm install + build,
+      # 这里再显式跑一遍前置校验,失败更早暴露。
+      - name: Pre-build web bundle
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Install goreleaser
+        run: |
+          go install github.com/goreleaser/goreleaser/v2@latest
+
+      # GITHUB_TOKEN 默认有,够用;无需额外 secrets
+      - name: Create release notes (dry-run, 仅校验)
+        run: goreleaser release --snapshot --clean --skip=publish --skip=announce
+
+      - name: Publish release
+        run: goreleaser release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ghcr.io 用 GITHUB_TOKEN 已经能推,无需额外 docker login

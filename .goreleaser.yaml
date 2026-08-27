@@ -1,0 +1,112 @@
+# goreleaser 配置
+# 文档: https://goreleaser.com/customization/
+
+version: 2
+
+# 前置:确保 web 产物最新,再编 Go(embed 时 dist 不能空)
+before:
+  hooks:
+    - cmd: pnpm --dir web install --frozen-lockfile
+    - cmd: pnpm --dir web build
+      output: true
+
+builds:
+  - id: omnigate
+    main: ./cmd/omnigate
+    binary: omnigate
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+      - -ldflags=-s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+# 6 个 tar.gz(全平台 tar.gz 统一,npm postinstall 用 tar 包解压更顺;
+# Windows 10+ 自带 tar.exe 可直接解压;npm 路径覆盖全部 6 个平台)
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    # 不嵌套子目录,binary 直接在 archive 根,方便 npm postinstall filter
+    wrap_in_directory: false
+    # 压缩包名: omnigate-0.1.0-linux-amd64.tar.gz
+    name_template: >-
+      {{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}
+    files:
+      - LICENSE
+      - README.md
+      - docs/design.md
+      - docs/RELEASE.md
+      - config.yaml.example
+
+checksum:
+  name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
+  algorithm: sha256
+
+# GitHub Release 自动创建 + 上传 artifact
+release:
+  github:
+    owner: cloudomni
+    name: omnigate
+  draft: false
+  prerelease: auto          # -rc / -beta 标签自动标 prerelease
+  name_template: "{{ .ProjectName }} v{{ .Version }}"
+  header: |
+    ## 安装
+
+    ### npm(推荐)
+    ```bash
+    npm install -g @cloudomni/{{ .ProjectName }}
+    {{ .ProjectName }}
+    ```
+
+    ### 直接下载
+    选择下面对应平台的 tar.gz,解压即可运行(无运行时依赖)。
+
+    ### 校验
+    ```bash
+    sha256sum -c {{ .ProjectName }}_{{ .Version }}_checksums.txt
+    ```
+  footer: |
+    **全量变更日志**: 点 Compare 按钮查看从上一版本到本版本的所有 commit。
+
+    > ⚠️ 本项目仍在 0.x 阶段,生产使用建议先小流量验证。
+
+# changelog 自动从 commit 生成(Conventional Commits 友好)
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^chore:'
+      - '^test:'
+  groups:
+    - title: Breaking Changes
+      regexp: '^.*!:\s'
+      order: 0
+    - title: Features
+      regexp: '^feat(\(.+\))?:\s'
+      order: 1
+    - title: Bug fixes
+      regexp: '^fix(\(.+\))?:\s'
+      order: 2
+    - title: Performance
+      regexp: '^perf(\(.+\))?:\s'
+      order: 3
+    - title: Refactoring
+      regexp: '^refactor(\(.+\))?:\s'
+      order: 4
+    - title: Others
+      order: 999
+
+# 干跑 / 调试
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
