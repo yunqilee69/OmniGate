@@ -81,20 +81,12 @@ function topChartOption(rows: TopModelRow[]) {
   }
 }
 
-type Granularity = '1m' | '15m' | '1h'
-const GRANULARITIES: { key: Granularity; label: string; points: number }[] = [
-  { key: '1m', label: '1 分钟', points: 24 * 60 },
-  { key: '15m', label: '15 分钟', points: 24 * 4 },
-  { key: '1h', label: '1 小时', points: 24 },
-]
-
 export default function Dashboard() {
   const [ov, setOv] = useState<Overview | null>(null)
   const [series, setSeries] = useState<any[]>([])
   const [models, setModels] = useState<HealthModel[]>([])
   const [topModels, setTopModels] = useState<TopModelRow[]>([])
   const [now, setNow] = useState(Math.floor(Date.now() / 1000))
-  const [granularity, setGranularity] = useState<Granularity>('1m')
 
   const load = async () => {
     const startOfDay = dayjs().startOf('day').unix()
@@ -102,7 +94,7 @@ export default function Dashboard() {
     try {
       const [o, ts, h, top] = await Promise.all([
         api('GET', `/api/stats/overview?from=${startOfDay}&to=${endOfDay}`),
-        api('GET', `/api/stats/timeseries?from=${startOfDay}&to=${endOfDay}&bucket=${granularity}`),
+        api('GET', `/api/stats/timeseries?from=${startOfDay}&to=${endOfDay}&bucket=1h`),
         api('GET', '/api/health'),
         api('GET', `/api/stats/breakdown?dim=model&from=${startOfDay}&to=${endOfDay}`),
       ])
@@ -118,24 +110,30 @@ export default function Dashboard() {
       message.error(e.message)
     }
   }
-  useEffect(() => { load() }, [granularity])
+  useEffect(() => { load() }, [])
   useEffect(() => {
     const t = setInterval(load, 10000)
     return () => clearInterval(t)
-  }, [granularity])
+  }, [])
 
+  // 今日 0..nowHour 的固定小时桶；缺失小时补 0（柱图保持显示空白柱，不省略 x 轴）。
+  const hours = Array.from({ length: dayjs(now * 1000).hour() + 1 }, (_, i) => i)
+  const hourToBucket: Record<number, any> = {}
+  for (const p of series) {
+    hourToBucket[dayjs(p.bucket * 1000).hour()] = p
+  }
   const chartOption = {
     tooltip: { trigger: 'axis' },
-    legend: { data: ['请求数', '平均首字响应(ms)'] },
-    grid: { left: 50, right: 50, bottom: 30 },
-    xAxis: { type: 'category', data: series.map((p) => dayjs(p.bucket * 1000).format('HH:mm')), boundaryGap: false },
+    legend: { data: ['请求数', '总 Tokens'] },
+    grid: { left: 50, right: 60, bottom: 30 },
+    xAxis: { type: 'category', data: hours.map((h) => `${h.toString().padStart(2, '0')}:00`) },
     yAxis: [
       { type: 'value', name: '请求数' },
-      { type: 'value', name: '首字响应(ms)' },
+      { type: 'value', name: '总 Tokens' },
     ],
     series: [
-      { name: '请求数', type: 'bar', data: series.map((p) => p.total) },
-      { name: '平均首字响应(ms)', type: 'line', yAxisIndex: 1, smooth: true, data: series.map((p) => Math.round(p.avg_ttft_ms)) },
+      { name: '请求数', type: 'bar', yAxisIndex: 0, data: hours.map((h) => hourToBucket[h]?.total ?? 0), itemStyle: { color: '#171717' } },
+      { name: '总 Tokens', type: 'bar', yAxisIndex: 1, data: hours.map((h) => hourToBucket[h]?.total_tokens ?? 0), itemStyle: { color: '#4d4d4d' } },
     ],
   }
 
@@ -200,30 +198,8 @@ export default function Dashboard() {
           </div>
         </Col>
       </Row>
-      <Card
-        title="流量趋势（00:00 - 23:59）"
-        extra={
-          <div onClick={(e) => e.stopPropagation()}>
-            {GRANULARITIES.map((g) => (
-              <Button
-                key={g.key}
-                size="small"
-                type={granularity === g.key ? 'primary' : 'default'}
-                onClick={() => setGranularity(g.key)}
-                style={{ marginLeft: 8 }}
-              >
-                {g.label}
-              </Button>
-            ))}
-          </div>
-        }
-        style={{ marginTop: 16 }}
-      >
-        {series.length === 0 ? (
-          <Empty description="所选时间粒度下今日暂无调用" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-        ) : (
-          <Chart option={chartOption} height={280} />
-        )}
+      <Card title="今日流量" style={{ marginTop: 16 }}>
+        <Chart option={chartOption} height={280} />
       </Card>
       <Card title="模型调用详情" style={{ marginTop: 16 }}>
         {topModels.length === 0 ? (

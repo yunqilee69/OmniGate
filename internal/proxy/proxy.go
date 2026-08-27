@@ -138,23 +138,35 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	isStream, _ := req["stream"].(bool)
 
+	rt := h.rt.Snapshot()
+	captureOn := rt.CaptureEnabled && (len(rt.CaptureRoutes) == 0 || containsStr(rt.CaptureRoutes, routeName))
+	var cw *captureWriter
+	var reqSnap string
+	if captureOn {
+		reqSnap = string(body)
+		cw = newCaptureWriter(w, 1<<20)
+		w = cw
+	}
+
 	snap, found, err := h.sel.LoadSnapshot(routeName)
 	if err != nil {
 		slog.Error("load snapshot failed", "err", err, "route", routeName)
 		openAIError(w, 500, "internal_error", "failed to load routing config", nil)
+		h.maybeCapture(requestID, routeName, reqSnap, cw)
 		return
 	}
 	if !found {
 		openAIError(w, http.StatusNotFound, "model_not_found",
 			fmt.Sprintf("the model '%s' does not exist", routeName), nil)
+		h.maybeCapture(requestID, routeName, reqSnap, cw)
 		return
 	}
 
-	rt := h.rt.Snapshot()
 	tried := map[int64]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult
 	var errCodes []string
+	priorFails := 0
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		att, ok := h.sel.Pick(snap, tried, time.Now())
@@ -162,9 +174,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if attempt == 0 {
 				statuses := router.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
-					"error", "all_backends", usageInfo{}, 0, 0, 0, "")
+					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "")
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					fmt.Sprintf("路由 '%s' 无可用后端", routeName), statuses)
+				h.maybeCapture(requestID, routeName, reqSnap, cw)
 				return
 			}
 			break
@@ -176,24 +189,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.record(res, rt)
 		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
 		last = res
+		h.writeLog(start, requestID, routeName, att, isStream,
+			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody)
 		if res.committed || !res.retryable {
 			break
 		}
+		priorFails++
 		errCodes = append(errCodes, res.errCode)
 		slog.Warn("attempt failed, transferring", "route", routeName,
 			"model", att.Model.Name, "key_id", att.Key.ID, "code", res.errCode)
 	}
 
 	if !last.committed {
-		h.writeLog(start, requestID, routeName, last.att, isStream, "error", last.errCode,
-			usageInfo{}, 0, time.Since(start), len(tried)-1, last.errorBody)
 		openAIError(w, http.StatusBadGateway, "all_attempts_failed",
-			fmt.Sprintf("全部尝试失败，已转移 %d 次（错误序列: %s）", len(tried)-1, strings.Join(errCodes, " → ")), nil)
+			fmt.Sprintf("全部尝试失败，已转移 %d 次（错误序列: %s）", priorFails, strings.Join(errCodes, " → ")), nil)
+		h.maybeCapture(requestID, routeName, reqSnap, cw)
 		return
 	}
-
-	h.writeLog(start, requestID, routeName, last.att, isStream, last.status, last.errCode,
-		last.usage, last.ttft, time.Since(start), len(tried)-1, last.errorBody)
+	h.maybeCapture(requestID, routeName, reqSnap, cw)
 }
 
 var retryableStatus = map[int]bool{401: true, 403: true, 429: true, 500: true, 502: true, 503: true, 504: true}
@@ -521,5 +534,66 @@ func (h *Handler) record(res attemptResult, rt *config.Runtime) {
 		h.rec.RecordKeyRateLimited(res.att.Key.ID, res.retryAfterS, rt.KeyCooldownS)
 	case res.retryable || res.streamBroke:
 		h.rec.RecordModelFailure(res.att.Model.ID, res.errCode, rt)
+	}
+}
+
+func containsStr(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+type captureWriter struct {
+	w        http.ResponseWriter
+	buf      []byte
+	limit    int
+	overflow bool
+}
+
+func newCaptureWriter(w http.ResponseWriter, limit int) *captureWriter {
+	return &captureWriter{w: w, limit: limit}
+}
+
+func (cw *captureWriter) Header() http.Header { return cw.w.Header() }
+
+func (cw *captureWriter) WriteHeader(code int) { cw.w.WriteHeader(code) }
+
+func (cw *captureWriter) Write(b []byte) (int, error) {
+	if cw.overflow {
+		return cw.w.Write(b)
+	}
+	if len(cw.buf)+len(b) <= cw.limit {
+		cw.buf = append(cw.buf, b...)
+	} else {
+		cw.overflow = true
+		cw.buf = append([]byte(nil), fmt.Sprintf("[truncated: response exceeds %d bytes]", cw.limit)...)
+	}
+	return cw.w.Write(b)
+}
+
+func (cw *captureWriter) Body() string {
+	return string(cw.buf)
+}
+
+func (h *Handler) maybeCapture(requestID, route, reqBody string, cw *captureWriter) {
+	if cw == nil {
+		return
+	}
+	respBody := cw.Body()
+	err := h.db.DB.Exec(`
+INSERT INTO content_log (request_id, route, request_body, response_body, created_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(request_id) DO UPDATE SET
+  route=excluded.route,
+  request_body=excluded.request_body,
+  response_body=excluded.response_body,
+  created_at=excluded.created_at`,
+		requestID, route, reqBody, respBody, time.Now().Unix(),
+	).Error
+	if err != nil {
+		slog.Warn("write content_log failed", "err", err, "request_id", requestID)
 	}
 }

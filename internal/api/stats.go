@@ -248,8 +248,10 @@ func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom,
 		SUM(prompt_tokens) AS p_tok,
 		SUM(completion_tokens) AS c_tok,
 		SUM(cost) AS cost,
-		SUM(ttftb0)+SUM(ttftb1)+SUM(ttftb2)+SUM(ttftb3)+SUM(ttftb4)+SUM(ttftb5)+SUM(ttftb6)+SUM(ttftb7)+SUM(ttftb8)+SUM(ttftb9) AS ttft_n,
-		SUM(totalb0)+SUM(totalb1)+SUM(totalb2)+SUM(totalb3)+SUM(totalb4)+SUM(totalb5)+SUM(totalb6)+SUM(totalb7)+SUM(totalb8)+SUM(totalb9) AS total_n,
+		SUM(ttftb0) AS tb0, SUM(ttftb1) AS tb1, SUM(ttftb2) AS tb2, SUM(ttftb3) AS tb3, SUM(ttftb4) AS tb4,
+		SUM(ttftb5) AS tb5, SUM(ttftb6) AS tb6, SUM(ttftb7) AS tb7, SUM(ttftb8) AS tb8, SUM(ttftb9) AS tb9,
+		SUM(totalb0) AS ob0, SUM(totalb1) AS ob1, SUM(totalb2) AS ob2, SUM(totalb3) AS ob3, SUM(totalb4) AS ob4,
+		SUM(totalb5) AS ob5, SUM(totalb6) AS ob6, SUM(totalb7) AS ob7, SUM(totalb8) AS ob8, SUM(totalb9) AS ob9,
 		SUM(retries_sum) AS retries_sum
 		FROM request_log_daily WHERE day BETWEEN ? AND ?
 		GROUP BY dim ORDER BY total DESC LIMIT 200`
@@ -263,13 +265,20 @@ func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom,
 	for rows.Next() {
 		var it item
 		var dim sql.NullString
-		var ttftN, totalN, retriesSum int64
+		var t [10]int64
+		var o [10]int64
+		var retriesSum int64
 		if err := rows.Scan(&dim, &it.Total, &it.Success, &it.Errors, &it.PromptTok, &it.ComplTok,
-			&it.Cost, &ttftN, &totalN, &retriesSum); err != nil {
+			&it.Cost,
+			&t[0], &t[1], &t[2], &t[3], &t[4], &t[5], &t[6], &t[7], &t[8], &t[9],
+			&o[0], &o[1], &o[2], &o[3], &o[4], &o[5], &o[6], &o[7], &o[8], &o[9],
+			&retriesSum); err != nil {
 			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
 		it.Dim = dim.String
+		it.AvgTTFT = avgFromBuckets(t, store.TTFTBucketBounds)
+		it.AvgTotal = avgFromBuckets(o, store.TotalBucketBounds)
 		if it.Total > 0 {
 			it.AvgRetries = float64(retriesSum) / float64(it.Total)
 		}
@@ -334,25 +343,26 @@ func (s *Server) getStatsTimeseries(w http.ResponseWriter, r *http.Request) {
 	}
 	from, to := parseTimeRange(r)
 	conds := []string{"created_at BETWEEN ? AND ?"}
-	args := []any{from, to, from, to, from, to}
+	args := []any{bucket, bucket, from, to}
 	q := r.URL.Query()
 	if v := q.Get("route"); v != "" {
 		conds = append(conds, "route = ?")
-		args = append(args, v, v)
+		args = append(args, v)
 	}
 	if v := q.Get("model"); v != "" {
 		conds = append(conds, "model = ?")
-		args = append(args, v, v)
+		args = append(args, v)
 	}
 	if v := q.Get("status"); v != "" {
 		conds = append(conds, "status = ?")
-		args = append(args, v, v)
+		args = append(args, v)
 	}
 	where := strings.Join(conds, " AND ")
 	rows, err := s.store.DB.Raw(`SELECT (created_at / ?) * ? AS bucket,
 		COUNT(*) AS total,
 		SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
 		COALESCE(SUM(cost),0) AS cost,
+		COALESCE(SUM(prompt_tokens+completion_tokens),0) AS total_tokens,
 		AVG(CASE WHEN status='success' THEN ttft_ms END) AS avg_ttft
 		FROM request_log WHERE `+where+` GROUP BY bucket ORDER BY bucket`, args...).Rows()
 	if err != nil {
@@ -361,17 +371,18 @@ func (s *Server) getStatsTimeseries(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type point struct {
-		Bucket  int64   `json:"bucket"`
-		Total   int64   `json:"total"`
-		Success int64   `json:"success"`
-		Cost    float64 `json:"cost"`
-		AvgTTFT float64 `json:"avg_ttft_ms"`
+		Bucket     int64   `json:"bucket"`
+		Total      int64   `json:"total"`
+		Success    int64   `json:"success"`
+		Cost       float64 `json:"cost"`
+		TotalTokens int64  `json:"total_tokens"`
+		AvgTTFT    float64 `json:"avg_ttft_ms"`
 	}
 	points := []point{}
 	for rows.Next() {
 		var p point
 		var ttft sql.NullFloat64
-		if err := rows.Scan(&p.Bucket, &p.Total, &p.Success, &p.Cost, &ttft); err != nil {
+		if err := rows.Scan(&p.Bucket, &p.Total, &p.Success, &p.Cost, &p.TotalTokens, &ttft); err != nil {
 			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
