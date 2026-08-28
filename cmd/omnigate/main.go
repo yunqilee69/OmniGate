@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -52,13 +51,6 @@ func expandHome(p string) string {
 		return filepath.Join(home, p[2:])
 	}
 	return p
-}
-
-func getPort(listen string) string {
-	if idx := strings.LastIndex(listen, ":"); idx >= 0 {
-		return listen[idx+1:]
-	}
-	return "17777"
 }
 
 // appHomeDir 返回 ~/.omnigate 绝对路径;获取不到主目录时回落到当前目录下 .omnigate。
@@ -125,7 +117,7 @@ func main() {
 		logPath        string
 		listenOverride string
 		showVersion    bool
-		daemonMode     bool
+		quietMode      bool
 	)
 	flag.StringVar(&dbPath, "db", filepath.Join(appHome, "omnigate.db"),
 		"SQLite database file path (default: ~/.omnigate/omnigate.db)")
@@ -137,8 +129,8 @@ func main() {
 		"override listen address from config.yaml (debug, highest priority)")
 	flag.BoolVar(&showVersion, "version", false,
 		"print version and exit")
-	flag.BoolVar(&daemonMode, "daemon", true,
-		"run in daemon mode (default: true, use --daemon=false for foreground)")
+	flag.BoolVar(&quietMode, "quiet", true,
+		"quiet mode: only show startup info, suppress runtime logs to terminal (default: true, use --quiet=false for verbose)")
 	flag.Parse()
 
 	if showVersion {
@@ -282,21 +274,21 @@ func main() {
 	fmt.Printf("  认证模式:  %s\n", auth.Mode())
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	// 守护进程模式：输出信息后父进程继续在后台运行
-	if daemonMode {
-		fmt.Println("\n✓ 服务已启动（后台运行）")
-		fmt.Printf("  使用 'kill $(lsof -ti:%s)' 停止服务\n", getPort(listen))
+	// 静默模式：输出启动信息后不再输出运行日志到终端
+	if quietMode {
+		fmt.Println("\n✓ 服务已启动（静默模式）")
 		fmt.Printf("  查看日志: tail -f %s\n", logPath)
+		fmt.Println("  提示: 进程仍在前台运行，可用 Ctrl+C 停止")
+		fmt.Println("  后台运行: Unix 用 '&' 符号，Windows 用 'Start-Process' 或安装为服务")
 		
 		// 关闭 stdin，避免阻塞
 		os.Stdin.Close()
 		
-		// 继续在后台运行，等待信号
-		slog.Info("daemon mode: running in background", "pid", os.Getpid())
+		slog.Info("quiet mode: startup complete", "pid", os.Getpid())
 	} else {
-		// 前台模式：继续运行并输出日志
-		fmt.Println("\n✓ 服务已启动（前台运行，按 Ctrl+C 停止）")
-		slog.Info("foreground mode: serving",
+		// 详细模式：继续输出运行日志到终端
+		fmt.Println("\n✓ 服务已启动（详细模式，按 Ctrl+C 停止）")
+		slog.Info("verbose mode: serving",
 			"listen", listen,
 			"db", dbPath,
 			"config", cfgPath,
