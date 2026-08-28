@@ -56,23 +56,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # web 工具链是 npm(锁文件 web/package-lock.json),不用 pnpm
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'pnpm'
-          cache-dependency-path: web/pnpm-lock.yaml
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
 
-      - name: Install pnpm
-        run: npm install -g pnpm@10
-
-      # goreleaser 的 before.hooks 会自动跑 pnpm install + build,
+      # goreleaser 的 before.hooks 会自动跑 npm ci + build,
       # 这里再显式跑一遍前置校验,失败更早暴露。
       - name: Pre-build web bundle
         working-directory: web
         run: |
-          pnpm install --frozen-lockfile
-          pnpm build
+          npm ci --no-audit --no-fund
+          npm run build
 
       # vite build 不做类型检查,发布前显式过一遍 tsc
       - name: Type-check web

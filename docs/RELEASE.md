@@ -69,7 +69,7 @@ git checkout main && git pull
 go test ./...
 
 # 3. 确认 web 产物是最新的(开发期改动 web 必须重 build)
-(cd web && pnpm install && pnpm build)
+(cd web && npm ci --no-audit --no-fund && npm run build)
 
 # 4. 检查 git 状态(应该没有 webui/dist 的改动;若有 revert)
 git status

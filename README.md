@@ -159,7 +159,7 @@ go build -o omnigate ./cmd/omnigate
 只编前端(产物落到 `internal/webui/dist/`,由 Go 嵌入):
 
 ```bash
-cd web && pnpm install && pnpm build
+cd web && npm ci && npm run build
 ```
 
 跑测试:
@@ -240,7 +240,7 @@ go test ./...
 欢迎 PR。两条约定:
 
 1. **`go test ./...` 必须通过**才进 review。新逻辑带表驱动单测。
-2. **`internal/webui/dist/` 不要进特性 commit**——它由 `pnpm build` 重新生成。push 前 `git status` 检查,如有改动 revert。
+2. **`internal/webui/dist/` 不要进特性 commit**——它由 `npm run build` 重新生成。push 前 `git status` 检查,如有改动 revert。
 
 较大改动先开 issue 讨论,PR 关联 issue 号。
 

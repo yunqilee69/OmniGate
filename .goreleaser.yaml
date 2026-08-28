@@ -10,8 +10,8 @@ project_name: omnigate
 # 前置:确保 web 产物最新,再编 Go(embed 时 dist 不能空)
 before:
   hooks:
-    - cmd: pnpm --dir web install --frozen-lockfile
-    - cmd: pnpm --dir web build
+    - cmd: npm --prefix web ci --no-audit --no-fund
+    - cmd: npm --prefix web run build
       output: true
 
 builds:
