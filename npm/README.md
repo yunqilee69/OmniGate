@@ -87,7 +87,7 @@ OMNIGATE_DOWNLOAD_TIMEOUT=120 OMNIGATE_USE_CDN=1 npm install -g @cloudomni/omnig
 **手动下载(离线环境 / 企业内网)**
 
 ```bash
-# 1. 从 cdn.yunke.icu/v版本号/ 或 GitHub Release 页面手动下载对应平台 tarball
+# 1. 从 cdn.yunke.icu/omnigate/v版本号/ 或 GitHub Release 页面手动下载对应平台 tarball
 # 2. 解压出 vendor/omnigate(Windows 为 vendor/omnigate.exe)后:
 OMNIGATE_SKIP_POSTINSTALL=1 npm install -g @cloudomni/omnigate
 ```

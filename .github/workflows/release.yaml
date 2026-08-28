@@ -93,7 +93,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # 同步 Release 资产到 Cloudflare R2(国内 CDN):dist/ 下的 tar.gz + checksums
-      # 上传到 r2://omnigate/v0.1.1/ 路径,供 postinstall 优先下载(回退 GitHub)
+      # 上传到 r2://omnigate/omnigate/v0.1.2/ 路径,供 postinstall 优先下载(回退 GitHub)
       - name: Upload to Cloudflare R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -102,7 +102,7 @@ jobs:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          aws s3 sync dist/ "s3://omnigate/v${VERSION}/" \
+          aws s3 sync dist/ "s3://omnigate/omnigate/v${VERSION}/" \
             --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
             --exclude "*" \
             --include "*.tar.gz" \

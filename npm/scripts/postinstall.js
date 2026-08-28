@@ -30,7 +30,7 @@ if (!goreleaserArch || !goreleaserOS) {
 const archiveName   = `omnigate-${VERSION}-${goreleaserOS}-${goreleaserArch}.tar.gz`;
 const checksumsName = `omnigate_${VERSION}_checksums.txt`;
 const releaseBase   = `https://github.com/yunqilee69/OmniGate/releases/download/v${VERSION}`;
-const r2Base        = `https://cdn.yunke.icu/v${VERSION}`;
+const r2Base        = `https://cdn.yunke.icu/omnigate/v${VERSION}`;
 
 // 双源策略:默认 GitHub Release(全球可用),可选 R2 CDN(中国大陆快)
 const downloadUrl   = `${releaseBase}/${archiveName}`;
