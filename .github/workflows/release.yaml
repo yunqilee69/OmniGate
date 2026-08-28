@@ -85,7 +85,9 @@ jobs:
         run: goreleaser release --snapshot --clean --skip=publish --skip=announce
 
       - name: Publish release
-        run: goreleaser release --clean
+        # --allow-dirty:before.hooks 重建 webui/dist(内容 hash 变化)使工作树变脏,
+        # 发行二进制嵌入的正是这份新构建的前端,脏是有意的
+        run: goreleaser release --clean --allow-dirty
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
