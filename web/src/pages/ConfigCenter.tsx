@@ -50,9 +50,9 @@ interface Model {
 }
 
 const protocolOptions = [
-  { value: 'openai', label: 'OpenAI（chat/completions）' },
+  { value: 'openai', label: 'OpenAI（/chat/completions）' },
   { value: 'responses', label: 'OpenAI Responses（/responses）' },
-  { value: 'anthropic', label: 'Anthropic（/v1/messages）' },
+  { value: 'anthropic', label: 'Anthropic（/messages）' },
 ]
 
 const modelTypeOptions = [
