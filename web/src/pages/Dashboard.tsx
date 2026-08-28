@@ -130,19 +130,16 @@ export default function Dashboard() {
   }
   const chartOption = {
     tooltip: { trigger: 'axis' },
-    legend: { data: ['请求数', '总 Tokens', '平均首字延迟', '平均总耗时'] },
+    legend: { data: ['请求数', '总 Tokens'] },
     grid: { left: 50, right: 70, bottom: 30 },
     xAxis: { type: 'category', data: hours.map((h) => `${h.toString().padStart(2, '0')}:00`) },
     yAxis: [
       { type: 'value', name: '请求数' },
       { type: 'value', name: '总 Tokens' },
-      { type: 'value', name: '延迟(ms)', splitLine: { show: false } },
     ],
     series: [
       { name: '请求数', type: 'bar', yAxisIndex: 0, data: hours.map((h) => hourToBucket[h]?.total ?? 0), itemStyle: { color: '#171717' } },
       { name: '总 Tokens', type: 'bar', yAxisIndex: 1, data: hours.map((h) => hourToBucket[h]?.total_tokens ?? 0), itemStyle: { color: '#4d4d4d' } },
-      { name: '平均首字延迟', type: 'line', yAxisIndex: 2, smooth: true, showSymbol: false, connectNulls: true, itemStyle: { color: '#1677ff' }, data: hours.map((h) => (hourToBucket[h] ? Math.round(hourToBucket[h].avg_ttft_ms ?? 0) : null)) },
-      { name: '平均总耗时', type: 'line', yAxisIndex: 2, smooth: true, showSymbol: false, connectNulls: true, itemStyle: { color: '#faad14' }, data: hours.map((h) => (hourToBucket[h] ? Math.round(hourToBucket[h].avg_total_ms ?? 0) : null)) },
     ],
   }
 
@@ -162,23 +159,6 @@ export default function Dashboard() {
                   <span>{formatNumber(+v)}</span>
                   <span style={{ fontSize: 12, color: '#4d4d4d', fontWeight: 400 }}>
                     成功: {formatNumber(ov?.success ?? 0)} 次
-                  </span>
-                </span>
-              )}
-              valueStyle={{ color: '#171717' }}
-            />
-          </div>
-        </Col>
-        <Col flex="1 1 0">
-          <div style={{ background: '#f0f9eb', padding: 20, borderRadius: 12, minHeight: 96 }}>
-            <Statistic
-              title="成功率"
-              value={(ov?.success_rate ?? 0) * 100}
-              formatter={(v) => (
-                <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 12 }}>
-                  <span>{(+v).toFixed(1)}%</span>
-                  <span style={{ fontSize: 12, color: '#4d4d4d', fontWeight: 400 }}>
-                    错误: {formatNumber(ov?.errors ?? 0)} 次
                   </span>
                 </span>
               )}
@@ -252,7 +232,17 @@ export default function Dashboard() {
           </Table>
         )}
       </Card>
-      <Card title="模型健康（按真实可达性：所有 key 限流时不算正常）" style={{ marginTop: 16 }}>
+      <Card
+        title={
+          <span>
+            模型健康
+            <Tooltip title="按真实可达性：所有 key 限流时不算正常">
+              <span style={{ marginLeft: 8, color: '#8f8f8f', cursor: 'help' }}>ⓘ</span>
+            </Tooltip>
+          </span>
+        }
+        style={{ marginTop: 16 }}
+      >
         {models.length === 0 ? (
           <Empty description="暂无模型" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         ) : (

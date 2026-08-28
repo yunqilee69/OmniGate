@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Switch, message } from 'antd'
+import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Switch, Tooltip, message } from 'antd'
+import { QuestionCircleOutlined } from '@ant-design/icons'
 import { api } from '../api'
 
 type Settings = Record<string, any>
@@ -10,6 +11,12 @@ const fmtCounts = (m: any) =>
     .join('，')
 
 const LADDER_PRESETS = ['10s', '30s', '1m', '3m', '5m', '15m', '30m']
+
+const HelpIcon = ({ tip }: { tip: string }) => (
+  <Tooltip title={tip}>
+    <QuestionCircleOutlined style={{ marginLeft: 4, color: '#8f8f8f', cursor: 'help' }} />
+  </Tooltip>
+)
 
 const numericRanges: Record<string, [number, number]> = {
   'breaker.disable_threshold': [1, 100],
@@ -92,29 +99,31 @@ export default function Settings() {
 
   return (
     <>
-    <Card title="运行配置（保存即热生效）" style={{ maxWidth: 720 }}>
+    <Card title="运行配置（保存即热生效）" style={{ maxWidth: 720, margin: '0 auto' }}>
       <Form form={form} layout="vertical">
-        <Form.Item label="熔断阶梯（按顺序升级，末档重复）" name="breaker.cooldown_ladder">
+        <Form.Item label={<span>熔断阶梯（按顺序升级，末档重复）</span>} name="breaker.cooldown_ladder">
           <Select mode="tags" placeholder="时长" tokenSeparators={[',']} options={LADDER_PRESETS.map((v) => ({ value: v, label: v }))} />
         </Form.Item>
-        <Form.Item label="禁用阈值（连续失败次数）" name="breaker.disable_threshold"
-          extra="默认 3：失败1→30s，失败2→1m，失败3→禁用（需手动解禁或改阈值让第3档生效）">
+        <Form.Item
+          label={<span>禁用阈值（连续失败次数）<HelpIcon tip="默认 3：失败1→30s，失败2→1m，失败3→禁用（需手动解禁或改阈值让第3档生效）" /></span>}
+          name="breaker.disable_threshold"
+        >
           <InputNumber min={numericRanges['breaker.disable_threshold'][0]} max={numericRanges['breaker.disable_threshold'][1]} style={{ width: '100%' }} />
         </Form.Item>
-        <Form.Item label="单请求最大转移次数" name="breaker.max_hops">
+        <Form.Item label={<span>单请求最大转移次数</span>} name="breaker.max_hops">
           <InputNumber min={1} max={10} style={{ width: '100%' }} />
         </Form.Item>
-        <Form.Item label="429 缺省冷却秒数（有 Retry-After 时优先）" name="ratelimit.key_cooldown_s">
+        <Form.Item label={<span>429 缺省冷却秒数（有 Retry-After 时优先）</span>} name="ratelimit.key_cooldown_s">
           <InputNumber min={1} max={86400} style={{ width: '100%' }} />
         </Form.Item>
-        <Form.Item label="流式空闲超时秒数" name="stream.idle_timeout_s">
+        <Form.Item label={<span>流式空闲超时秒数</span>} name="stream.idle_timeout_s">
           <InputNumber min={1} max={86400} style={{ width: '100%' }} />
         </Form.Item>
-        <Form.Item label="自动注入 include_usage 获取精确 token" name="stream.inject_usage" valuePropName="checked">
+        <Form.Item label={<span>自动注入 include_usage 获取精确 token</span>} name="stream.inject_usage" valuePropName="checked">
           <Switch />
         </Form.Item>
 
-        <Form.Item label="内容捕获（默认关闭，仅元数据落库）" name="capture.enabled" valuePropName="checked">
+        <Form.Item label={<span>内容捕获（默认关闭，仅元数据落库）</span>} name="capture.enabled" valuePropName="checked">
           <Switch />
         </Form.Item>
         {captureOn && (
@@ -125,35 +134,33 @@ export default function Settings() {
             message="开启后将记录请求/响应全文到本地 SQLite（content_log 表），注意敏感数据暴露风险"
           />
         )}
-        <Form.Item label="捕获路由白名单（空 = 全部路由）" name="capture.routes">
+        <Form.Item label={<span>捕获路由白名单（空 = 全部路由）</span>} name="capture.routes">
           <Select mode="tags" placeholder="逻辑 modelId" tokenSeparators={[',']} />
         </Form.Item>
-        <Form.Item label="内容日志保留天数" name="capture.retention_days">
+        <Form.Item label={<span>内容日志保留天数</span>} name="capture.retention_days">
           <InputNumber min={1} max={365} style={{ width: '100%' }} />
         </Form.Item>
-        <Form.Item label="请求日志保留天数（0 = 永久）" name="log.retention_days">
+        <Form.Item label={<span>请求日志保留天数（0 = 永久）</span>} name="log.retention_days">
           <InputNumber min={0} max={3650} style={{ width: '100%' }} />
         </Form.Item>
 
         <Form.Item
-          label="会话亲和（同会话粘住上次成功的模型，最大化上游缓存命中）"
+          label={<span>会话亲和（同会话粘住上次成功的模型，最大化上游缓存命中）<HelpIcon tip="粘住的模型还有 key 才算" /></span>}
           name="affinity.enabled"
           valuePropName="checked"
-          extra="粘住的目标熔断或无可用密钥时自动回落加权随机，不影响可用性"
         >
           <Switch />
         </Form.Item>
-        <Form.Item label="会话 ID 请求头（未传时按消息前缀哈希自动识别会话）" name="affinity.header">
-          <Input placeholder="X-Session-ID" maxLength={128} />
+        <Form.Item label={<span>会话 ID 请求头（未传时按消息前缀哈希自动识别会话）</span>} name="affinity.header">
+          <Select mode="tags" placeholder="X-Session-ID, X-Request-ID" tokenSeparators={[',']} />
         </Form.Item>
-        <Form.Item label="会话亲和记忆时长（秒）" name="affinity.ttl_s">
+        <Form.Item label={<span>会话亲和记忆时长（秒）</span>} name="affinity.ttl_s">
           <InputNumber min={10} max={86400} style={{ width: '100%' }} />
         </Form.Item>
 
         <Form.Item
-          label="美元兑人民币汇率（1 USD = ? CNY）"
+          label={<span>美元兑人民币汇率（1 USD = ? CNY）<HelpIcon tip="人民币定价的模型按此汇率折算为美元计费入库；仪表盘/统计页可切换展示币种" /></span>}
           name="pricing.usd_cny"
-          extra="人民币定价的模型按此汇率折算为美元计费入库；仪表盘/统计页可切换展示币种"
         >
           <InputNumber min={0.01} max={10000} step={0.01} style={{ width: '100%' }} />
         </Form.Item>
@@ -161,7 +168,7 @@ export default function Settings() {
         <Button type="primary" onClick={save}>保存</Button>
       </Form>
     </Card>
-    <Card title="危险操作" style={{ maxWidth: 720, marginTop: 16 }}>
+    <Card title="危险操作" style={{ maxWidth: 720, marginTop: 16, margin: '16px auto 0' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           <div style={{ flex: 1 }}>

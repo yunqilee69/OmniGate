@@ -142,23 +142,6 @@ export default function Stats() {
             />
           </div>
         </Col>
-        <Col flex="1 1 0">
-          <div style={{ background: '#fffbe6', padding: 20, borderRadius: 12, minHeight: 96 }}>
-            <Statistic
-              title="P95 总耗时(ms)"
-              value={ov?.p95_total_ms ?? 0}
-              formatter={(v) => (
-                <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 12 }}>
-                  <span>{formatNumber(+v)}</span>
-                  <span style={{ fontSize: 12, color: '#4d4d4d', fontWeight: 400 }}>
-                    P95 首字: {formatNumber(ov?.p95_ttft_ms ?? 0)} ms
-                  </span>
-                </span>
-              )}
-              valueStyle={{ color: '#171717' }}
-            />
-          </div>
-        </Col>
       </Row>
       <Card style={{ marginBottom: 16 }}>
         <Radio.Group options={dims} value={dim} onChange={(e) => setDim(e.target.value)} optionType="button" />
