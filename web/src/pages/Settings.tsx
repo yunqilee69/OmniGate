@@ -152,7 +152,7 @@ export default function Settings() {
           <Switch />
         </Form.Item>
         <Form.Item label={<span>会话 ID 请求头（未传时按消息前缀哈希自动识别会话）</span>} name="affinity.header">
-          <Select mode="tags" placeholder="X-Session-ID, X-Request-ID" tokenSeparators={[',']} />
+          <Input placeholder="X-Session-ID" />
         </Form.Item>
         <Form.Item label={<span>会话亲和记忆时长（秒）</span>} name="affinity.ttl_s">
           <InputNumber min={10} max={86400} style={{ width: '100%' }} />
