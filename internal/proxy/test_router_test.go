@@ -12,7 +12,7 @@ import (
 )
 
 func apiTestRouter(st *store.Store, ph *proxy.Handler, rtm *config.RuntimeManager) http.Handler {
-	return api.New(st, rtm, "", ph).Router()
+	return api.New(st, rtm, api.AdminAuth{}, ph).Router()
 }
 
 func newStackWithRTM(t *testing.T) (*store.Store, *config.RuntimeManager) {

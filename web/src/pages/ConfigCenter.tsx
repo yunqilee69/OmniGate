@@ -7,6 +7,7 @@ import { PlusOutlined, CloudServerOutlined, EyeOutlined, EyeInvisibleOutlined } 
 import dayjs from 'dayjs'
 import { api } from '../api'
 import StatusTag from '../components/StatusTag'
+import ModelTestModal, { type TestTarget } from '../components/ModelTestModal'
 
 interface Provider {
   id: number
@@ -38,6 +39,7 @@ interface Model {
   protocol: string
   input_price: number
   output_price: number
+  price_currency: string
   status: string
   fail_count: number
   cooldown_until: number
@@ -273,45 +275,12 @@ function ModelsTab({ provider, keys, models, onSaved }: {
 }) {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Model | null>(null)
-  const [testing, setTesting] = useState<Set<number>>(new Set())
-  const [batchTesting, setBatchTesting] = useState(false)
-  const [batchResults, setBatchResults] = useState<any[] | null>(null)
+  const [testTargets, setTestTargets] = useState<TestTarget[] | null>(null)
   const [form] = Form.useForm()
 
-  const testOne = async (m: Model) => {
-    setTesting((s) => new Set(s).add(m.id))
-    try {
-      const res = await api('POST', `/api/models/${m.id}/test`)
-      if (res.ok) {
-        message.success(`${m.name} 可用（${res.latency_ms}ms）`)
-      } else {
-        Modal.error({
-          title: `${m.name} 不可用`,
-          content: `错误：${res.error_code || '-'}${res.message ? ` — ${res.message}` : ''}`,
-        })
-      }
-    } catch (e: any) {
-      message.error(e.message)
-    } finally {
-      setTesting((s) => {
-        const next = new Set(s)
-        next.delete(m.id)
-        return next
-      })
-    }
-  }
+  const testOne = (m: Model) => setTestTargets([{ id: m.id, name: m.name }])
 
-  const runBatchTest = async () => {
-    setBatchTesting(true)
-    try {
-      const results = await api('POST', `/api/providers/${provider.id}/test`)
-      setBatchResults(results)
-    } catch (e: any) {
-      message.error(e.message)
-    } finally {
-      setBatchTesting(false)
-    }
-  }
+  const runBatchTest = () => setTestTargets(models.map((m) => ({ id: m.id, name: m.name })))
 
   const openForm = (m?: Model) => {
     setEditing(m ?? null)
@@ -319,7 +288,8 @@ function ModelsTab({ provider, keys, models, onSaved }: {
     if (m) {
       form.setFieldsValue({
         name: m.name, protocol: m.protocol,
-        input_price: m.input_price, output_price: m.output_price, key_ids: m.key_ids,
+        input_price: m.input_price, output_price: m.output_price,
+        price_currency: m.price_currency || 'USD', key_ids: m.key_ids,
       })
     }
     setOpen(true)
@@ -354,7 +324,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
     <div>
       <Space style={{ marginBottom: 16 }}>
         <Button type="primary" onClick={() => openForm()}>新增模型</Button>
-        <Button loading={batchTesting} onClick={runBatchTest}>测试全部模型</Button>
+        <Button onClick={runBatchTest} disabled={models.length === 0}>测试全部模型</Button>
       </Space>
       <Table<Model> rowKey="id" dataSource={models} tableLayout="fixed" size="small" scroll={{ x: true }}>
         <Table.Column title="模型名" dataIndex="name" width={160} />
@@ -367,12 +337,15 @@ function ModelsTab({ provider, keys, models, onSaved }: {
     return <Tag key={id}>{k ? (k.name || k.key_value) : `#${id}`}</Tag>
   })
         } />
-        <Table.Column title="输入/输出价(1M)" width={140} render={(_, m: Model) => `${m.input_price} / ${m.output_price}`} />
+        <Table.Column title="输入/输出价(1M)" width={160} render={(_, m: Model) => {
+          const sym = m.price_currency === 'CNY' ? '¥' : '$'
+          return `${sym}${m.input_price} / ${sym}${m.output_price}`
+        }} />
         <Table.Column title="状态" width={110} render={(_, m: Model) => modelStatusTag(m)} />
         <Table.Column title="连续失败" dataIndex="fail_count" width={80} />
         <Table.Column title="操作" width={240} render={(_, m: Model) => (
           <Space>
-            <Button size="small" loading={testing.has(m.id)} onClick={() => testOne(m)}>测试</Button>
+            <Button size="small" onClick={() => testOne(m)}>测试</Button>
             <Button size="small" onClick={() => openForm(m)}>编辑</Button>
             <Button size="small" onClick={() => toggle(m)}>{m.status === 'disabled' ? '解禁' : '禁用'}</Button>
             <Popconfirm title="删除模型将清理路由目标与密钥绑定，确认？" onConfirm={async () => {
@@ -395,10 +368,19 @@ function ModelsTab({ provider, keys, models, onSaved }: {
           <Form.Item label="价格（每 1M token）">
             <Space>
               <Form.Item name="input_price" initialValue={0} noStyle>
-                <InputNumber min={0} placeholder="输入价" style={{ width: 200 }} />
+                <InputNumber min={0} placeholder="输入价" style={{ width: 160 }} />
               </Form.Item>
               <Form.Item name="output_price" initialValue={0} noStyle>
-                <InputNumber min={0} placeholder="输出价" style={{ width: 200 }} />
+                <InputNumber min={0} placeholder="输出价" style={{ width: 160 }} />
+              </Form.Item>
+              <Form.Item name="price_currency" initialValue="USD" noStyle>
+                <Select
+                  style={{ width: 120 }}
+                  options={[
+                    { value: 'USD', label: '$ 美元' },
+                    { value: 'CNY', label: '¥ 人民币' },
+                  ]}
+                />
               </Form.Item>
             </Space>
           </Form.Item>
@@ -416,25 +398,12 @@ function ModelsTab({ provider, keys, models, onSaved }: {
         </Form>
       </Modal>
 
-      <Modal
-        title={`批量测试 — ${provider.name}`}
-        open={!!batchResults}
-        onCancel={() => setBatchResults(null)}
-        footer={null}
-        width={640}
-      >
-        <Table dataSource={batchResults ?? []} rowKey="model_id" size="small" pagination={false}>
-          <Table.Column title="模型" dataIndex="model" width={180} />
-          <Table.Column title="协议" dataIndex="protocol" width={110} render={(v) => (
-            <span className="mono" style={{ fontSize: 12 }}>{v}</span>
-          )} />
-          <Table.Column title="结果" width={90} render={(_, r: any) => r.ok
-            ? <StatusTag tone="ok">可用</StatusTag>
-            : <Tooltip title={`${r.error_code ?? ''} ${r.message ?? ''}`}><StatusTag tone="error">失败</StatusTag></Tooltip>} />
-          <Table.Column title="耗时" dataIndex="latency_ms" width={90} render={(v) => `${v}ms`} />
-          <Table.Column title="错误" render={(_, r: any) => r.ok ? '-' : `${r.error_code ?? ''} ${r.message ?? ''}`} ellipsis />
-        </Table>
-      </Modal>
+      <ModelTestModal
+        open={!!testTargets}
+        targets={testTargets ?? []}
+        onClose={() => setTestTargets(null)}
+        onKeysChanged={() => onSaved()}
+      />
     </div>
   )
 }

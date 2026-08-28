@@ -190,7 +190,12 @@ func main() {
 		slog.Info("request_log_daily backfill ok")
 	}()
 
-	srv := api.New(st, rt, boot.Admin.Token, proxy.New(st, rt))
+	auth := api.AdminAuth{
+		Username: boot.Admin.Username,
+		Password: boot.Admin.Password,
+		ApiKey:   boot.Admin.ApiKey,
+	}
+	srv := api.New(st, rt, auth, proxy.New(st, rt))
 	httpSrv := &http.Server{
 		Addr:              listen,
 		Handler:           srv.Router(),
@@ -200,13 +205,39 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// 保留期清理：启动 30s 后先跑一次，之后每小时一次；保留期为 0 的表在 PurgeRetentions 内部跳过。
+	go func() {
+		boot := time.NewTimer(30 * time.Second)
+		defer boot.Stop()
+		tick := time.NewTicker(time.Hour)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-boot.C:
+			case <-tick.C:
+			}
+			cfg := rt.Snapshot()
+			deleted, err := store.PurgeRetentions(st.DB, cfg.LogRetentionDays, cfg.CaptureRetentionDays)
+			if err != nil {
+				slog.Warn("retention purge failed", "err", err)
+				continue
+			}
+			if len(deleted) > 0 {
+				slog.Info("retention purge done", "deleted", deleted)
+			}
+		}
+	}()
+
 	go func() {
 		slog.Info("omnigate listening",
 			"listen", listen,
 			"db", dbPath,
 			"config", cfgPath,
 			"log", logPath,
-			"admin_auth", boot.Admin.Token != "")
+			"admin_auth", auth.Mode(),
+			"v1_auth", auth.V1Protected())
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("http server error", "err", err)
 			os.Exit(1)

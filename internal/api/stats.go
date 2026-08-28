@@ -81,19 +81,30 @@ func (s *Server) rollupHasData(dayFrom, dayTo int64) bool {
 	return n > 0
 }
 
+// costRate 费用输出换算系数：存储层计价基准为 USD，currency=CNY 时按快照汇率放大。
+func (s *Server) costRate(r *http.Request) float64 {
+	if r.URL.Query().Get("currency") == "CNY" {
+		if rate := s.rt.Snapshot().USDCNY; rate > 0 {
+			return rate
+		}
+	}
+	return 1
+}
+
 func (s *Server) getStatsOverview(w http.ResponseWriter, r *http.Request) {
 	from, to := parseTimeRange(r)
 	dayFrom, dayTo := dayRange(from, to)
+	rate := s.costRate(r)
 
 	if s.rollupHasData(dayFrom, dayTo) {
-		s.overviewFromRollup(w, dayFrom, dayTo)
+		s.overviewFromRollup(w, dayFrom, dayTo, rate)
 		return
 	}
-	s.overviewFromRaw(w, from, to)
+	s.overviewFromRaw(w, from, to, rate)
 }
 
 // overviewFromRollup 走预聚合：单次 SUM 扫描返回所有标量 + 直方桶均值/p95。
-func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64) {
+func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64, rate float64) {
 	var agg struct {
 		Total, Success, Errors, PTok, CTok int64
 		Cost                               float64
@@ -142,15 +153,15 @@ func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": agg.Total, "success": agg.Success, "errors": agg.Errors, "success_rate": successRate,
 		"prompt_tokens": agg.PTok, "completion_tokens": agg.CTok,
-		"total_tokens": agg.PTok + agg.CTok,
-		"cost":         agg.Cost,
-		"avg_ttft_ms":  avgTTFT, "avg_total_ms": avgTotal,
-		"p95_ttft_ms":  p95TTFT, "p95_total_ms": p95Total,
+		"total_tokens":  agg.PTok + agg.CTok,
+		"cost":          agg.Cost * rate,
+		"avg_ttft_ms":   avgTTFT, "avg_total_ms": avgTotal,
+		"p95_ttft_ms":   p95TTFT, "p95_total_ms": p95Total,
 	})
 }
 
 // overviewFromRaw rollup 不可用时的回退路径（测试夹具、冷启动首请求）。
-func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64) {
+func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate float64) {
 	where := "created_at BETWEEN ? AND ?"
 	args := []any{from, to}
 
@@ -199,37 +210,41 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64) {
 		"total": agg.Total, "success": agg.Success, "errors": agg.Errors, "success_rate": successRate,
 		"prompt_tokens": agg.PTokens, "completion_tokens": agg.CTokens,
 		"total_tokens": agg.PTokens + agg.CTokens,
-		"cost":         agg.Cost,
+		"cost":         agg.Cost * rate,
 		"avg_ttft_ms":  agg.AvgTTFT.Float64, "avg_total_ms": agg.AvgTotal.Float64,
-		"p95_ttft_ms": percentile95(ttfts), "p95_total_ms": percentile95(totals),
+		"p95_ttft_ms":  percentile95(ttfts), "p95_total_ms": percentile95(totals),
 	})
 }
 
 var breakdownDims = map[string]string{
 	"route": "route", "model": "model", "provider": "provider",
-	"status": "status", "key": "CAST(key_id AS TEXT)",
+	"status": "status", "key": "CAST(key_id AS TEXT)", "error_code": "error_code",
 }
 
+// key / error_code 维度不在 request_log_daily 预聚合表里，必须走原始表。
+var rollupUnsupported = map[string]bool{"key": true, "error_code": true}
+
 func (s *Server) getStatsBreakdown(w http.ResponseWriter, r *http.Request) {
-	col, ok := breakdownDims[r.URL.Query().Get("dim")]
+	dim := r.URL.Query().Get("dim")
+	col, ok := breakdownDims[dim]
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "bad_request",
-			"dim must be one of route|model|provider|status|key")
+			"dim must be one of route|model|provider|status|key|error_code")
 		return
 	}
 	from, to := parseTimeRange(r)
 	dayFrom, dayTo := dayRange(from, to)
+	rate := s.costRate(r)
 
-	// request_log_daily 预聚合表没有 key 维度，dim=key 必须走原始表
-	if r.URL.Query().Get("dim") != "key" && s.rollupHasData(dayFrom, dayTo) {
-		s.breakdownFromRollup(w, col, dayFrom, dayTo)
+	if !rollupUnsupported[dim] && s.rollupHasData(dayFrom, dayTo) {
+		s.breakdownFromRollup(w, col, dayFrom, dayTo, rate)
 		return
 	}
-	s.breakdownFromRaw(w, col, from, to)
+	s.breakdownFromRaw(w, col, from, to, rate)
 }
 
 // breakdownFromRollup 走预聚合：GROUP BY 维度键，扫描 O(天×维度组合)。
-func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom, dayTo int64) {
+func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom, dayTo int64, rate float64) {
 	type item struct {
 		Dim        string  `json:"dim"`
 		Total      int64   `json:"total"`
@@ -283,13 +298,14 @@ func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom,
 		if it.Total > 0 {
 			it.AvgRetries = float64(retriesSum) / float64(it.Total)
 		}
+		it.Cost *= rate
 		items = append(items, it)
 	}
 	writeJSON(w, http.StatusOK, items)
 }
 
 // breakdownFromRaw rollup 不可用时的回退路径。
-func (s *Server) breakdownFromRaw(w http.ResponseWriter, col string, from, to int64) {
+func (s *Server) breakdownFromRaw(w http.ResponseWriter, col string, from, to int64, rate float64) {
 	rows, err := s.store.DB.Raw(`SELECT `+col+` AS dim, COUNT(*) AS total,
 		SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
 		SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
@@ -332,6 +348,7 @@ func (s *Server) breakdownFromRaw(w http.ResponseWriter, col string, from, to in
 		}
 		it.Dim = dim.String
 		it.AvgTTFT, it.AvgTotal = ttft.Float64, total.Float64
+		it.Cost *= rate
 		items = append(items, it)
 	}
 	// dim=key 的 dim 是裸 key_id，附名称与脱敏值让客户端不查库即可辨认密钥
@@ -370,6 +387,7 @@ func (s *Server) getStatsTimeseries(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	from, to := parseTimeRange(r)
+	rate := s.costRate(r)
 	conds := []string{"created_at BETWEEN ? AND ?"}
 	args := []any{bucket, bucket, from, to}
 	q := r.URL.Query()
@@ -391,7 +409,8 @@ func (s *Server) getStatsTimeseries(w http.ResponseWriter, r *http.Request) {
 		SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
 		COALESCE(SUM(cost),0) AS cost,
 		COALESCE(SUM(prompt_tokens+completion_tokens),0) AS total_tokens,
-		AVG(CASE WHEN status='success' THEN ttft_ms END) AS avg_ttft
+		AVG(CASE WHEN status='success' THEN ttft_ms END) AS avg_ttft,
+		AVG(CASE WHEN status='success' THEN total_ms END) AS avg_total
 		FROM request_log WHERE `+where+` GROUP BY bucket ORDER BY bucket`, args...).Rows()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
@@ -399,22 +418,24 @@ func (s *Server) getStatsTimeseries(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type point struct {
-		Bucket     int64   `json:"bucket"`
-		Total      int64   `json:"total"`
-		Success    int64   `json:"success"`
-		Cost       float64 `json:"cost"`
-		TotalTokens int64  `json:"total_tokens"`
-		AvgTTFT    float64 `json:"avg_ttft_ms"`
+		Bucket      int64   `json:"bucket"`
+		Total       int64   `json:"total"`
+		Success     int64   `json:"success"`
+		Cost        float64 `json:"cost"`
+		TotalTokens int64   `json:"total_tokens"`
+		AvgTTFT     float64 `json:"avg_ttft_ms"`
+		AvgTotal    float64 `json:"avg_total_ms"`
 	}
 	points := []point{}
 	for rows.Next() {
 		var p point
-		var ttft sql.NullFloat64
-		if err := rows.Scan(&p.Bucket, &p.Total, &p.Success, &p.Cost, &p.TotalTokens, &ttft); err != nil {
+		var ttft, total sql.NullFloat64
+		if err := rows.Scan(&p.Bucket, &p.Total, &p.Success, &p.Cost, &p.TotalTokens, &ttft, &total); err != nil {
 			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
-		p.AvgTTFT = ttft.Float64
+		p.AvgTTFT, p.AvgTotal = ttft.Float64, total.Float64
+		p.Cost *= rate
 		points = append(points, p)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"bucket_s": bucket, "points": points})

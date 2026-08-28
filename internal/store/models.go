@@ -40,6 +40,7 @@ type Model struct {
 	Protocol      string  `json:"protocol" gorm:"size:32;not null;default:openai"`
 	InputPrice    float64 `json:"input_price" gorm:"not null;default:0"`         // 每 1M prompt token 价格
 	OutputPrice   float64 `json:"output_price" gorm:"not null;default:0"`        // 每 1M completion token 价格
+	PriceCurrency string  `json:"price_currency" gorm:"size:8;not null;default:'USD'"` // 价格币种：USD | CNY；计费时统一折算为 USD 入库
 	Status        string  `json:"status" gorm:"size:32;not null;default:active"` // active | cooldown | disabled
 	FailCount     int     `json:"fail_count" gorm:"not null;default:0"`
 	CooldownUntil int64   `json:"cooldown_until" gorm:"not null;default:0"`
@@ -109,7 +110,7 @@ type ContentLog struct {
 	Route        string `json:"route" gorm:"size:191;not null"`
 	RequestBody  string `json:"request_body" gorm:"type:text;not null"`
 	ResponseBody string `json:"response_body" gorm:"type:text;not null"`
-	CreatedAt    int64  `json:"created_at" gorm:"autoCreateTime"`
+	CreatedAt    int64  `json:"created_at" gorm:"autoCreateTime;index"` // 保留期清理按时间扫描
 }
 
 // RequestAttempt 单次尝试的明细记录（含中间失败与最终成功）。request_log 仍记最终结果与总重试次数，

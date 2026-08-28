@@ -37,6 +37,30 @@ type ProbeResult struct {
 	CompletionTokens int    `json:"completion_tokens"`
 }
 
+// KeyProbeResult 逐密钥探测结果：附密钥标识与当前状态，供管理台测试弹窗展示与操作。
+type KeyProbeResult struct {
+	ProbeResult
+	KeyName   string `json:"key_name"`
+	KeyMasked string `json:"key_masked"`
+	KeyStatus string `json:"key_status"`
+}
+
+// ModelKeysTestResult 单模型全量密钥探测结果。
+type ModelKeysTestResult struct {
+	ModelID  int64            `json:"model_id"`
+	Model    string           `json:"model"`
+	Provider string           `json:"provider"`
+	Protocol string           `json:"protocol"`
+	Keys     []KeyProbeResult `json:"keys"`
+}
+
+func maskKeyValue(kv string) string {
+	if len(kv) <= 8 {
+		return "****"
+	}
+	return kv[:5] + "****" + kv[len(kv)-4:]
+}
+
 func truncateMsg(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -55,20 +79,66 @@ func ProbeModel(db *store.Store, rt *config.RuntimeManager, modelID int64) Probe
 	if err := db.DB.First(&provider, m.ProviderID).Error; err != nil {
 		return ProbeResult{ModelID: m.ID, Model: m.Name, ErrCode: "no_provider", Message: "提供商不存在"}
 	}
-	res := ProbeResult{ModelID: m.ID, Model: m.Name, Provider: provider.Name, Protocol: m.Protocol}
 
 	sel := router.NewSelector(db)
 	snap, found, err := sel.LoadSnapshotByModel(m.ID)
 	if err != nil || !found {
-		res.ErrCode, res.Message = "no_key", "未绑定密钥"
-		return res
+		return ProbeResult{ModelID: m.ID, Model: m.Name, Provider: provider.Name, Protocol: m.Protocol,
+			ErrCode: "no_key", Message: "未绑定密钥"}
 	}
 	att, ok := sel.PickForModel(snap, time.Now())
 	if !ok {
-		res.ErrCode, res.Message = "no_key", "全部密钥不可用（禁用/冷却中）"
-		return res
+		return ProbeResult{ModelID: m.ID, Model: m.Name, Provider: provider.Name, Protocol: m.Protocol,
+			ErrCode: "no_key", Message: "全部密钥不可用（禁用/冷却中）"}
 	}
-	res.KeyID = att.Key.ID
+	return probeModelKey(m, provider, att.Key)
+}
+
+// ProbeModelKeys 并发探测模型绑定的每一个密钥（含禁用/冷却中的——手动诊断动作，非代理流量）。
+func ProbeModelKeys(db *store.Store, rt *config.RuntimeManager, modelID int64) (ModelKeysTestResult, bool) {
+	var m store.Model
+	if err := db.DB.First(&m, modelID).Error; err != nil {
+		return ModelKeysTestResult{ModelID: modelID, Keys: []KeyProbeResult{}}, false
+	}
+	out := ModelKeysTestResult{ModelID: m.ID, Model: m.Name, Protocol: m.Protocol, Keys: []KeyProbeResult{}}
+	var provider store.Provider
+	if err := db.DB.First(&provider, m.ProviderID).Error; err == nil {
+		out.Provider = provider.Name
+	}
+
+	var keys []store.ApiKey
+	if err := db.DB.
+		Joins("JOIN model_key mk ON mk.key_id = api_key.id").
+		Where("mk.model_id = ?", modelID).
+		Order("api_key.id").Find(&keys).Error; err != nil {
+		return out, true
+	}
+	results := make([]KeyProbeResult, len(keys))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for i := range keys {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			k := keys[idx]
+			results[idx] = KeyProbeResult{
+				ProbeResult: probeModelKey(m, provider, k),
+				KeyName:     k.Name,
+				KeyMasked:   maskKeyValue(k.KeyValue),
+				KeyStatus:   k.Status,
+			}
+		}(i)
+	}
+	wg.Wait()
+	out.Keys = results
+	return out, true
+}
+
+// probeModelKey 用指定密钥发起一次极小真实请求（探测核心，不写 request_log）。
+func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) ProbeResult {
+	res := ProbeResult{ModelID: m.ID, Model: m.Name, Provider: provider.Name, Protocol: m.Protocol, KeyID: key.ID}
 
 	adapter := AdapterFor(m.Protocol)
 	req := map[string]any{
@@ -102,7 +172,7 @@ func ProbeModel(db *store.Store, rt *config.RuntimeManager, modelID int64) Probe
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	extra := map[string]string{}
-	adapter.setHeaders(extra, att.Key.KeyValue)
+	adapter.setHeaders(extra, key.KeyValue)
 	for k, v := range extra {
 		httpReq.Header.Set(k, v)
 	}

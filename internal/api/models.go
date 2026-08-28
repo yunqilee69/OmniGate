@@ -16,14 +16,16 @@ type modelResp struct {
 }
 
 var validProtocols = map[string]bool{"openai": true, "responses": true, "anthropic": true}
+var validCurrencies = map[string]bool{"USD": true, "CNY": true}
 
 type modelCreateReq struct {
-	ProviderID  int64   `json:"provider_id"`
-	Name        string  `json:"name"`
-	Protocol    string  `json:"protocol"`
-	InputPrice  float64 `json:"input_price"`
-	OutputPrice float64 `json:"output_price"`
-	KeyIDs      []int64 `json:"key_ids"`
+	ProviderID    int64   `json:"provider_id"`
+	Name          string  `json:"name"`
+	Protocol      string  `json:"protocol"`
+	InputPrice    float64 `json:"input_price"`
+	OutputPrice   float64 `json:"output_price"`
+	PriceCurrency string  `json:"price_currency"`
+	KeyIDs        []int64 `json:"key_ids"`
 }
 
 func (s *Server) listModels(w http.ResponseWriter, _ *http.Request) {
@@ -102,6 +104,13 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "protocol must be openai, responses or anthropic")
 		return
 	}
+	if req.PriceCurrency == "" {
+		req.PriceCurrency = "USD"
+	}
+	if !validCurrencies[req.PriceCurrency] {
+		writeErr(w, http.StatusBadRequest, "bad_request", "price_currency must be USD or CNY")
+		return
+	}
 	if req.InputPrice < 0 || req.OutputPrice < 0 {
 		writeErr(w, http.StatusBadRequest, "bad_request", "prices must not be negative")
 		return
@@ -125,7 +134,7 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 	}
 	m := store.Model{
 		ProviderID: req.ProviderID, Name: req.Name, Protocol: req.Protocol,
-		InputPrice: req.InputPrice, OutputPrice: req.OutputPrice, Status: "active",
+		InputPrice: req.InputPrice, OutputPrice: req.OutputPrice, PriceCurrency: req.PriceCurrency, Status: "active",
 	}
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&m).Error; err != nil {
@@ -154,12 +163,13 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 }
 
 type modelUpdateReq struct {
-	ProviderID  *int64   `json:"provider_id"`
-	Name        *string  `json:"name"`
-	Protocol    *string  `json:"protocol"`
-	InputPrice  *float64 `json:"input_price"`
-	OutputPrice *float64 `json:"output_price"`
-	KeyIDs      []int64  `json:"key_ids"`
+	ProviderID    *int64   `json:"provider_id"`
+	Name          *string  `json:"name"`
+	Protocol      *string  `json:"protocol"`
+	InputPrice    *float64 `json:"input_price"`
+	OutputPrice   *float64 `json:"output_price"`
+	PriceCurrency *string  `json:"price_currency"`
+	KeyIDs        []int64  `json:"key_ids"`
 }
 
 func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
@@ -215,6 +225,13 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		simple["output_price"] = *req.OutputPrice
+	}
+	if req.PriceCurrency != nil {
+		if !validCurrencies[*req.PriceCurrency] {
+			writeErr(w, http.StatusBadRequest, "bad_request", "price_currency must be USD or CNY")
+			return
+		}
+		simple["price_currency"] = *req.PriceCurrency
 	}
 	if len(simple) == 0 && req.KeyIDs == nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", "no fields to update")

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/cloudomni/omnigate/internal/config"
@@ -115,4 +116,63 @@ func newProbeStack(t *testing.T) (*store.Store, *config.RuntimeManager) {
 		t.Fatal(err)
 	}
 	return st, rtm
+}
+
+// TestProbeModelKeys 逐密钥探测：好坏 key 并存时每个 key 独立出结果（含名称/脱敏值/当前状态）。
+func TestProbeModelKeys(t *testing.T) {
+	st, rtm := newProbeStack(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.Header.Get("Authorization"), "sk-bad") {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"error":"invalid key"}`)
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"pong"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`)
+	}))
+	defer up.Close()
+
+	p := store.Provider{Name: "pk-prov", BaseURL: up.URL, TimeoutMs: 5000}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	kGood := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-good1111", Name: "好key", Status: "active"}
+	if err := st.DB.Create(&kGood).Error; err != nil {
+		t.Fatal(err)
+	}
+	kBad := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-bad2222", Name: "坏key", Status: "active"}
+	if err := st.DB.Create(&kBad).Error; err != nil {
+		t.Fatal(err)
+	}
+	m := store.Model{ProviderID: p.ID, Name: "m-pk", Protocol: "openai"}
+	if err := st.DB.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, kid := range []int64{kGood.ID, kBad.ID} {
+		if err := st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: kid}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, found := proxy.ProbeModelKeys(st, rtm, m.ID)
+	if !found || res.Model != "m-pk" || len(res.Keys) != 2 {
+		t.Fatalf("expect 2 key results: found=%v res=%+v", found, res)
+	}
+	byKey := map[int64]proxy.KeyProbeResult{}
+	for _, k := range res.Keys {
+		byKey[k.KeyID] = k
+	}
+	g, b := byKey[kGood.ID], byKey[kBad.ID]
+	if !g.Ok || g.PromptTokens != 3 {
+		t.Fatalf("good key should pass: %+v", g)
+	}
+	if g.KeyName != "好key" || g.KeyMasked == "" || g.KeyStatus != "active" {
+		t.Fatalf("key meta missing: %+v", g)
+	}
+	if b.Ok || b.ErrCode != "401" || b.Message == "" {
+		t.Fatalf("bad key should fail with 401: %+v", b)
+	}
+
+	if _, found := proxy.ProbeModelKeys(st, rtm, 99999); found {
+		t.Fatal("missing model should not be found")
+	}
 }

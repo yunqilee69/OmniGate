@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/cloudomni/omnigate/internal/breaker"
@@ -274,8 +275,19 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 	attemptStart := time.Now()
 	res := attemptResult{att: att, promptChars: requestTextChars(req)}
 	adapter := AdapterFor(att.Model.Protocol)
-	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(att.Provider.TimeoutMs)*time.Millisecond)
+
+	// deadline 只约束「建连 + 首字节」：流式首字节到达即停表（stopDeadline），
+	// 之后流的生命周期交给 idle reader 的空闲超时，长输出流不会被整体截断；
+	// 非流式的响应完成等价于首字节，不停表即覆盖整个响应。
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	var timedOut atomic.Bool
+	deadline := time.AfterFunc(time.Duration(att.Provider.TimeoutMs)*time.Millisecond, func() {
+		timedOut.Store(true)
+		cancel()
+	})
+	defer deadline.Stop() // attempt 返回后不再需要定时器（流式首字节处已提前停表）
+	stopDeadline := func() { deadline.Stop() }
 
 	req["model"] = att.Model.Name
 	converted, err := adapter.buildBody(req)
@@ -315,7 +327,7 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 	resp, err := h.client.Do(upReq)
 	if err != nil {
 		res.retryable, res.status = true, "error"
-		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
+		if timedOut.Load() || errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
 			res.errCode = "timeout"
 		} else {
 			res.errCode = "conn"
@@ -330,9 +342,9 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		res.httpStatus = resp.StatusCode
 		if isStream {
-			return h.streamResponse(w, resp, att, attemptStart, cancel, rt, adapter, res)
+			return h.streamResponse(w, resp, att, attemptStart, cancel, rt, adapter, res, stopDeadline, &timedOut)
 		}
-		return h.bufferedResponse(w, resp, attemptStart, adapter, res)
+		return h.bufferedResponse(w, resp, attemptStart, adapter, res, &timedOut)
 	}
 
 	res.httpStatus = resp.StatusCode
@@ -363,11 +375,15 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 }
 
 func (h *Handler) bufferedResponse(w http.ResponseWriter, resp *http.Response,
-	attemptStart time.Time, adapter ProtocolAdapter, res attemptResult) attemptResult {
+	attemptStart time.Time, adapter ProtocolAdapter, res attemptResult, timedOut *atomic.Bool) attemptResult {
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
-		res.errCode, res.status, res.retryable = "read_error", "error", true
+		if timedOut.Load() {
+			res.errCode, res.status, res.retryable = "timeout", "error", true
+		} else {
+			res.errCode, res.status, res.retryable = "read_error", "error", true
+		}
 		return res
 	}
 	out, u, convErr := adapter.convertBuffered(body)
@@ -410,7 +426,7 @@ func (h *Handler) bufferedResponse(w http.ResponseWriter, resp *http.Response,
 
 func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att router.Attempt,
 	attemptStart time.Time, cancel context.CancelFunc, rt *config.Runtime,
-	adapter ProtocolAdapter, res attemptResult) attemptResult {
+	adapter ProtocolAdapter, res attemptResult, stopDeadline func(), timedOut *atomic.Bool) attemptResult {
 
 	idle := newIdleReader(resp.Body, time.Duration(rt.StreamIdleTimeoutS)*time.Second, cancel)
 	defer idle.Close()
@@ -438,10 +454,11 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 	for {
 		n, readErr := idle.Read(buf)
 		if n > 0 {
-			if !committed {
-				committed = true
-				res.committed = true
-				res.ttft = time.Since(attemptStart)
+		if !committed {
+			committed = true
+			stopDeadline() // 首字节已到：解除建连+首字节的 deadline，之后流交给 idle 超时
+			res.committed = true
+			res.ttft = time.Since(attemptStart)
 				w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 				w.Header().Set("Cache-Control", "no-cache")
 				w.Header().Set("X-Modelrouter-Model", att.Model.Name)
@@ -495,11 +512,16 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 				res.status = "success"
 				return res
 			}
-			if !committed {
+		if !committed {
+			// deadline 在首字节前触发会 cancel 流：区分超时与上游建连失败
+			if timedOut.Load() {
+				res.status, res.errCode, res.retryable = "error", "timeout", true
+			} else {
 				res.status, res.errCode, res.retryable = "error", "stream_setup_failed", true
-				return res
 			}
-			res.status, res.errCode, res.streamBroke = "error", "stream_broken", true
+			return res
+		}
+		res.status, res.errCode, res.streamBroke = "error", "stream_broken", true
 			res.usage = estimateUsage(res.promptChars, textAcc.String())
 			return res
 		}
@@ -515,7 +537,7 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 		Status: status, ErrorCode: errCode, ErrorBody: errorBody, IsStream: isStream,
 		PromptTokens: u.prompt, CompletionTokens: u.completion, TokensEstimated: u.estimated,
 		TTFTMs: ttft.Milliseconds(), TotalMs: total.Milliseconds(),
-		Cost: cost(att.Model, u), Retries: retries,
+		Cost: cost(att.Model, u, h.rt.Snapshot().USDCNY), Retries: retries,
 	}
 	if att.Model.ID != 0 {
 		entry.Model = att.Model.Name
@@ -556,8 +578,16 @@ func (h *Handler) writeAttempt(requestID, routeName string, attempt int, att rou
 	}
 }
 
-func cost(m store.Model, u usageInfo) float64 {
-	return float64(u.prompt)*m.InputPrice/1e6 + float64(u.completion)*m.OutputPrice/1e6
+// cost 计费基准为 USD：CNY 定价模型按快照汇率折算入库，保证跨币种模型聚合一致。
+func cost(m store.Model, u usageInfo, usdCNY float64) float64 {
+	raw := float64(u.prompt)*m.InputPrice/1e6 + float64(u.completion)*m.OutputPrice/1e6
+	if m.PriceCurrency == "CNY" {
+		if usdCNY <= 0 {
+			usdCNY = 7.25
+		}
+		return raw / usdCNY
+	}
+	return raw
 }
 
 const errorBodyLimit = 2048

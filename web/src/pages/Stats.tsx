@@ -3,6 +3,7 @@ import { Card, Col, DatePicker, Radio, Row, Statistic, Table, message } from 'an
 import dayjs, { Dayjs } from 'dayjs'
 import { api } from '../api'
 import Chart from '../components/Chart'
+import { CurrencyToggle, useCurrency } from '../components/CurrencyToggle'
 import { formatNumber, formatCost } from '../utils/format'
 
 interface Item {
@@ -29,6 +30,8 @@ interface Overview {
   completion_tokens: number
   total_tokens: number
   cost: number
+  p95_ttft_ms: number
+  p95_total_ms: number
 }
 
 const dims = [
@@ -37,6 +40,7 @@ const dims = [
   { value: 'provider', label: '提供商' },
   { value: 'key', label: '密钥' },
   { value: 'status', label: '状态' },
+  { value: 'error_code', label: '错误码' },
 ]
 
 export default function Stats() {
@@ -45,15 +49,17 @@ export default function Stats() {
   const [items, setItems] = useState<Item[]>([])
   const [series, setSeries] = useState<any[]>([])
   const [ov, setOv] = useState<Overview | null>(null)
+  const [currency, setCurrency] = useCurrency()
 
   const load = async () => {
     const from = range[0].unix()
     const to = range[1].unix()
+    const cur = `&currency=${currency}`
     try {
       const [o, bd, ts] = await Promise.all([
-        api('GET', `/api/stats/overview?from=${from}&to=${to}`),
-        api('GET', `/api/stats/breakdown?dim=${dim}&from=${from}&to=${to}`),
-        api('GET', `/api/stats/timeseries?from=${from}&to=${to}&bucket=1d`),
+        api('GET', `/api/stats/overview?from=${from}&to=${to}${cur}`),
+        api('GET', `/api/stats/breakdown?dim=${dim}&from=${from}&to=${to}${cur}`),
+        api('GET', `/api/stats/timeseries?from=${from}&to=${to}&bucket=1d${cur}`),
       ])
       setOv(o)
       setItems(bd)
@@ -62,7 +68,7 @@ export default function Stats() {
       message.error(e.message)
     }
   }
-  useEffect(() => { load() }, [dim, range])
+  useEffect(() => { load() }, [dim, range, currency])
 
   const chartOption = {
     tooltip: { trigger: 'axis' },
@@ -101,7 +107,7 @@ export default function Stats() {
             <Statistic
               title="费用"
               value={ov?.cost ?? 0}
-              formatter={(v) => formatCost(+v)}
+              formatter={(v) => formatCost(+v, currency)}
               valueStyle={{ color: '#171717' }}
             />
           </div>
@@ -136,6 +142,23 @@ export default function Stats() {
             />
           </div>
         </Col>
+        <Col flex="1 1 0">
+          <div style={{ background: '#fffbe6', padding: 20, borderRadius: 12, minHeight: 96 }}>
+            <Statistic
+              title="P95 总耗时(ms)"
+              value={ov?.p95_total_ms ?? 0}
+              formatter={(v) => (
+                <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 12 }}>
+                  <span>{formatNumber(+v)}</span>
+                  <span style={{ fontSize: 12, color: '#4d4d4d', fontWeight: 400 }}>
+                    P95 首字: {formatNumber(ov?.p95_ttft_ms ?? 0)} ms
+                  </span>
+                </span>
+              )}
+              valueStyle={{ color: '#171717' }}
+            />
+          </div>
+        </Col>
       </Row>
       <Card style={{ marginBottom: 16 }}>
         <Radio.Group options={dims} value={dim} onChange={(e) => setDim(e.target.value)} optionType="button" />
@@ -144,6 +167,9 @@ export default function Stats() {
           value={range}
           onChange={(v) => v?.[0] && v[1] && setRange([v[0], v[1]])}
         />
+        <span style={{ float: 'right' }}>
+          <CurrencyToggle value={currency} onChange={setCurrency} />
+        </span>
       </Card>
       <Card title="每日请求趋势" style={{ marginBottom: 16 }}>
         <Chart option={chartOption} />
@@ -163,7 +189,7 @@ export default function Stats() {
           } />
           <Table.Column title="Prompt" dataIndex="prompt_tokens" />
           <Table.Column title="Completion" dataIndex="completion_tokens" />
-          <Table.Column title="费用" dataIndex="cost" render={(v) => v.toFixed(4)} />
+          <Table.Column title="费用" dataIndex="cost" render={(v) => formatCost(+v, currency)} />
           <Table.Column title="平均首字响应(ms)" dataIndex="avg_ttft_ms" render={(v) => Math.round(v)} />
           <Table.Column title="平均耗时(ms)" dataIndex="avg_total_ms" render={(v) => Math.round(v)} />
           <Table.Column title="平均重试" dataIndex="avg_retries" render={(v) => v.toFixed(2)} />

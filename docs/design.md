@@ -22,15 +22,14 @@
 | G5 | 多维统计 | 次数 / token / 首字延迟 / 总耗时 / 费用，按 路由·模型·提供商·key·状态·时间 聚合 |
 | G6 | 隐私默认 | 默认仅记录元数据；请求内容捕获为显式开关（默认关，全局 + 按路由两级） |
 | G7 | Web 管理界面 | 实体 CRUD、健康状态、手动解禁、统计报表、请求日志查询 |
-| G8 | 分层配置 + 热生效 | 启动层（监听地址、管理 token）在本地 config.yaml/命令行；运行层（熔断、限流、捕获等）全存 SQLite，管理面保存即生效 |
+| G8 | 分层配置 + 热生效 | 启动层（监听地址、管理鉴权）在本地 config.yaml/命令行；运行层（熔断、限流、捕获等）全存 SQLite，管理面保存即生效 |
 
 ### 1.2 非目标（v1 明确不做）
 
 - 多实例集群 / 高可用（单机单进程）
 - 用户体系、配额计费（仅一个可选的管理 token）
-- 非 OpenAI 协议转换（`provider.protocol` 字段预留，v1 仅实现 openai 兼容）
+- 协议转换仅覆盖 chat/completions（openai ↔ responses ↔ anthropic，见 `model.protocol`）；embeddings 等其余端点不做转换
 - 按用户/按 key 的限流
-- 提示词缓存亲和路由
 
 ---
 
@@ -122,6 +121,7 @@ CREATE TABLE model (
   protocol       TEXT NOT NULL DEFAULT 'openai',  -- openai(chat/completions) | responses(/responses) | anthropic(/v1/messages)
   input_price    REAL NOT NULL DEFAULT 0,         -- 每 1M prompt token 价格
   output_price   REAL NOT NULL DEFAULT 0,         -- 每 1M completion token 价格
+  price_currency TEXT NOT NULL DEFAULT 'USD',     -- 价格币种：USD | CNY；计费统一折算为 USD 入库（汇率见 pricing.usd_cny）
   -- 熔断状态机（模型级，跨路由共享）
   status         TEXT NOT NULL DEFAULT 'active',  -- active | cooldown | disabled
   fail_count     INTEGER NOT NULL DEFAULT 0,      -- 连续失败次数
@@ -174,6 +174,7 @@ CREATE TABLE request_log (
   key_id             INTEGER NOT NULL DEFAULT 0,  -- 命中的密钥 id（脱敏，不存 key 值）
   status             TEXT NOT NULL,               -- success | error | client_error
   error_code         TEXT NOT NULL DEFAULT '',    -- http 状态码 / timeout / conn / all_backends
+  error_body         TEXT NOT NULL DEFAULT '',    -- 上游错误体截断（≤2KB），诊断用；不含请求正文
   is_stream          INTEGER NOT NULL DEFAULT 0,
   prompt_tokens      INTEGER NOT NULL DEFAULT 0,
   completion_tokens  INTEGER NOT NULL DEFAULT 0,
@@ -190,6 +191,47 @@ CREATE INDEX idx_rl_model      ON request_log(model, created_at);
 CREATE INDEX idx_rl_provider   ON request_log(provider, created_at);
 CREATE INDEX idx_rl_key        ON request_log(key_id, created_at);
 
+-- 单次尝试日志（一次客户端请求可含多跳重试，每跳一行；最终落客户端的结果在 request_log）
+CREATE TABLE request_attempt (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id        TEXT NOT NULL,
+  attempt           INTEGER NOT NULL,               -- 从 1 起
+  route             TEXT NOT NULL,
+  model             TEXT NOT NULL,
+  provider          TEXT NOT NULL,
+  key_id            INTEGER NOT NULL DEFAULT 0,
+  status            TEXT NOT NULL,                  -- success | error | client_error
+  http_status       INTEGER NOT NULL DEFAULT 0,
+  error_code        TEXT NOT NULL DEFAULT '',
+  error_body        TEXT NOT NULL DEFAULT '',       -- 上游错误体截断（≤2KB）
+  latency_ms        INTEGER NOT NULL DEFAULT 0,
+  ttft_ms           INTEGER NOT NULL DEFAULT 0,
+  prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  created_at        INTEGER NOT NULL
+);
+CREATE INDEX idx_ra_request ON request_attempt(request_id, attempt);
+
+-- 每日统计预聚合（写入路径同步 UPSERT；查询优先走此表，当日/特殊维度回退 request_log 现算）
+CREATE TABLE request_log_daily (
+  day               INTEGER NOT NULL,               -- YYYYMMDD
+  route             TEXT NOT NULL DEFAULT '',
+  model             TEXT NOT NULL DEFAULT '',
+  provider          TEXT NOT NULL DEFAULT '',
+  status            TEXT NOT NULL DEFAULT '',
+  total             INTEGER NOT NULL DEFAULT 0,
+  success           INTEGER NOT NULL DEFAULT 0,
+  errors            INTEGER NOT NULL DEFAULT 0,
+  prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  cost              REAL NOT NULL DEFAULT 0,
+  retries_sum       INTEGER NOT NULL DEFAULT 0,
+  ttftb0..ttftb9    INTEGER NOT NULL DEFAULT 0,      -- TTFT 10 桶直方图（桶边界见 store.TTFTBucketBounds）
+  totalb0..totalb9  INTEGER NOT NULL DEFAULT 0,      -- 总耗时 10 桶直方图（桶边界见 store.TotalBucketBounds）
+  updated_at        INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, route, model, provider, status)
+);
+
 -- 内容日志（可选；全局+路由开关均开启时才写入；独立短保留期）
 CREATE TABLE content_log (
   request_id    TEXT PRIMARY KEY,
@@ -198,6 +240,7 @@ CREATE TABLE content_log (
   response_body TEXT NOT NULL,                    -- 非流式=完整body；流式=拼接的文本增量
   created_at    INTEGER NOT NULL
 );
+CREATE INDEX idx_cl_time ON content_log(created_at);
 ```
 
 ---
@@ -330,9 +373,18 @@ HTTP 503
 
 上游鉴权：代理替换 `Authorization: Bearer <选中的key>`，客户端无需带真实 key。
 
-### 7.2 管理面（`/api/*`，若 config.yaml 配置了 `admin.token` 则需携带 `X-Admin-Token` 头）
+### 7.2 管理面（`/api/*`，按启动层鉴权配置受保护，见 §9.1）
 
 ```
+# 鉴权（公开端点，引导登录页）
+GET   /api/auth-info                    # {"mode":"password"|"open"}，登录页据此渲染表单
+POST  /api/login                        # {username,password} → 签发 7 天滑动会话 {token,expires_at}
+POST  /api/logout                       # 撤销当前 Bearer 会话
+# 管理面放行凭据：Authorization: Bearer <会话令牌> | Basic base64(账号:密码)
+# 代理面 /v1/*（账号密码或 api_key 任一设置即保护）：Basic base64(账号:密码) | Bearer base64(账号:密码)
+#   | Bearer "账号:密码" 原文 | Bearer <api_key>，401 附 WWW-Authenticate
+# api_key 是 /v1 专用凭据，刻意不可打开管理面（调用密钥泄露不等于管理权泄露）
+
 # 实体 CRUD（均为标准 REST，保存后配置快照原子重建、即时生效）
 GET/POST         /api/providers            PUT/DELETE /api/providers/{id}
 GET/POST         /api/keys                 PUT/DELETE /api/keys/{id}     # 新增单个 key（名称必填、同提供商内唯一）；GET ?reveal=1 返回明文
@@ -343,12 +395,13 @@ GET/POST         /api/routes               PUT/DELETE /api/routes/{id}
 GET              /api/health               # 全量状态：模型熔断态、key 态、冷却倒计时
 POST             /api/models/{id}/enable   # 手动解禁（重置 fail_count/status）
 POST             /api/models/{id}/disable
+POST             /api/models/{id}/test-keys  # 逐密钥并发探测：返回绑定全部 key 的成功/耗时/错误/当前状态
 # 密钥启停无独立端点：PUT /api/keys/{id} 可改 name/key_value/status（回传脱敏值则不修改 key_value）
 
-# 统计查询
-GET  /api/stats/overview?from=&to=            # 总次数/成功率/token/费用/平均TTFT/平均耗时/p95
-GET  /api/stats/timeseries?dim=&from=&to=&bucket=1h   # dim: route|model|provider|key|status
-GET  /api/stats/breakdown?dim=&from=&to=     # 按维度分组聚合（含错误率、token、费用、延迟分位）
+# 统计查询（三个接口均支持 &currency=USD|CNY，CNY 时费用按 pricing.usd_cny 汇率换算输出）
+GET  /api/stats/overview?from=&to=            # 总次数/成功率/token/费用/平均TTFT/平均耗时/p95（优先走每日预聚合）
+GET  /api/stats/timeseries?dim=&from=&to=&bucket=1h   # 时间桶聚合；points 含 avg_ttft_ms/avg_total_ms
+GET  /api/stats/breakdown?dim=&from=&to=     # 按维度分组聚合（含错误率、token、费用、延迟分位）；dim: route|model|provider|key|status|error_code
 
 # 请求日志
 GET  /api/logs?route=&model=&status=&from=&to=&page=&size=
@@ -356,6 +409,10 @@ GET  /api/logs/{request_id}/content           # 内容捕获开启时查看请�
 
 # 配置
 GET/PUT  /api/settings                        # §9 全部配置项；保存即热生效
+
+# 维护
+POST /api/maintenance/cleanup                 # 立即按保留期清理过期日志；返回 {"deleted":{"request_log":N,…}}
+POST /api/maintenance/clear-stats             # body {"confirm":true}；清空请求日志/尝试日志/每日统计（内容日志保留）
 ```
 
 ---
@@ -378,13 +435,13 @@ GET/PUT  /api/settings                        # §9 全部配置项；保存即�
 | 费用 | cost（按 model 价格表计算，未配价格则为 0） |
 | 重试 | retries |
 
-聚合全部走 SQL 现算（本地单机量级 SQLite 足够，索引已按维度建好）；不做预聚合表。
+统计查询优先走每日预聚合表 `request_log_daily`（写入路径同步 UPSERT，`day × route × model × provider × status` 粒度 + 10 桶延迟直方图，均值/p95 由桶反查）；当日增量、`error_code` 维度等 rollup 未覆盖的查询回退 `request_log` 现算（索引已按维度建好）。清空统计与保留期清理同时覆盖两类表。
 
 ### 8.2 隐私设计
 
-- `request_log` **表结构上不存在任何内容字段**——默认物理上无法泄露
+- `request_log` **表结构上不存在任何请求/响应正文**——错误场景仅落 `error_code` + `error_body`（上游错误体截断至 2KB），默认物理上无法泄露
 - 内容捕获需 **全局开关 且（路由未配置白名单 或 路由在白名单内）** 双重条件，写入独立 `content_log` 表
-- 内容日志独立保留期（默认 3 天，`log_retention_days` 之外的独立配置项）
+- 内容日志独立保留期（`capture.retention_days` 默认 3 天，独立于 `log.retention_days`）；保留期由后台任务每小时自动清理落实（启动 30 秒后先跑一轮），也可经 `POST /api/maintenance/cleanup` 手动触发
 - key 值仅存 `api_key` 表，日志与统计中只出现 `key_id`
 
 ---
@@ -401,7 +458,8 @@ GET/PUT  /api/settings                        # §9 全部配置项；保存即�
 | 命令行 `--config` | 配置文件路径 | `./config.yaml` | 文件不存在时自动生成含注释的默认模板 |
 | 命令行 `--listen` | 监听地址 | 空（不覆盖） | 调试用，优先级最高 |
 | `config.yaml` → `server.listen` | 监听地址 | `127.0.0.1:17777` | 启动即需确定；dev 模式下 vite 独立前端跑 17778 反代到本端口 |
-| `config.yaml` → `admin.token` | 管理令牌 | `""`（关闭鉴权） | 敏感值放本地文件比 DB 更合适；代理面 `/v1/*` 永不鉴权 |
+| `config.yaml` → `admin.username` / `admin.password` | 管理账号密码 | `""`（关闭） | Web 登录 + /api 保护；同时可作 /v1 凭据：api_key = `base64(账号:密码)`（Basic/Bearer 皆可，RFC 7617）。用户名禁冒号；重启生效 |
+| `config.yaml` → `admin.api_key` | 网关调用密钥 | `""`（关闭） | /v1 专用：`Authorization: Bearer <api_key>`；不用于 Web 登录；仅设此项 = 本地免登录 + 远程带密钥 |
 
 优先级：`--listen` > config.yaml > 内置默认值。
 
@@ -418,7 +476,11 @@ GET/PUT  /api/settings                        # §9 全部配置项；保存即�
 | `capture.enabled` | `false` | 全局内容捕获开关 |
 | `capture.routes` | `[]` | 路由白名单（空=开启后全路由捕获） |
 | `capture.retention_days` | `3` | 内容日志保留期 |
-| `log.retention_days` | `0`（永久） | 请求日志保留期，0=不清理 |
+| `log.retention_days` | `0`（永久） | 请求日志保留期，0=不清理；>0 时每小时自动清理 |
+| `affinity.enabled` | `false` | 会话亲和开关（同会话粘住上次成功模型，最大化上游缓存命中） |
+| `affinity.header` | `X-Session-ID` | 会话 ID 请求头（未传时按消息前缀哈希自动识别会话） |
+| `affinity.ttl_s` | `3600` | 亲和记忆时长（秒） |
+| `pricing.usd_cny` | `7.25` | 美元兑人民币汇率；CNY 定价模型折算为 USD 计费入库，统计接口按它换算展示 |
 
 **启动引导**：首次启动自动建表、为运行层写入全部默认值、生成默认 config.yaml 模板。
 

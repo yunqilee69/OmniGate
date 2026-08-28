@@ -4,17 +4,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Bootstrap 是启动层配置：启动时确定、运行期不变（监听地址、管理令牌）。
+// Bootstrap 是启动层配置：启动时确定、运行期不变（监听地址、管理鉴权、网关调用密钥）。
 type Bootstrap struct {
 	Server struct {
 		Listen string `yaml:"listen"`
 	} `yaml:"server"`
 	Admin struct {
-		Token string `yaml:"token"`
+		Username string `yaml:"username"`
+		Password string `yaml:"password"`
+		ApiKey   string `yaml:"api_key"`
 	} `yaml:"admin"`
 }
 
@@ -26,9 +29,16 @@ server:
   listen: %s
 
 admin:
-  # 管理面访问令牌；留空 = 管理面无鉴权（纯本地使用）。
-  # 设置后所有 /api/* 请求需携带 X-Admin-Token 头。/v1/* 代理面永不鉴权。
-  token: ""
+  # 账号密码（Web 管理台登录）：设置后进入管理台需登录；同时也可作为 /v1 调用凭据。
+  # 用户名不可包含冒号；API 调用遵循 HTTP Basic 规则（RFC 7617）：
+  #   Authorization: Basic base64(用户名:密码)
+  # OpenAI SDK 场景 api_key 可直接填 base64(用户名:密码) 或 "用户名:密码" 原文（Bearer 传递）。
+  username: ""
+  password: ""
+  # 网关 API 密钥（调用 /v1 专用，不用于 Web 登录）：设置后 /v1 需携带
+  #   Authorization: Bearer <api_key>
+  # 与账号密码凭据任选其一；账号密码留空而仅设此项 = 本地免登录 + 远程调用带密钥。
+  api_key: ""
 `
 
 // LoadBootstrap 读取启动层配置；文件不存在时生成默认模板并返回默认值。
@@ -53,5 +63,23 @@ func LoadBootstrap(path string) (Bootstrap, error) {
 	if boot.Server.Listen == "" {
 		boot.Server.Listen = defaultListen
 	}
+	if err := boot.validateAdmin(); err != nil {
+		return boot, fmt.Errorf("config %s: %w", path, err)
+	}
 	return boot, nil
+}
+
+// validateAdmin 校验账号密码组合的完整性：设了用户名就必须设密码，
+// 用户名禁含冒号（Basic 凭据以首个冒号分隔用户名与密码，用户名带冒号将无法正确解析）。
+func (b Bootstrap) validateAdmin() error {
+	if b.Admin.Username == "" {
+		return nil
+	}
+	if strings.Contains(b.Admin.Username, ":") {
+		return fmt.Errorf("admin.username 不能包含冒号（Basic 凭据分隔符）")
+	}
+	if b.Admin.Password == "" {
+		return fmt.Errorf("admin.username 已设置但 admin.password 为空")
+	}
+	return nil
 }

@@ -1,8 +1,13 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Card, Form, Input, InputNumber, Select, Switch, message } from 'antd'
+import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Switch, message } from 'antd'
 import { api } from '../api'
 
 type Settings = Record<string, any>
+
+const fmtCounts = (m: any) =>
+  Object.entries(m ?? {})
+    .map(([k, v]) => `${k} ${v} 条`)
+    .join('，')
 
 const LADDER_PRESETS = ['10s', '30s', '1m', '3m', '5m', '15m', '30m']
 
@@ -47,9 +52,46 @@ export default function Settings() {
     }
   }
 
+  const confirmCleanup = () => {
+    Modal.confirm({
+      title: '确认立即清理过期数据？',
+      content: '将按当前保留天数立即删除过期的请求日志、尝试日志、统计与内容日志，不等下一轮自动清理。该操作不可恢复。',
+      okText: '立即清理',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const r = await api('POST', '/api/maintenance/cleanup')
+          message.success(`已清理：${fmtCounts(r.deleted) || '无过期数据'}`)
+        } catch (e: any) {
+          message.error(e.message)
+        }
+      },
+    })
+  }
+
+  const confirmClearStats = () => {
+    Modal.confirm({
+      title: '确认清空全部统计数据？',
+      content: '将删除全部请求日志、尝试日志与每日统计（内容日志保留）。此操作不可恢复。',
+      okText: '清空统计',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const r = await api('POST', '/api/maintenance/clear-stats', { confirm: true })
+          message.success(`已清空：${fmtCounts(r.cleared)}`)
+        } catch (e: any) {
+          message.error(e.message)
+        }
+      },
+    })
+  }
+
   if (!settings) return null
 
   return (
+    <>
     <Card title="运行配置（保存即热生效）" style={{ maxWidth: 720 }}>
       <Form form={form} layout="vertical">
         <Form.Item label="熔断阶梯（按顺序升级，末档重复）" name="breaker.cooldown_ladder">
@@ -108,8 +150,37 @@ export default function Settings() {
           <InputNumber min={10} max={86400} style={{ width: '100%' }} />
         </Form.Item>
 
+        <Form.Item
+          label="美元兑人民币汇率（1 USD = ? CNY）"
+          name="pricing.usd_cny"
+          extra="人民币定价的模型按此汇率折算为美元计费入库；仪表盘/统计页可切换展示币种"
+        >
+          <InputNumber min={0.01} max={10000} step={0.01} style={{ width: '100%' }} />
+        </Form.Item>
+
         <Button type="primary" onClick={save}>保存</Button>
       </Form>
     </Card>
+    <Card title="危险操作" style={{ maxWidth: 720, marginTop: 16 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ flex: 1 }}>
+            <div>立即清理过期数据</div>
+            <div style={{ color: '#8f8f8f', fontSize: 12 }}>
+              按保留天数立即删除过期的请求日志 / 尝试日志 / 统计 / 内容日志，不等下一轮自动清理
+            </div>
+          </div>
+          <Button danger ghost onClick={confirmCleanup}>立即清理</Button>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ flex: 1 }}>
+            <div>清空统计数据</div>
+            <div style={{ color: '#8f8f8f', fontSize: 12 }}>删除全部请求日志与每日统计（内容日志保留），不可恢复</div>
+          </div>
+          <Button danger onClick={confirmClearStats}>清空统计</Button>
+        </div>
+      </div>
+    </Card>
+    </>
   )
 }

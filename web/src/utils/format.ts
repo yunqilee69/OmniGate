@@ -14,9 +14,10 @@ function trimZeros(v: number): string {
   return s.replace(/\.?0+$/, '')
 }
 
-// 费用：金额更细腻，<1 显示 4 位小数，否则 K/M/B/T
-export function formatCost(v: number): string {
-  if (!isFinite(v) || v === 0) return '0'
-  if (v < 1) return v.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')
-  return formatNumber(v)
+// 费用：带币种符号；金额更细腻，<1 显示 4 位小数，否则 K/M/B/T
+export function formatCost(v: number, currency: string = 'USD'): string {
+  const sym = currency === 'CNY' ? '¥' : '$'
+  if (!isFinite(v) || v === 0) return `${sym}0`
+  if (v < 1) return sym + v.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')
+  return sym + formatNumber(v)
 }

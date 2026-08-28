@@ -29,6 +29,7 @@ type Runtime struct {
 	AffinityEnabled         bool
 	AffinityHeader          string
 	AffinityTTL             time.Duration
+	USDCNY                  float64
 }
 
 type settingSpec struct {
@@ -69,6 +70,17 @@ func boolVal(v any) error {
 		return errors.New("must be true or false")
 	}
 	return nil
+}
+
+// floatRange 数值配置校验；n != n 为 IEEE 754 判 NaN 惯用法。
+func floatRange(lo, hi float64) func(any) error {
+	return func(v any) error {
+		n, ok := v.(float64)
+		if !ok || n != n || n < lo || n > hi {
+			return fmt.Errorf("must be a number in [%g, %g]", lo, hi)
+		}
+		return nil
+	}
 }
 
 func strArr(v any) error {
@@ -117,6 +129,7 @@ var settingSpecs = []settingSpec{
 	{key: "affinity.enabled", def: `false`, validate: boolVal},
 	{key: "affinity.header", def: `"X-Session-ID"`, validate: headerName},
 	{key: "affinity.ttl_s", def: `3600`, validate: intRange(10, 86400)},
+	{key: "pricing.usd_cny", def: `7.25`, validate: floatRange(0.01, 10000)},
 }
 
 // RuntimeManager 管理运行层配置：DB 为事实来源，内存快照 atomic 替换（保存即热生效）。
@@ -221,6 +234,12 @@ func (m *RuntimeManager) rebuild() error {
 	_ = json.Unmarshal([]byte(raw["affinity.header"]), &affHdr)
 	rt.AffinityHeader = strings.TrimSpace(affHdr)
 	rt.AffinityTTL = time.Duration(getInt("affinity.ttl_s")) * time.Second
+	// 汇率非法时兜底 7.25，保证 CNY 模型计费不致除零
+	var rate float64
+	if err := json.Unmarshal([]byte(raw["pricing.usd_cny"]), &rate); err != nil || rate <= 0 {
+		rate = 7.25
+	}
+	rt.USDCNY = rate
 
 	m.snap.Store(rt)
 	return nil

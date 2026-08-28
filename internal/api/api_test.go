@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudomni/omnigate/internal/config"
 	"github.com/cloudomni/omnigate/internal/store"
@@ -25,7 +27,7 @@ func newTestServerWithStore(t *testing.T) (http.Handler, *store.Store) {
 	if err != nil {
 		t.Fatalf("init runtime config: %v", err)
 	}
-	return New(st, rt, "test-token", nil).Router(), st
+	return New(st, rt, AdminAuth{Username: "admin", Password: "test-token"}, nil).Router(), st
 }
 
 func newTestServer(t *testing.T) http.Handler {
@@ -45,7 +47,8 @@ func do(t *testing.T, h http.Handler, method, path string, body any, token strin
 	req := httptest.NewRequest(method, path, &buf)
 	req.Header.Set("Content-Type", "application/json")
 	if token != "" {
-		req.Header.Set("X-Admin-Token", token)
+		// 测试服务器凭据为 admin:<token>，走管理面 Basic 通道
+		req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:"+token)))
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -232,8 +235,8 @@ func TestM1FullFlow(t *testing.T) {
 		t.Fatalf("target weight lost: %v", t0)
 	}
 
-	// --- /v1/models 无需鉴权，返回逻辑路由名 ---
-	v1 := decodeObj(t, do(t, h, "GET", "/v1/models", nil, ""))
+	// --- /v1/models 返回逻辑路由名（Basic 凭据走代理面通道） ---
+	v1 := decodeObj(t, do(t, h, "GET", "/v1/models", nil, "test-token"))
 	v1data := v1["data"].([]any)
 	if len(v1data) != 1 || v1data[0].(map[string]any)["id"] != "glm-pool" {
 		t.Fatalf("v1/models wrong: %v", v1)
@@ -421,5 +424,301 @@ func TestModelRequiresKeys(t *testing.T) {
 	}, "test-token")
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "至少绑定一个密钥") {
 		t.Fatalf("empty key_ids must be rejected: %d — %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMaintenanceCleanup(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	rec := do(t, h, "PUT", "/api/settings",
+		map[string]any{"log.retention_days": 5, "capture.retention_days": 5}, "test-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set retention failed: %d — %s", rec.Code, rec.Body.String())
+	}
+	now := time.Now().Unix()
+	old := now - 10*86400
+	rows := []store.RequestLog{
+		{RequestID: "old", Route: "r", Model: "m", Provider: "p", Status: "success", CreatedAt: old},
+		{RequestID: "new", Route: "r", Model: "m", Provider: "p", Status: "success", CreatedAt: now},
+	}
+	for i := range rows {
+		if err := st.DB.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	caps := []store.ContentLog{
+		{RequestID: "old", Route: "r", RequestBody: "{}", ResponseBody: "{}", CreatedAt: old},
+		{RequestID: "new", Route: "r", RequestBody: "{}", ResponseBody: "{}", CreatedAt: now},
+	}
+	for i := range caps {
+		if err := st.DB.Create(&caps[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec = do(t, h, "POST", "/api/maintenance/cleanup", nil, "test-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cleanup failed: %d — %s", rec.Code, rec.Body.String())
+	}
+	obj := decodeObj(t, rec)
+	deleted := obj["deleted"].(map[string]any)
+	if deleted["request_log"].(float64) != 1 || deleted["content_log"].(float64) != 1 {
+		t.Fatalf("deleted counts wrong: %v", deleted)
+	}
+	var n int64
+	st.DB.Table("request_log").Count(&n)
+	if n != 1 {
+		t.Fatalf("request_log remaining %d, want 1", n)
+	}
+	st.DB.Table("content_log").Count(&n)
+	if n != 1 {
+		t.Fatalf("content_log remaining %d, want 1", n)
+	}
+}
+
+func TestMaintenanceClearStatsRequiresConfirm(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	for i := 0; i < 2; i++ {
+		if err := st.DB.Create(&store.RequestLog{
+			RequestID: fmt.Sprintf("r%d", i), Route: "r", Model: "m", Provider: "p",
+			Status: "success", CreatedAt: now,
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.DB.Create(&store.ContentLog{
+		RequestID: "r0", Route: "r", RequestBody: "{}", ResponseBody: "{}", CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(t, h, "POST", "/api/maintenance/clear-stats", nil, "test-token")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing confirm must be 400, got %d — %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, "POST", "/api/maintenance/clear-stats", map[string]any{"confirm": false}, "test-token")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("confirm=false must be 400, got %d", rec.Code)
+	}
+
+	rec = do(t, h, "POST", "/api/maintenance/clear-stats", map[string]any{"confirm": true}, "test-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear-stats failed: %d — %s", rec.Code, rec.Body.String())
+	}
+	obj := decodeObj(t, rec)
+	cleared := obj["cleared"].(map[string]any)
+	if cleared["request_log"].(float64) != 2 {
+		t.Fatalf("cleared counts wrong: %v", cleared)
+	}
+	var n int64
+	st.DB.Table("content_log").Count(&n)
+	if n != 1 {
+		t.Fatalf("clear-stats must keep content_log, remaining %d", n)
+	}
+}
+
+func TestStatsErrorCodeBreakdown(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	rows := []store.RequestLog{
+		{RequestID: "s1", Route: "r", Model: "m", Provider: "p", Status: "success", CreatedAt: now},
+		{RequestID: "s2", Route: "r", Model: "m", Provider: "p", Status: "success", CreatedAt: now},
+		{RequestID: "e1", Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "timeout", CreatedAt: now},
+		{RequestID: "e2", Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "conn", CreatedAt: now},
+	}
+	for i := range rows {
+		if err := st.DB.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 预聚合表有数据：error_code 维度必须绕过 rollup 走原始表（rollup 表无该列）
+	if err := st.DB.Create(&store.RequestLogDaily{
+		Day: store.DayKey(now), Route: "r", Model: "m", Provider: "p", Status: "success", Total: 99,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(t, h, "GET", "/api/stats/breakdown?dim=error_code", nil, "test-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("error_code breakdown failed: %d — %s", rec.Code, rec.Body.String())
+	}
+	got := map[string]float64{}
+	for _, it := range decodeArr(t, rec) {
+		row := it.(map[string]any)
+		got[row["dim"].(string)] = row["total"].(float64)
+	}
+	if got[""] != 2 || got["timeout"] != 1 || got["conn"] != 1 {
+		t.Fatalf("error_code rows wrong: %v", got)
+	}
+}
+
+func TestStatsTimeseriesAvgTotal(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	rows := []store.RequestLog{
+		{RequestID: "a", Route: "r", Model: "m", Provider: "p", Status: "success",
+			TTFTMs: 50, TotalMs: 100, CreatedAt: now},
+		{RequestID: "b", Route: "r", Model: "m", Provider: "p", Status: "success",
+			TTFTMs: 150, TotalMs: 300, CreatedAt: now},
+	}
+	for i := range rows {
+		if err := st.DB.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec := do(t, h, "GET", "/api/stats/timeseries", nil, "test-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("timeseries failed: %d — %s", rec.Code, rec.Body.String())
+	}
+	obj := decodeObj(t, rec)
+	points := obj["points"].([]any)
+	if len(points) != 1 {
+		t.Fatalf("expect 1 bucket, got %d", len(points))
+	}
+	p := points[0].(map[string]any)
+	if p["total"].(float64) != 2 {
+		t.Fatalf("bucket total wrong: %v", p)
+	}
+	if p["avg_ttft_ms"].(float64) != 100 || p["avg_total_ms"].(float64) != 200 {
+		t.Fatalf("averages wrong: ttft=%v total=%v", p["avg_ttft_ms"], p["avg_total_ms"])
+	}
+}
+
+// TestModelPriceCurrency 模型价格币种：创建回显、非法值 400、更新生效。
+func TestModelPriceCurrency(t *testing.T) {
+	h := newTestServer(t)
+	rec := do(t, h, "POST", "/api/providers", map[string]any{"name": "cc-prov", "base_url": "https://x"}, "test-token")
+	provID := idOf(t, decodeObj(t, rec))
+	rec = do(t, h, "POST", "/api/keys", map[string]any{"provider_id": provID, "key_value": "sk-cc1111", "name": "k1"}, "test-token")
+	keyID := idOf(t, decodeObj(t, rec))
+
+	rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": provID, "name": "m-cc", "input_price": 10, "output_price": 20,
+		"price_currency": "CNY", "key_ids": []int64{keyID},
+	}, "test-token")
+	m := decodeObj(t, rec)
+	if m["price_currency"] != "CNY" {
+		t.Fatalf("price_currency should echo CNY, got %v", m["price_currency"])
+	}
+	if rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": provID, "name": "m-eur", "key_ids": []int64{keyID}, "price_currency": "EUR",
+	}, "test-token"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid currency should 400, got %d", rec.Code)
+	}
+
+	modelID := idOf(t, m)
+	rec = do(t, h, "PUT", fmt.Sprintf("/api/models/%d", modelID), map[string]any{"price_currency": "USD"}, "test-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update currency failed: %d", rec.Code)
+	}
+	if m = decodeObj(t, rec); m["price_currency"] != "USD" {
+		t.Fatalf("updated currency should be USD, got %v", m["price_currency"])
+	}
+}
+
+// TestPricingSetting 汇率配置：默认值可见、合法值热更新、非法值拒绝。
+func TestPricingSetting(t *testing.T) {
+	h := newTestServer(t)
+	settings := decodeObj(t, do(t, h, "GET", "/api/settings", nil, "test-token"))
+	if _, ok := settings["pricing.usd_cny"]; !ok {
+		t.Fatal("settings should expose pricing.usd_cny")
+	}
+	if rec := do(t, h, "PUT", "/api/settings", map[string]any{"pricing.usd_cny": 7}, "test-token"); rec.Code != http.StatusOK {
+		t.Fatalf("set rate should pass: %d", rec.Code)
+	}
+	settings = decodeObj(t, do(t, h, "GET", "/api/settings", nil, "test-token"))
+	if settings["pricing.usd_cny"] != float64(7) {
+		t.Fatalf("rate should be 7, got %v", settings["pricing.usd_cny"])
+	}
+	for _, bad := range []any{0, -1, "x"} {
+		if rec := do(t, h, "PUT", "/api/settings", map[string]any{"pricing.usd_cny": bad}, "test-token"); rec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid rate %v should 400, got %d", bad, rec.Code)
+		}
+	}
+}
+
+// TestStatsCurrencyParam currency=CNY 时统计费用按快照汇率放大（rollup 与 raw 双路径一致）。
+func TestStatsCurrencyParam(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	for i := 0; i < 2; i++ {
+		entry := store.RequestLog{
+			RequestID: fmt.Sprintf("cur-%d", i), Route: "glm", Model: "m1", Provider: "p1",
+			Status: "success", Cost: 1.0, CreatedAt: now - 100,
+		}
+		if err := st.DB.Create(&entry).Error; err != nil {
+			t.Fatal(err)
+		}
+		store.UpsertDaily(st.DB, &entry)
+	}
+	do(t, h, "PUT", "/api/settings", map[string]any{"pricing.usd_cny": 7}, "test-token")
+
+	ov := decodeObj(t, do(t, h, "GET", "/api/stats/overview?currency=CNY", nil, "test-token"))
+	if ov["cost"] != float64(14) {
+		t.Fatalf("CNY overview cost want 14, got %v", ov["cost"])
+	}
+	ov = decodeObj(t, do(t, h, "GET", "/api/stats/overview", nil, "test-token"))
+	if ov["cost"] != float64(2) {
+		t.Fatalf("USD overview cost want 2, got %v", ov["cost"])
+	}
+
+	items := decodeArr(t, do(t, h, "GET", "/api/stats/breakdown?dim=model&currency=CNY", nil, "test-token"))
+	if len(items) != 1 || items[0].(map[string]any)["cost"] != float64(14) {
+		t.Fatalf("CNY breakdown cost wrong: %v", items)
+	}
+	ts := decodeObj(t, do(t, h, "GET", "/api/stats/timeseries?currency=CNY", nil, "test-token"))
+	pts := ts["points"].([]any)
+	if len(pts) != 1 || pts[0].(map[string]any)["cost"] != float64(14) {
+		t.Fatalf("CNY timeseries cost wrong: %v", pts)
+	}
+}
+
+// TestModelTestKeysEndpoint 逐密钥测试端点：好/坏 key 并存，各自出结果。
+func TestModelTestKeysEndpoint(t *testing.T) {
+	h := newTestServer(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.Header.Get("Authorization"), "sk-bad") {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid key"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`))
+	}))
+	defer up.Close()
+
+	rec := do(t, h, "POST", "/api/providers", map[string]any{"name": "tk-prov", "base_url": up.URL}, "test-token")
+	provID := idOf(t, decodeObj(t, rec))
+	rec = do(t, h, "POST", "/api/keys", map[string]any{"provider_id": provID, "key_value": "sk-good1111", "name": "好key"}, "test-token")
+	goodID := idOf(t, decodeObj(t, rec))
+	rec = do(t, h, "POST", "/api/keys", map[string]any{"provider_id": provID, "key_value": "sk-bad2222", "name": "坏key"}, "test-token")
+	badID := idOf(t, decodeObj(t, rec))
+	rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": provID, "name": "m-tk", "key_ids": []int64{goodID, badID},
+	}, "test-token")
+	modelID := idOf(t, decodeObj(t, rec))
+
+	res := decodeObj(t, do(t, h, "POST", fmt.Sprintf("/api/models/%d/test-keys", modelID), nil, "test-token"))
+	if res["model"] != "m-tk" {
+		t.Fatalf("model name wrong: %v", res["model"])
+	}
+	keys := res["keys"].([]any)
+	if len(keys) != 2 {
+		t.Fatalf("expect 2 key results, got %d", len(keys))
+	}
+	byID := map[int64]map[string]any{}
+	for _, k := range keys {
+		km := k.(map[string]any)
+		byID[int64(km["key_id"].(float64))] = km
+	}
+	if g := byID[goodID]; g["ok"] != true || g["key_name"] != "好key" || g["key_masked"] == "" {
+		t.Fatalf("good key result wrong: %v", g)
+	}
+	if b := byID[badID]; b["ok"] != false || b["error_code"] != "401" {
+		t.Fatalf("bad key result wrong: %v", b)
+	}
+
+	if rec = do(t, h, "POST", "/api/models/99999/test-keys", nil, "test-token"); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing model should 404, got %d", rec.Code)
 	}
 }

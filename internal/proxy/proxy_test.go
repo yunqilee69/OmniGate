@@ -28,7 +28,7 @@ func newTestStack(t *testing.T) (*store.Store, http.Handler) {
 	if err != nil {
 		t.Fatalf("init runtime: %v", err)
 	}
-	return st, api.New(st, rt, "", proxy.New(st, rt)).Router()
+	return st, api.New(st, rt, api.AdminAuth{}, proxy.New(st, rt)).Router()
 }
 
 func chatBody(stream bool) map[string]any {
@@ -452,6 +452,116 @@ func TestUnknownRoute(t *testing.T) {
 	resp := post(t, h, body)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expect 404, got %d", resp.StatusCode)
+	}
+}
+
+func setupSingleUpstream(t *testing.T, st *store.Store, url string, timeoutMs int) {
+	t.Helper()
+	p := store.Provider{Name: "zhipu", BaseURL: url, TimeoutMs: timeoutMs}
+	st.DB.Create(&p)
+	m := store.Model{ProviderID: p.ID, Name: "m0"}
+	st.DB.Create(&m)
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-to", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
+	rt := store.Route{Name: "glm-pool"}
+	st.DB.Create(&rt)
+	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
+}
+
+// 流式请求：响应头已到但首字节数据慢于 provider 超时 → 必须记为 timeout（而非 stream_setup_failed）
+func TestStreamFirstByteTimeout(t *testing.T) {
+	st, h := newTestStack(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(500 * time.Millisecond)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer up.Close()
+	setupSingleUpstream(t, st, up.URL, 80)
+
+	resp := post(t, h, chatBody(true))
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expect 502 after timeout exhaustion, got %d", resp.StatusCode)
+	}
+	ls := logs(t, st)
+	if len(ls) == 0 {
+		t.Fatal("expect at least 1 log row")
+	}
+	for i, l := range ls {
+		if l.Status != "error" || l.ErrorCode != "timeout" {
+			t.Fatalf("attempt #%d must be timeout, got %+v", i, l)
+		}
+	}
+}
+
+// 流式请求：首字节立即到达后，总时长超过 provider 超时的长流必须存活到完成
+func TestStreamLongOutputSurvivesTimeout(t *testing.T) {
+	st, h := newTestStack(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		for i := 0; i < 6; i++ {
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"chunk%d \"}}]}\n\n", i)
+			fl.Flush()
+			time.Sleep(100 * time.Millisecond)
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		fl.Flush()
+	}))
+	defer up.Close()
+	setupSingleUpstream(t, st, up.URL, 250)
+
+	resp := post(t, h, chatBody(true))
+	if resp.StatusCode != 200 {
+		t.Fatalf("long stream should survive, got %d", resp.StatusCode)
+	}
+	sb := readAll(t, resp)
+	for i := 0; i < 6; i++ {
+		if !strings.Contains(sb, fmt.Sprintf("chunk%d", i)) {
+			t.Fatalf("missing chunk%d in stream: %q", i, sb)
+		}
+	}
+	if !strings.Contains(sb, "[DONE]") {
+		t.Fatalf("stream not completed: %q", sb)
+	}
+	ls := logs(t, st)
+	if len(ls) != 1 {
+		t.Fatalf("expect 1 log row, got %d", len(ls))
+	}
+	if ls[0].Status != "success" || ls[0].TotalMs < 500 {
+		t.Fatalf("long stream must succeed with total>=500ms: %+v", ls[0])
+	}
+}
+
+// 非流式请求：响应头已到但 body 慢于 provider 超时 → 必须记为 timeout（而非 read_error）
+func TestNonStreamBodyTimeout(t *testing.T) {
+	st, h := newTestStack(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(500 * time.Millisecond)
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"late"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer up.Close()
+	setupSingleUpstream(t, st, up.URL, 80)
+
+	resp := post(t, h, chatBody(false))
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expect 502 after timeout exhaustion, got %d", resp.StatusCode)
+	}
+	ls := logs(t, st)
+	if len(ls) == 0 {
+		t.Fatal("expect at least 1 log row")
+	}
+	for i, l := range ls {
+		if l.Status != "error" || l.ErrorCode != "timeout" {
+			t.Fatalf("attempt #%d must be timeout, got %+v", i, l)
+		}
 	}
 }
 

@@ -14,9 +14,10 @@ omnigate
 `postinstall` will:
 
 1. Detect your OS / architecture
-2. Download the matching `omnigate-<version>-<os>-<arch>.tar.gz` from the [release page](https://github.com/cloudomni/omnigate/releases/tag/v`npm view @cloudomni/omnigate version`)
-3. Extract it into `node_modules/@cloudomni/omnigate/vendor/`
-4. Mark the binary executable
+2. Download the matching `omnigate-<version>-<os>-<arch>.tar.gz` and `omnigate_<version>_checksums.txt` from the [release page](https://github.com/cloudomni/omnigate/releases/tag/v`npm view @cloudomni/omnigate version`)
+3. Verify the tarball's sha256 against the checksums file (install aborts on any mismatch or missing entry — fail closed)
+4. Extract it into `node_modules/@cloudomni/omnigate/vendor/`
+5. Mark the binary executable
 
 On first run, OmniGate will create `~/.omnigate/` (db, config, log) automatically.
 

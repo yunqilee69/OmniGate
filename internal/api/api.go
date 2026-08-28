@@ -19,21 +19,26 @@ import (
 
 // Server 管理面 HTTP 服务。
 type Server struct {
-	store      *store.Store
-	rt         *config.RuntimeManager
-	adminToken string
-	chat       http.Handler
+	store    *store.Store
+	rt       *config.RuntimeManager
+	auth     AdminAuth
+	sessions *sessionStore
+	chat     http.Handler
 }
 
-// New 构造管理面服务。adminToken 为空表示管理面不鉴权（纯本地使用）；
+// New 构造管理面服务。auth 为启动层静态鉴权配置（详见 AdminAuth）；
 // chat 为 /v1/chat/completions 代理处理器（可为 nil，测试场景）。
-func New(st *store.Store, rt *config.RuntimeManager, adminToken string, chat http.Handler) *Server {
-	return &Server{store: st, rt: rt, adminToken: adminToken, chat: chat}
+func New(st *store.Store, rt *config.RuntimeManager, auth AdminAuth, chat http.Handler) *Server {
+	return &Server{store: st, rt: rt, auth: auth, sessions: newSessionStore(), chat: chat}
 }
 
 // Router 组装全部 HTTP 路由。
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
+
+	// 公开端点：登录页引导与凭据校验，不经过 authMW
+	r.Get("/api/auth-info", s.handleAuthInfo)
+	r.Post("/api/login", s.handleLogin)
 
 	r.Route("/api", func(ar chi.Router) {
 		ar.Use(s.authMW)
@@ -48,6 +53,10 @@ func (s *Server) Router() http.Handler {
 		ar.Get("/logs/{request_id}/content", s.getLogContent)
 		ar.Get("/logs/{request_id}/attempts", s.getLogAttempts)
 		ar.Get("/logs/{request_id}", s.getLogByID)
+
+		ar.Post("/maintenance/cleanup", s.postMaintenanceCleanup)
+		ar.Post("/maintenance/clear-stats", s.postMaintenanceClearStats)
+		ar.Post("/logout", s.handleLogout)
 
 		ar.Route("/providers", func(er chi.Router) {
 			er.Get("/", s.listProviders)
@@ -75,6 +84,7 @@ func (s *Server) Router() http.Handler {
 				ir.Post("/enable", s.enableModel)
 				ir.Post("/disable", s.disableModel)
 				ir.Post("/test", s.testModel)
+				ir.Post("/test-keys", s.testModelKeys)
 			})
 		})
 		ar.Route("/routes", func(er chi.Router) {
@@ -87,22 +97,12 @@ func (s *Server) Router() http.Handler {
 		})
 	})
 
-	r.Get("/v1/models", s.v1Models)
+	r.With(s.v1AuthMW).Get("/v1/models", s.v1Models)
 	if s.chat != nil {
-		r.Post("/v1/chat/completions", s.chat.ServeHTTP)
+		r.With(s.v1AuthMW).Post("/v1/chat/completions", s.chat.ServeHTTP)
 	}
 	r.NotFound(webui.Handler().ServeHTTP)
 	return r
-}
-
-func (s *Server) authMW(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.adminToken == "" || r.Header.Get("X-Admin-Token") == s.adminToken {
-			next.ServeHTTP(w, r)
-			return
-		}
-		writeErr(w, http.StatusUnauthorized, "unauthorized", "missing or invalid X-Admin-Token")
-	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

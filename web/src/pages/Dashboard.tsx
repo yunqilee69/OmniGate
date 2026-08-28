@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Card, Col, Empty, Row, Statistic, Table, Tooltip, Button, message } from 'antd'
 import dayjs from 'dayjs'
 import { api } from '../api'
 import Chart from '../components/Chart'
 import StatusTag from '../components/StatusTag'
+import { CurrencyToggle, useCurrency } from '../components/CurrencyToggle'
 import { formatNumber, formatCost } from '../utils/format'
 
 interface Overview {
@@ -87,16 +88,20 @@ export default function Dashboard() {
   const [models, setModels] = useState<HealthModel[]>([])
   const [topModels, setTopModels] = useState<TopModelRow[]>([])
   const [now, setNow] = useState(Math.floor(Date.now() / 1000))
+  const [currency, setCurrency] = useCurrency()
+  const currencyRef = useRef(currency)
+  currencyRef.current = currency
 
   const load = async () => {
     const startOfDay = dayjs().startOf('day').unix()
     const endOfDay = dayjs().endOf('day').unix()
+    const cur = `&currency=${currencyRef.current}`
     try {
       const [o, ts, h, top] = await Promise.all([
-        api('GET', `/api/stats/overview?from=${startOfDay}&to=${endOfDay}`),
-        api('GET', `/api/stats/timeseries?from=${startOfDay}&to=${endOfDay}&bucket=1h`),
+        api('GET', `/api/stats/overview?from=${startOfDay}&to=${endOfDay}${cur}`),
+        api('GET', `/api/stats/timeseries?from=${startOfDay}&to=${endOfDay}&bucket=1h${cur}`),
         api('GET', '/api/health'),
-        api('GET', `/api/stats/breakdown?dim=model&from=${startOfDay}&to=${endOfDay}`),
+        api('GET', `/api/stats/breakdown?dim=model&from=${startOfDay}&to=${endOfDay}${cur}`),
       ])
       setOv(o)
       setSeries(ts.points ?? [])
@@ -115,6 +120,7 @@ export default function Dashboard() {
     const t = setInterval(load, 10000)
     return () => clearInterval(t)
   }, [])
+  useEffect(() => { load() }, [currency])
 
   // 今日 0..nowHour 的固定小时桶；缺失小时补 0（柱图保持显示空白柱，不省略 x 轴）。
   const hours = Array.from({ length: dayjs(now * 1000).hour() + 1 }, (_, i) => i)
@@ -124,21 +130,27 @@ export default function Dashboard() {
   }
   const chartOption = {
     tooltip: { trigger: 'axis' },
-    legend: { data: ['请求数', '总 Tokens'] },
-    grid: { left: 50, right: 60, bottom: 30 },
+    legend: { data: ['请求数', '总 Tokens', '平均首字延迟', '平均总耗时'] },
+    grid: { left: 50, right: 70, bottom: 30 },
     xAxis: { type: 'category', data: hours.map((h) => `${h.toString().padStart(2, '0')}:00`) },
     yAxis: [
       { type: 'value', name: '请求数' },
       { type: 'value', name: '总 Tokens' },
+      { type: 'value', name: '延迟(ms)', splitLine: { show: false } },
     ],
     series: [
       { name: '请求数', type: 'bar', yAxisIndex: 0, data: hours.map((h) => hourToBucket[h]?.total ?? 0), itemStyle: { color: '#171717' } },
       { name: '总 Tokens', type: 'bar', yAxisIndex: 1, data: hours.map((h) => hourToBucket[h]?.total_tokens ?? 0), itemStyle: { color: '#4d4d4d' } },
+      { name: '平均首字延迟', type: 'line', yAxisIndex: 2, smooth: true, showSymbol: false, connectNulls: true, itemStyle: { color: '#1677ff' }, data: hours.map((h) => (hourToBucket[h] ? Math.round(hourToBucket[h].avg_ttft_ms ?? 0) : null)) },
+      { name: '平均总耗时', type: 'line', yAxisIndex: 2, smooth: true, showSymbol: false, connectNulls: true, itemStyle: { color: '#faad14' }, data: hours.map((h) => (hourToBucket[h] ? Math.round(hourToBucket[h].avg_total_ms ?? 0) : null)) },
     ],
   }
 
   return (
     <div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+        <CurrencyToggle value={currency} onChange={setCurrency} />
+      </div>
       <Row gutter={[16, 16]}>
         <Col flex="1 1 0">
           <div style={{ background: '#eaf4ff', padding: 20, borderRadius: 12, minHeight: 96 }}>
@@ -158,11 +170,28 @@ export default function Dashboard() {
           </div>
         </Col>
         <Col flex="1 1 0">
+          <div style={{ background: '#f0f9eb', padding: 20, borderRadius: 12, minHeight: 96 }}>
+            <Statistic
+              title="成功率"
+              value={(ov?.success_rate ?? 0) * 100}
+              formatter={(v) => (
+                <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 12 }}>
+                  <span>{(+v).toFixed(1)}%</span>
+                  <span style={{ fontSize: 12, color: '#4d4d4d', fontWeight: 400 }}>
+                    错误: {formatNumber(ov?.errors ?? 0)} 次
+                  </span>
+                </span>
+              )}
+              valueStyle={{ color: '#171717' }}
+            />
+          </div>
+        </Col>
+        <Col flex="1 1 0">
           <div style={{ background: '#f0fbe8', padding: 20, borderRadius: 12, minHeight: 96 }}>
             <Statistic
               title="费用"
               value={ov?.cost ?? 0}
-              formatter={(v) => formatCost(+v)}
+              formatter={(v) => formatCost(+v, currency)}
               valueStyle={{ color: '#171717' }}
             />
           </div>
@@ -219,7 +248,7 @@ export default function Dashboard() {
             <Table.Column title="总 Tokens" width={120} sorter={(a, b) => (b.prompt_tokens + b.completion_tokens) - (a.prompt_tokens + a.completion_tokens)} render={(_, r) => formatNumber(r.prompt_tokens + r.completion_tokens)} />
             <Table.Column title="输入 Tokens" dataIndex="prompt_tokens" width={110} sorter={(a, b) => a.prompt_tokens - b.prompt_tokens} render={(v) => formatNumber(+v)} />
             <Table.Column title="输出 Tokens" dataIndex="completion_tokens" width={110} sorter={(a, b) => a.completion_tokens - b.completion_tokens} render={(v) => formatNumber(+v)} />
-            <Table.Column title="费用" dataIndex="cost" width={100} sorter={(a, b) => a.cost - b.cost} render={(v) => formatCost(+v)} />
+            <Table.Column title="费用" dataIndex="cost" width={100} sorter={(a, b) => a.cost - b.cost} render={(v) => formatCost(+v, currency)} />
           </Table>
         )}
       </Card>
@@ -230,7 +259,7 @@ export default function Dashboard() {
           <Table<HealthModel> rowKey="id" dataSource={models} pagination={false} size="small" tableLayout="fixed">
             <Table.Column title="ID" dataIndex="id" width={60} />
             <Table.Column title="模型" dataIndex="name" width={160} />
-            <Table.Column title="状态" width={100} render={(_, m) => modelStatusTag(m)} />
+            <Table.Column title="状态" width={100} render={(_, m: HealthModel) => modelStatusTag(m)} />
             <Table.Column title="连续失败" dataIndex="fail_count" width={90} />
             <Table.Column
               title="冷却/禁用详情"
