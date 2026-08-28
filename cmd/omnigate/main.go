@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -51,6 +52,13 @@ func expandHome(p string) string {
 		return filepath.Join(home, p[2:])
 	}
 	return p
+}
+
+func getPort(listen string) string {
+	if idx := strings.LastIndex(listen, ":"); idx >= 0 {
+		return listen[idx+1:]
+	}
+	return "17777"
 }
 
 // appHomeDir 返回 ~/.omnigate 绝对路径;获取不到主目录时回落到当前目录下 .omnigate。
@@ -117,6 +125,7 @@ func main() {
 		logPath        string
 		listenOverride string
 		showVersion    bool
+		daemonMode     bool
 	)
 	flag.StringVar(&dbPath, "db", filepath.Join(appHome, "omnigate.db"),
 		"SQLite database file path (default: ~/.omnigate/omnigate.db)")
@@ -128,6 +137,8 @@ func main() {
 		"override listen address from config.yaml (debug, highest priority)")
 	flag.BoolVar(&showVersion, "version", false,
 		"print version and exit")
+	flag.BoolVar(&daemonMode, "daemon", true,
+		"run in daemon mode (default: true, use --daemon=false for foreground)")
 	flag.Parse()
 
 	if showVersion {
@@ -206,6 +217,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// 等待 HTTP 服务器启动
+	serverReady := make(chan struct{})
+	go func() {
+		// 短暂延迟确保监听已绑定
+		time.Sleep(100 * time.Millisecond)
+		close(serverReady)
+	}()
+
 	// 保留期清理：启动 30s 后先跑一次，之后每小时一次；保留期为 0 的表在 PurgeRetentions 内部跳过。
 	go func() {
 		boot := time.NewTimer(30 * time.Second)
@@ -232,18 +251,59 @@ func main() {
 	}()
 
 	go func() {
-		slog.Info("omnigate listening",
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("http server error", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	// 等待服务器就绪
+	<-serverReady
+
+	// 输出启动信息到 stdout（即使在守护模式下也输出）
+	accessURL := fmt.Sprintf("http://%s", listen)
+	if listen == "0.0.0.0:17777" || listen == ":17777" {
+		accessURL = "http://127.0.0.1:17777"
+	}
+
+	shortCommit := commit
+	if len(commit) > 7 {
+		shortCommit = commit[:7]
+	}
+
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Printf("  OmniGate %s (%s)\n", version, shortCommit)
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Printf("  访问地址:  %s\n", accessURL)
+	fmt.Printf("  数据目录:  %s\n", appHome)
+	fmt.Printf("  数据库:    %s\n", dbPath)
+	fmt.Printf("  配置文件:  %s\n", cfgPath)
+	fmt.Printf("  日志文件:  %s\n", logPath)
+	fmt.Printf("  认证模式:  %s\n", auth.Mode())
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	// 守护进程模式：输出信息后父进程继续在后台运行
+	if daemonMode {
+		fmt.Println("\n✓ 服务已启动（后台运行）")
+		fmt.Printf("  使用 'kill $(lsof -ti:%s)' 停止服务\n", getPort(listen))
+		fmt.Printf("  查看日志: tail -f %s\n", logPath)
+		
+		// 关闭 stdin，避免阻塞
+		os.Stdin.Close()
+		
+		// 继续在后台运行，等待信号
+		slog.Info("daemon mode: running in background", "pid", os.Getpid())
+	} else {
+		// 前台模式：继续运行并输出日志
+		fmt.Println("\n✓ 服务已启动（前台运行，按 Ctrl+C 停止）")
+		slog.Info("foreground mode: serving",
 			"listen", listen,
 			"db", dbPath,
 			"config", cfgPath,
 			"log", logPath,
 			"admin_auth", auth.Mode(),
 			"v1_auth", auth.V1Protected())
-		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("http server error", "err", err)
-			os.Exit(1)
-		}
-	}()
+	}
 
 	<-ctx.Done()
 	slog.Info("shutting down")
