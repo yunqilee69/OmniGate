@@ -32,7 +32,7 @@ const checksumsName = `omnigate_${VERSION}_checksums.txt`;
 const releaseBase   = `https://github.com/yunqilee69/OmniGate/releases/download/v${VERSION}`;
 const r2Base        = `https://cdn.yunke.icu/v${VERSION}`;
 
-// 双源策略:优先 Cloudflare R2(中国大陆快),失败回退 GitHub Release(全球可用)
+// 双源策略:默认 GitHub Release(全球可用),可选 R2 CDN(中国大陆快)
 const downloadUrl   = `${releaseBase}/${archiveName}`;
 const checksumsUrl  = `${releaseBase}/${checksumsName}`;
 const r2ArchiveUrl  = `${r2Base}/${archiveName}`;
@@ -43,9 +43,16 @@ const binName       = process.platform === 'win32' ? 'omnigate.exe' : 'omnigate'
 const binPath       = path.join(vendorDir, binName);
 
 // 可选 GitHub 加速镜像(如 ghproxy.com / ghfast.top),格式 https://镜像前缀/https://原URL。
-// 仅作用于 GitHub 归档包下载;R2 与 GitHub 校验和始终直连官方源(镜像投毒会被 sha256 拦截)。
+// 仅作用于 GitHub 归档包下载;校验和始终直连官方源(镜像投毒会被 sha256 拦截)。
 const ghProxy = (process.env.OMNIGATE_GH_PROXY || '').replace(/\/+$/, '');
 const ghArchiveUrlProxied = ghProxy ? `${ghProxy}/${downloadUrl}` : downloadUrl;
+
+// 优先级选择:默认 GitHub,设置 OMNIGATE_USE_CDN=1 走 R2(中国大陆推荐)
+const useCDN = process.env.OMNIGATE_USE_CDN === '1';
+const primaryArchiveUrl = useCDN ? r2ArchiveUrl : ghArchiveUrlProxied;
+const fallbackArchiveUrl = useCDN ? ghArchiveUrlProxied : r2ArchiveUrl;
+const primaryChecksumUrl = useCDN ? r2ChecksumUrl : checksumsUrl;
+const fallbackChecksumUrl = useCDN ? checksumsUrl : r2ChecksumUrl;
 
 if (fs.existsSync(binPath)) {
   console.log(`[omnigate] binary already present at vendor/${binName}, skipping download`);
@@ -127,8 +134,8 @@ function expectedChecksum(checksumsText, fileName) {
   const tmpPath = path.join(vendorDir, archiveName + '.tmp');
   try {
     const [archive, checksums] = await Promise.all([
-      downloadWithFallback(r2ArchiveUrl, ghArchiveUrlProxied, 'archive'),
-      downloadWithFallback(r2ChecksumUrl, checksumsUrl, 'checksums'),
+      downloadWithFallback(primaryArchiveUrl, fallbackArchiveUrl, 'archive'),
+      downloadWithFallback(primaryChecksumUrl, fallbackChecksumUrl, 'checksums'),
     ]);
 
     // fail closed: 校验文件缺失、条目缺失、哈希不匹配都拒绝安装

@@ -11,6 +11,12 @@ npm install -g @cloudomni/omnigate
 omnigate
 ```
 
+**中国大陆用户推荐**(加速安装)：
+
+```bash
+OMNIGATE_USE_CDN=1 npm install -g @cloudomni/omnigate
+```
+
 首次运行会在 `~/.omnigate/` 下自动创建数据目录(SQLite、配置、日志),浏览器打开 <http://127.0.0.1:17777> 进入内嵌管理台。
 
 ## 安装时发生了什么
@@ -18,9 +24,10 @@ omnigate
 `postinstall` 会依次:
 
 1. 识别操作系统与 CPU 架构
-2. **双源下载**(自动回退,无需配置)：
-   - 优先从 **Cloudflare R2 CDN**(中国大陆快,`cdn.yunke.icu`)下载
-   - 失败则回退 **GitHub Release**(全球可用)
+2. **双源下载**(自动回退)：
+   - 默认从 **GitHub Release**(全球可用)下载
+   - 失败则回退备用源(R2 CDN 或 GitHub 镜像)
+   - **中国大陆用户**：设置 `OMNIGATE_USE_CDN=1` 优先走 **Cloudflare R2 CDN**(`cdn.yunke.icu`,秒级完成)
 3. 下载对应平台的 `omnigate-<版本>-<os>-<arch>.tar.gz` 与 `omnigate_<版本>_checksums.txt`
 4. 校验 tarball 的 sha256(不匹配或缺少条目则中止安装——fail closed)
 5. 解压到 `node_modules/@cloudomni/omnigate/vendor/`
@@ -54,21 +61,27 @@ rm -rf ~/.omnigate   # 可选:一并清理运行数据
 
 ## 故障排查
 
-**大多数情况下直接 `npm install` 即可**——双源策略(Cloudflare R2 + GitHub)+ 自动重试已覆盖常见网络问题。
+**大多数情况下直接 `npm install` 即可**——双源回退 + 自动重试已覆盖常见网络问题。
 
-**仍失败 / 极端受限网络**
+**中国大陆 / 受限网络**
 
-使用 GitHub 加速镜像(仅作为第三层回退，R2 和 GitHub 都失败时)：
+优先使用 R2 CDN(比 GitHub 快 10 倍+)：
+
+```bash
+OMNIGATE_USE_CDN=1 npm install -g @cloudomni/omnigate
+```
+
+如果 CDN 也慢，组合使用 GitHub 镜像：
 
 ```bash
 OMNIGATE_GH_PROXY=https://ghproxy.com npm install -g @cloudomni/omnigate
-# 或 ghfast.top / gh-proxy.com 等其他镜像服务
+# 镜像可选:ghfast.top / gh-proxy.com 等
 ```
 
-放宽空闲检测窗口(秒,默认 30，仅在极慢网络下需要)：
+极慢网络,放宽超时(秒,默认 30)：
 
 ```bash
-OMNIGATE_DOWNLOAD_TIMEOUT=120 npm install -g @cloudomni/omnigate
+OMNIGATE_DOWNLOAD_TIMEOUT=120 OMNIGATE_USE_CDN=1 npm install -g @cloudomni/omnigate
 ```
 
 **手动下载(离线环境 / 企业内网)**
