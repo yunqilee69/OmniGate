@@ -1,78 +1,78 @@
 # @cloudomni/omnigate
 
-npm distribution wrapper for [OmniGate](https://github.com/yunqilee69/OmniGate) — an OpenAI-compatible AI gateway.
+[OmniGate](https://github.com/yunqilee69/OmniGate) 的 npm 发行包 —— OpenAI 兼容的本地 AI 网关,单二进制、零外部依赖。
 
-> ⚠️ This package **does not** ship the Go binary. It downloads the matching binary from GitHub Releases on `postinstall`. Network access is required at install time.
+> ⚠️ 本包**不内嵌 Go 二进制**。安装时(`postinstall`)会从 GitHub Releases 下载对应平台的二进制,因此安装期需要联网。
 
-## Install
+## 安装
 
 ```bash
 npm install -g @cloudomni/omnigate
 omnigate
 ```
 
-`postinstall` will:
+首次运行会在 `~/.omnigate/` 下自动创建数据目录(SQLite、配置、日志),浏览器打开 <http://127.0.0.1:17777> 进入内嵌管理台。
 
-1. Detect your OS / architecture
-2. Download the matching `omnigate-<version>-<os>-<arch>.tar.gz` and `omnigate_<version>_checksums.txt` from the [release page](https://github.com/yunqilee69/OmniGate/releases/tag/v`npm view @cloudomni/omnigate version`)
-3. Verify the tarball's sha256 against the checksums file (install aborts on any mismatch or missing entry — fail closed)
-4. Extract it into `node_modules/@cloudomni/omnigate/vendor/`
-5. Mark the binary executable
+## 安装时发生了什么
 
-On first run, OmniGate will create `~/.omnigate/` (db, config, log) automatically.
+`postinstall` 会依次:
 
-## Usage
+1. 识别操作系统与 CPU 架构
+2. 从 [Release 页面](https://github.com/yunqilee69/OmniGate/releases)下载对应的 `omnigate-<版本>-<os>-<arch>.tar.gz` 与 `omnigate_<版本>_checksums.txt`
+3. 校验 tarball 的 sha256(不匹配或缺少条目则中止安装——fail closed)
+4. 解压到 `node_modules/@cloudomni/omnigate/vendor/`
+5. 为二进制添加可执行权限
+
+## 使用
 
 ```bash
-omnigate                      # start with defaults (~/.omnigate/)
-omnigate --listen 0.0.0.0:8080 # custom listen address
-omnigate --db ~/work/og.db    # override db path (tilde expands)
-omnigate --log stdout         # log to stdout only
+omnigate                        # 默认启动(数据目录 ~/.omnigate/)
+omnigate --listen 0.0.0.0:8080  # 自定义监听地址
+omnigate --db ~/work/og.db      # 覆盖 db 路径(支持 ~ 展开)
+omnigate --log stdout           # 仅输出到 stdout
 ```
 
-All flags are forwarded to the underlying Go binary verbatim.
+所有命令行参数原样透传给底层 Go 二进制。完整功能(加权路由、密钥轮询、阶梯熔断、统计、管理台)见[主项目 README](https://github.com/yunqilee69/OmniGate)。
 
-## Uninstall
+## 支持平台
+
+| 系统 | 架构 |
+|---|---|
+| Linux | amd64、arm64 |
+| macOS | amd64(Intel)、arm64(Apple Silicon) |
+| Windows | amd64、arm64 |
+
+## 卸载
 
 ```bash
 npm uninstall -g @cloudomni/omnigate
-rm -rf ~/.omnigate   # optional: wipe runtime data
+rm -rf ~/.omnigate   # 可选:一并清理运行数据
 ```
 
-## Supported platforms
+## 故障排查
 
-| OS | Arch |
-|---|---|
-| Linux | amd64, arm64 |
-| macOS | amd64 (Intel), arm64 (Apple Silicon) |
-| Windows | amd64, arm64 |
-
-## Troubleshooting
-
-**postinstall download fails (firewall / offline)**
+**postinstall 下载失败(防火墙 / 离线环境)**
 
 ```bash
-# 1. Manually download the tarball from the release page
-# 2. Extract it so that `vendor/omnigate` (or `vendor/omnigate.exe`) exists
+# 1. 从 Release 页面手动下载对应 tarball
+# 2. 解压出 vendor/omnigate(Windows 为 vendor/omnigate.exe)后:
 OMNIGATE_SKIP_POSTINSTALL=1 npm install -g @cloudomni/omnigate
 ```
 
-**Skip postinstall entirely (e.g. in CI)**
+**跳过 postinstall(如在 CI 中)**
 
 ```bash
 OMNIGATE_SKIP_POSTINSTALL=1 npm install ...
 ```
 
-**macOS Gatekeeper blocks the binary**
-
-The Go binary is unsigned. First run:
+**macOS Gatekeeper 拦截未签名二进制**
 
 ```bash
 xattr -d com.apple.quarantine "$(npm root -g)/@cloudomni/omnigate/vendor/omnigate"
 ```
 
-## See also
+## 相关链接
 
-- Main project: <https://github.com/yunqilee69/OmniGate>
-- Release artifacts: <https://github.com/yunqilee69/OmniGate/releases>
-- License: [MIT](./LICENSE)
+- 主项目:<https://github.com/yunqilee69/OmniGate>
+- 发布产物:<https://github.com/yunqilee69/OmniGate/releases>
+- 协议:[MIT](./LICENSE)

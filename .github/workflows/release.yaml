@@ -93,6 +93,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ---------- 3. 发布 npm:版本号同步 tag,postinstall 从上一步的 Release 拉二进制 ----------
+  # 发布认证走 Trusted Publishing(OIDC):无需 NPM_TOKEN,靠 workflow 级
+  # id-token: write 换取短期发布凭证。前提:npmjs.com 包设置里已把本仓库
+  # 配置为 trusted publisher(见 docs/RELEASE.md §4.2),且 npm CLI ≥11.5.1
+  # / Node ≥22.14(故用 Node 24)。
   npm-publish:
     needs: release   # 必须等二进制落到 GitHub Release,postinstall 才拉得到
     runs-on: ubuntu-latest
@@ -103,22 +107,18 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: https://registry.npmjs.org
 
       - name: Sync version from tag
         working-directory: npm
         run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
 
+      # 无需任何令牌:npm CLI 检测到 Actions OIDC 环境自动走 trusted publishing,
+      # provenance 亦随之自动生成(publishConfig.provenance: true)
       - name: Publish to npm
         working-directory: npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::warning::secret NPM_TOKEN 未配置,跳过 npm publish(配置方法见 docs/RELEASE.md §4.2)"
-            exit 0
-          fi
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             # 预发布版本(-rc/-beta)发到 @next,@latest 保持 stable
             npm publish --access public --tag next

@@ -89,13 +89,17 @@ CI 会自动(`.github/workflows/release.yaml`,三个 job 串行):
 
 1. **test** — ubuntu / macOS / Windows 三平台矩阵跑 `go vet ./...` + `go test ./... -count=1`,外加 web 端 `tsc --noEmit` 类型检查(vite build 本身不查类型)
 2. **release** — `goreleaser` 交叉编译 6 目标(3 平台 × amd64/arm64)+ 打包 + 生成 changelog,创建 GitHub Release 并上传 tar.gz + sha256 校验和;发布前先跑一次 snapshot dry-run 校验
-3. **npm-publish** — 把 `npm/package.json` 版本号同步为 tag 版本后发布到 npm;`-rc`/`-beta` 等预发布 tag 发到 `@next` dist-tag(`@latest` 保持 stable)
+3. **npm-publish** — 把 `npm/package.json` 版本号同步为 tag 版本后发布到 npm;`-rc`/`-beta` 等预发布 tag 发到 `@next` dist-tag(`@latest` 保持 stable)。认证走 **Trusted Publishing(OIDC)**,无需任何令牌
 
-**前置 secret(缺一个对应步骤会跳过/失败):**
+**前置配置(一次性,npmjs.com 网页操作):**
 
-| Secret | 用途 |
-|---|---|
-| `NPM_TOKEN` | npm 发布令牌(npmjs.com → Access Tokens,类型 Automation;未配置时 npm-publish 步骤会打 warning 跳过,Release 不受影响) |
+npm 发布不用 secret。取而代之,需在 npmjs.com 上把 GitHub 仓库配置为该包的信任发布方:
+
+1. 登录 npmjs.com → 包 `@cloudomni/omnigate` → **Settings** → **Trusted Publisher** → 选 **GitHub Actions**
+2. 填写:**Organization or user** `yunqilee69`;**Repository** `OmniGate`;**Workflow filename** `release.yaml`(仅文件名,大小写敏感);Environment 留空;**Allowed actions** 勾 `npm publish`
+3. 保存即生效。之后 `release.yaml` 的 npm-publish job 凭 workflow 级 `id-token: write` 权限自动换取短期发布凭证(要求 npm CLI ≥11.5.1 / Node ≥22.14,job 已用 Node 24)
+
+> 背景:npm 自 2026 年起逐步禁用"绕过 2FA 的令牌"直接发布(2027-01 全面生效),官方推荐的 CI 发布方式即 Trusted Publishing。本包 v0.1.0 即因旧式 Automation 令牌被 registry 拒绝,已于 2026-08 迁移至此方案。
 
 **顺序约束:** goreleaser 必须先完成(把二进制推到 GitHub Releases),npm publish 再跑;否则用户装 npm 包时 postinstall 拉不到对应版本二进制。workflow 里用 `needs: release` 保证。
 
