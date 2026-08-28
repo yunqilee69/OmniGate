@@ -145,7 +145,7 @@ export default function Settings() {
         </Form.Item>
 
         <Form.Item
-          label={<span>会话亲和（同会话粘住上次成功的模型，最大化上游缓存命中）<HelpIcon tip="粘住的模型还有 key 才算" /></span>}
+          label={<span>会话亲和（同会话粘住上次成功的模型，最大化上游缓存命中）<HelpIcon tip="粘住同模型同 key，保证会话内请求路由到相同后端" /></span>}
           name="affinity.enabled"
           valuePropName="checked"
         >
