@@ -85,9 +85,10 @@ jobs:
         run: goreleaser release --snapshot --clean --skip=publish --skip=announce
 
       - name: Publish release
-        # --allow-dirty:before.hooks 重建 webui/dist(内容 hash 变化)使工作树变脏,
-        # 发行二进制嵌入的正是这份新构建的前端,脏是有意的
-        run: goreleaser release --clean --allow-dirty
+        # --skip=validate:v2 已移除 --allow-dirty;before.hooks 重建 webui/dist(内容
+        # hash 变化)必然使树变脏,发行二进制嵌入的正是这份新前端。tag 校验由
+        # tag 触发的 checkout 保证(HEAD 即 tag commit),跳过安全
+        run: goreleaser release --clean --skip=validate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
