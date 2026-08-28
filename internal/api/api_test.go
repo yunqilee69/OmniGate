@@ -27,7 +27,7 @@ func newTestServerWithStore(t *testing.T) (http.Handler, *store.Store) {
 	if err != nil {
 		t.Fatalf("init runtime config: %v", err)
 	}
-	return New(st, rt, AdminAuth{Username: "admin", Password: "test-token"}, nil).Router(), st
+	return New(st, rt, AdminAuth{Username: "admin", Password: "test-token"}, nil, nil).Router(), st
 }
 
 func newTestServer(t *testing.T) http.Handler {
@@ -424,6 +424,47 @@ func TestModelRequiresKeys(t *testing.T) {
 	}, "test-token")
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "至少绑定一个密钥") {
 		t.Fatalf("empty key_ids must be rejected: %d — %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestModelTypeValidation(t *testing.T) {
+	h := newTestServer(t)
+	do(t, h, "POST", "/api/providers", map[string]any{"name": "zhipu", "base_url": "https://x"}, "test-token")
+	do(t, h, "POST", "/api/keys", map[string]any{"provider_id": 1, "key_value": "sk-zzzz1111", "name": "k1"}, "test-token")
+
+	rec := do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": 1, "name": "emb", "type": "embedding", "key_ids": []int64{1},
+	}, "test-token")
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"type":"embedding"`) {
+		t.Fatalf("embedding model create: %d — %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": 1, "name": "rr", "type": "rerank", "protocol": "anthropic", "key_ids": []int64{1},
+	}, "test-token")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "仅支持 openai 协议") {
+		t.Fatalf("rerank+anthropic must be rejected: %d — %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": 1, "name": "bad", "type": "image", "key_ids": []int64{1},
+	}, "test-token")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid type must be rejected: %d", rec.Code)
+	}
+	// 未传 type 默认 chat
+	rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": 1, "name": "plain", "key_ids": []int64{1},
+	}, "test-token")
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"type":"chat"`) {
+		t.Fatalf("default type chat: %d — %s", rec.Code, rec.Body.String())
+	}
+	// 更新：把 chat 模型协议改成 anthropic 时，同时是 embedding 的模型必须被组合校验拦下
+	rec = do(t, h, "PUT", "/api/models/1", map[string]any{"protocol": "anthropic"}, "test-token")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "仅支持 openai 协议") {
+		t.Fatalf("embedding model protocol change must be rejected: %d — %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, "PUT", "/api/models/1", map[string]any{"type": "rerank"}, "test-token")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"type":"rerank"`) {
+		t.Fatalf("type update: %d — %s", rec.Code, rec.Body.String())
 	}
 }
 

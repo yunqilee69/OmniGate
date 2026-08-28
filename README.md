@@ -17,7 +17,7 @@ OmniGate 把多个模型提供方聚合成一个 OpenAI 兼容端点,提供加�
 
 | | |
 |---|---|
-| **OpenAI 兼容代理** | `/v1/chat/completions(SSE 流式)`、`/v1/models`,`/v1/embeddings` 规划中 |
+| **OpenAI 兼容代理** | `/v1/chat/completions`(SSE 流式)、`/v1/embeddings`(OpenAI 标准)、`/v1/rerank`(Cohere 骨架直通)、`/v1/models` |
 | **两级路由** | 逻辑模型 → 加权选模型 → 模型内 key 轮询。请求 `glm`,落地到背后任意真实模型 |
 | **阶梯熔断** | 模型级 30s → 1m → 3m;key 级 401/403 立即禁用,429 短冷却 |
 | **多维统计** | 次数 / token / 首字延迟 / 总耗时 / 费用,按 路由·模型·提供方·key·状态·时间 聚合 |

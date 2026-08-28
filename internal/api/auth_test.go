@@ -28,7 +28,7 @@ func newAuthTestServer(t *testing.T, auth AdminAuth) http.Handler {
 	if err != nil {
 		t.Fatalf("init runtime config: %v", err)
 	}
-	return New(st, rt, auth, nil).Router()
+	return New(st, rt, auth, nil, nil).Router()
 }
 
 func decodeMap(t *testing.T, res string) map[string]any {

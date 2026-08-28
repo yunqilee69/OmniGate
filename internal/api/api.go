@@ -24,12 +24,19 @@ type Server struct {
 	auth     AdminAuth
 	sessions *sessionStore
 	chat     http.Handler
+	typed    TypedPlane
+}
+
+// TypedPlane 非 chat 端点族（/v1/embeddings、/v1/rerank）的代理处理器集合。
+type TypedPlane interface {
+	Embeddings(w http.ResponseWriter, r *http.Request)
+	Rerank(w http.ResponseWriter, r *http.Request)
 }
 
 // New 构造管理面服务。auth 为启动层静态鉴权配置（详见 AdminAuth）；
-// chat 为 /v1/chat/completions 代理处理器（可为 nil，测试场景）。
-func New(st *store.Store, rt *config.RuntimeManager, auth AdminAuth, chat http.Handler) *Server {
-	return &Server{store: st, rt: rt, auth: auth, sessions: newSessionStore(), chat: chat}
+// chat 为 /v1/chat/completions 处理器，typed 为 embeddings/rerank 处理器（均可为 nil，测试场景）。
+func New(st *store.Store, rt *config.RuntimeManager, auth AdminAuth, chat http.Handler, typed TypedPlane) *Server {
+	return &Server{store: st, rt: rt, auth: auth, sessions: newSessionStore(), chat: chat, typed: typed}
 }
 
 // Router 组装全部 HTTP 路由。
@@ -100,6 +107,10 @@ func (s *Server) Router() http.Handler {
 	r.With(s.v1AuthMW).Get("/v1/models", s.v1Models)
 	if s.chat != nil {
 		r.With(s.v1AuthMW).Post("/v1/chat/completions", s.chat.ServeHTTP)
+	}
+	if s.typed != nil {
+		r.With(s.v1AuthMW).Post("/v1/embeddings", s.typed.Embeddings)
+		r.With(s.v1AuthMW).Post("/v1/rerank", s.typed.Rerank)
 	}
 	r.NotFound(webui.Handler().ServeHTTP)
 	return r

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -137,14 +138,31 @@ func ProbeModelKeys(db *store.Store, rt *config.RuntimeManager, modelID int64) (
 }
 
 // probeModelKey 用指定密钥发起一次极小真实请求（探测核心，不写 request_log）。
+// 按模型类型构造最小载荷：chat → 一条 ping 消息；embedding → 单串输入；rerank → 单文档重排。
 func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) ProbeResult {
 	res := ProbeResult{ModelID: m.ID, Model: m.Name, Provider: provider.Name, Protocol: m.Protocol, KeyID: key.ID}
 
+	modelType := m.Type
+	if modelType == "" {
+		modelType = "chat"
+	}
 	adapter := AdapterFor(m.Protocol)
-	req := map[string]any{
-		"model":      m.Name,
-		"max_tokens": float64(probeMaxTokens),
-		"messages":   []map[string]any{{"role": "user", "content": "ping"}},
+	var req map[string]any
+	var endpoint string
+	switch modelType {
+	case "embedding":
+		req = map[string]any{"model": m.Name, "input": "ping"}
+		endpoint = strings.TrimRight(provider.BaseURL, "/") + "/embeddings"
+	case "rerank":
+		req = map[string]any{"model": m.Name, "query": "ping", "documents": []string{"pong"}}
+		endpoint = strings.TrimRight(provider.BaseURL, "/") + "/rerank"
+	default:
+		req = map[string]any{
+			"model":      m.Name,
+			"max_tokens": float64(probeMaxTokens),
+			"messages":   []map[string]any{{"role": "user", "content": "ping"}},
+		}
+		endpoint = adapter.endpoint(provider.BaseURL)
 	}
 	converted, err := adapter.buildBody(req)
 	if err != nil {
@@ -165,7 +183,7 @@ func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) Pro
 		timeoutMs = probeTimeoutCapMs
 	}
 	client := &http.Client{Timeout: time.Duration(timeoutMs) * time.Millisecond}
-	httpReq, err := http.NewRequest(http.MethodPost, adapter.endpoint(provider.BaseURL), bytes.NewReader(body))
+	httpReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		res.ErrCode, res.Message = "bad_url", err.Error()
 		return res
@@ -197,6 +215,12 @@ func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) Pro
 	_ = out
 	if convErr == nil && (u.prompt > 0 || u.completion > 0) {
 		res.PromptTokens, res.CompletionTokens = u.prompt, u.completion
+	} else if modelType == "embedding" {
+		e := embeddingKind.parseUsage(respBody)
+		res.PromptTokens, res.CompletionTokens = e.prompt, e.completion
+	} else if modelType == "rerank" {
+		e := rerankKind.parseUsage(respBody)
+		res.PromptTokens, res.CompletionTokens = e.prompt, e.completion
 	} else {
 		// openai 直通适配器不解析 usage，这里按 chat 格式兜底提取
 		var generic struct {

@@ -195,7 +195,8 @@ func main() {
 		Password: boot.Admin.Password,
 		ApiKey:   boot.Admin.ApiKey,
 	}
-	srv := api.New(st, rt, auth, proxy.New(st, rt))
+	plane := proxy.New(st, rt)
+	srv := api.New(st, rt, auth, plane, plane)
 	httpSrv := &http.Server{
 		Addr:              listen,
 		Handler:           srv.Router(),

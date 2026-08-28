@@ -78,6 +78,9 @@ func (s *Selector) LoadSnapshot(routeName string) (*Snapshot, bool, error) {
 	}
 	providerIDs := make([]int64, 0, len(models))
 	for _, m := range models {
+		if m.Type == "" {
+			m.Type = "chat" // 迁移前的旧行没有 type 列值，按 chat 处理
+		}
 		snap.Models[m.ID] = m
 		providerIDs = append(providerIDs, m.ProviderID)
 	}
@@ -182,9 +185,19 @@ func weightedPick(weights []int) int {
 	return len(weights) - 1
 }
 
-// Pick 在排除 tried 中 key 的候选集内做两级选择（模型加权 → 模型内 key 轮询）；无候选返回 ok=false。
+// Pick 在排除 tried 中 key 的候选集内做两级选择（模型加权 → 模型内 key 轮询），并只挑
+// chat 类型后端（embeddings/rerank 模型绝不承接 chat 请求；空 type 视为 chat 兼容旧数据）。
 // preferModel 为会话亲和的首选模型（0 表示无）：可用时直接锁定，不可用时无感落入加权路径。
 func (s *Selector) Pick(snap *Snapshot, tried map[int64]bool, now time.Time, preferModel int64) (Attempt, bool) {
+	return s.pick(snap, tried, now, preferModel, "chat")
+}
+
+// PickTyped 在两级选择上叠加模型类型过滤（embedding/rerank 端点只挑同类型后端）。
+func (s *Selector) PickTyped(snap *Snapshot, tried map[int64]bool, now time.Time, wantType string) (Attempt, bool) {
+	return s.pick(snap, tried, now, 0, wantType)
+}
+
+func (s *Selector) pick(snap *Snapshot, tried map[int64]bool, now time.Time, preferModel int64, wantType string) (Attempt, bool) {
 	type candModel struct {
 		model store.Model
 		keys  []store.ApiKey
@@ -194,6 +207,13 @@ func (s *Selector) Pick(snap *Snapshot, tried map[int64]bool, now time.Time, pre
 	for _, t := range snap.Targets {
 		m, ok := snap.Models[t.ModelID]
 		if !ok || !ModelAvailable(m, now) {
+			continue
+		}
+		mt := m.Type
+		if mt == "" {
+			mt = "chat" // 旧数据无 type 值，按 chat 处理
+		}
+		if mt != wantType {
 			continue
 		}
 		if _, hasProvider := snap.Providers[m.ProviderID]; !hasProvider {
@@ -264,6 +284,9 @@ func (s *Selector) LoadSnapshotByModel(modelID int64) (*Snapshot, bool, error) {
 	}
 	if err != nil {
 		return nil, false, err
+	}
+	if m.Type == "" {
+		m.Type = "chat" // 迁移前的旧行没有 type 列值，按 chat 处理
 	}
 	var provider store.Provider
 	if err := s.db.DB.First(&provider, m.ProviderID).Error; err != nil {

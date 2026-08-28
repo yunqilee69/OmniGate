@@ -36,6 +36,7 @@ interface Model {
   id: number
   provider_id: number
   name: string
+  type: string
   protocol: string
   input_price: number
   output_price: number
@@ -53,6 +54,18 @@ const protocolOptions = [
   { value: 'responses', label: 'OpenAI Responses（/responses）' },
   { value: 'anthropic', label: 'Anthropic（/v1/messages）' },
 ]
+
+const modelTypeOptions = [
+  { value: 'chat', label: '对话（/v1/chat/completions）' },
+  { value: 'embedding', label: '向量（/v1/embeddings）' },
+  { value: 'rerank', label: '重排（/v1/rerank）' },
+]
+
+const modelTypeTag = (t: string) => {
+  if (t === 'embedding') return <Tag color="geekblue">embedding</Tag>
+  if (t === 'rerank') return <Tag color="purple">rerank</Tag>
+  return <Tag>chat</Tag>
+}
 
 const nowSec = () => Math.floor(Date.now() / 1000)
 
@@ -287,7 +300,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
     form.resetFields()
     if (m) {
       form.setFieldsValue({
-        name: m.name, protocol: m.protocol,
+        name: m.name, type: m.type || 'chat', protocol: m.protocol,
         input_price: m.input_price, output_price: m.output_price,
         price_currency: m.price_currency || 'USD', key_ids: m.key_ids,
       })
@@ -328,6 +341,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
       </Space>
       <Table<Model> rowKey="id" dataSource={models} tableLayout="fixed" size="small" scroll={{ x: true }}>
         <Table.Column title="模型名" dataIndex="name" width={160} />
+        <Table.Column title="类型" dataIndex="type" width={110} render={(v) => modelTypeTag(v || 'chat')} />
         <Table.Column title="协议" dataIndex="protocol" width={200} render={(v) => (
           <span className="mono" style={{ fontSize: 12, color: '#4d4d4d' }}>{v}</span>
         )} />
@@ -362,8 +376,39 @@ function ModelsTab({ provider, keys, models, onSaved }: {
           <Form.Item name="name" label="真实模型名" rules={[{ required: true }]}>
             <Input placeholder="如 glm-4.6 / claude-sonnet-4" />
           </Form.Item>
-          <Form.Item name="protocol" label="上游协议" initialValue="openai" rules={[{ required: true }]} extra="决定出站请求格式与响应转换方式">
-            <Select options={protocolOptions} />
+          <Form.Item name="type" label="端点类型" initialValue="chat" rules={[{ required: true }]}
+            extra="决定该模型挂在哪个代理端点下；路由会按类型过滤后端">
+            <Select
+              options={modelTypeOptions}
+              onChange={(v) => {
+                if (v !== 'chat') form.setFieldValue('protocol', 'openai')
+              }}
+            />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.type !== cur.type}>
+            {({ getFieldValue }) => {
+              const type = getFieldValue('type') as string | undefined
+              if (type && type !== 'chat') {
+                const isRerank = type === 'rerank'
+                return (
+                  <Form.Item name="protocol" label="出站格式（由端点类型决定）"
+                    extra={isRerank
+                      ? '重排无官方标准，直通 Cohere /v1/rerank 骨架，不做跨厂商改写'
+                      : '向量走 OpenAI /v1/embeddings 标准格式直通'}>
+                    <Select disabled options={[{
+                      value: 'openai',
+                      label: isRerank ? 'Cohere rerank（/v1/rerank）' : 'OpenAI embeddings（/v1/embeddings）',
+                    }]} />
+                  </Form.Item>
+                )
+              }
+              return (
+                <Form.Item name="protocol" label="上游协议" initialValue="openai" rules={[{ required: true }]}
+                  extra="决定出站请求格式与响应转换方式">
+                  <Select options={protocolOptions} />
+                </Form.Item>
+              )
+            }}
           </Form.Item>
           <Form.Item label="价格（每 1M token）">
             <Space>

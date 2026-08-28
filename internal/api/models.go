@@ -17,10 +17,12 @@ type modelResp struct {
 
 var validProtocols = map[string]bool{"openai": true, "responses": true, "anthropic": true}
 var validCurrencies = map[string]bool{"USD": true, "CNY": true}
+var validModelTypes = map[string]bool{"chat": true, "embedding": true, "rerank": true}
 
 type modelCreateReq struct {
 	ProviderID    int64   `json:"provider_id"`
 	Name          string  `json:"name"`
+	Type          string  `json:"type"`
 	Protocol      string  `json:"protocol"`
 	InputPrice    float64 `json:"input_price"`
 	OutputPrice   float64 `json:"output_price"`
@@ -104,6 +106,18 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "protocol must be openai, responses or anthropic")
 		return
 	}
+	if req.Type == "" {
+		req.Type = "chat"
+	}
+	if !validModelTypes[req.Type] {
+		writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding or rerank")
+		return
+	}
+	// embedding/rerank 出站固定 OpenAI 风格直通（业界无可归一标准），不支持协议转换
+	if req.Type != "chat" && req.Protocol != "openai" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "embedding/rerank 模型仅支持 openai 协议")
+		return
+	}
 	if req.PriceCurrency == "" {
 		req.PriceCurrency = "USD"
 	}
@@ -133,7 +147,7 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m := store.Model{
-		ProviderID: req.ProviderID, Name: req.Name, Protocol: req.Protocol,
+		ProviderID: req.ProviderID, Name: req.Name, Type: req.Type, Protocol: req.Protocol,
 		InputPrice: req.InputPrice, OutputPrice: req.OutputPrice, PriceCurrency: req.PriceCurrency, Status: "active",
 	}
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
@@ -165,6 +179,7 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 type modelUpdateReq struct {
 	ProviderID    *int64   `json:"provider_id"`
 	Name          *string  `json:"name"`
+	Type          *string  `json:"type"`
 	Protocol      *string  `json:"protocol"`
 	InputPrice    *float64 `json:"input_price"`
 	OutputPrice   *float64 `json:"output_price"`
@@ -211,6 +226,25 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		simple["protocol"] = *req.Protocol
+	}
+	if req.Type != nil {
+		if !validModelTypes[*req.Type] {
+			writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding or rerank")
+			return
+		}
+		simple["type"] = *req.Type
+	}
+	// 组合校验：type 与 protocol 以「更新后生效值」判断，防止单边更新漏过非法组合
+	effType, effProto := m.Type, m.Protocol
+	if req.Type != nil {
+		effType = *req.Type
+	}
+	if req.Protocol != nil {
+		effProto = *req.Protocol
+	}
+	if effType != "" && effType != "chat" && effProto != "openai" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "embedding/rerank 模型仅支持 openai 协议")
+		return
 	}
 	if req.InputPrice != nil {
 		if *req.InputPrice < 0 {

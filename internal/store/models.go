@@ -33,10 +33,13 @@ type ApiKey struct {
 
 // Model 真实模型。阶梯熔断状态机挂在这一层（跨路由共享的物理事实）。
 // Protocol 决定上游调用格式：openai(chat/completions) | responses(OpenAI Responses) | anthropic(messages)。
+// Type 决定端点家族：chat(/v1/chat/completions) | embedding(/v1/embeddings) | rerank(/v1/rerank)；
+// embedding/rerank 仅支持 protocol=openai（业界无可归一标准，按各自事实骨架直通）。
 type Model struct {
 	ID            int64   `json:"id" gorm:"primaryKey;autoIncrement"`
 	ProviderID    int64   `json:"provider_id" gorm:"not null;uniqueIndex:idx_model_provider_name"`
 	Name          string  `json:"name" gorm:"size:191;not null;uniqueIndex:idx_model_provider_name"`
+	Type          string  `json:"type" gorm:"size:32;not null;default:'chat'"` // chat | embedding | rerank
 	Protocol      string  `json:"protocol" gorm:"size:32;not null;default:openai"`
 	InputPrice    float64 `json:"input_price" gorm:"not null;default:0"`         // 每 1M prompt token 价格
 	OutputPrice   float64 `json:"output_price" gorm:"not null;default:0"`        // 每 1M completion token 价格

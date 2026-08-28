@@ -28,7 +28,7 @@ func newTestStack(t *testing.T) (*store.Store, http.Handler) {
 	if err != nil {
 		t.Fatalf("init runtime: %v", err)
 	}
-	return st, api.New(st, rt, api.AdminAuth{}, proxy.New(st, rt)).Router()
+	return st, api.New(st, rt, api.AdminAuth{}, proxy.New(st, rt), proxy.New(st, rt)).Router()
 }
 
 func chatBody(stream bool) map[string]any {
