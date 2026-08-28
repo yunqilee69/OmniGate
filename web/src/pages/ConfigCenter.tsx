@@ -233,8 +233,17 @@ function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, o
       <Modal title={`编辑提供商 ${p.name}`} open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose>
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="base_url" label="Base URL" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="timeout_ms" label="首字节超时(ms)"><InputNumber min={1000} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item
+            name="base_url"
+            label="Base URL"
+            rules={[
+              { required: true, message: '请输入 Base URL' },
+              { pattern: /^https?:\/\/.+/, message: '必须以 http:// 或 https:// 开头' },
+            ]}
+          >
+            <Input />
+          </Form.Item>
+          <Form.Item name="timeout_ms" label="首字响应超时(ms)"><InputNumber min={1000} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="remark" label="备注"><Input /></Form.Item>
         </Form>
       </Modal>
@@ -267,10 +276,17 @@ function ProviderFormButton({ providers, onSaved }: { providers: Provider[]; onS
       <Modal title="新增提供商" open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose>
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input placeholder="如 zhipu / openrouter" /></Form.Item>
-          <Form.Item name="base_url" label="Base URL" rules={[{ required: true }]}>
+          <Form.Item
+            name="base_url"
+            label="Base URL"
+            rules={[
+              { required: true, message: '请输入 Base URL' },
+              { pattern: /^https?:\/\/.+/, message: '必须以 http:// 或 https:// 开头' },
+            ]}
+          >
             <Input placeholder="https://open.bigmodel.cn/api/paas/v4" />
           </Form.Item>
-          <Form.Item name="timeout_ms" label="首字节超时(ms)" initialValue={120000}>
+          <Form.Item name="timeout_ms" label="首字响应超时(ms)" initialValue={120000}>
             <InputNumber min={1000} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="remark" label="备注"><Input /></Form.Item>
