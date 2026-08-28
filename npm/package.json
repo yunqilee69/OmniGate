@@ -15,12 +15,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cloudomni/omnigate.git",
+    "url": "git+https://github.com/yunqilee69/OmniGate.git",
     "directory": "npm"
   },
-  "homepage": "https://github.com/cloudomni/omnigate",
+  "homepage": "https://github.com/yunqilee69/OmniGate",
   "bugs": {
-    "url": "https://github.com/cloudomni/omnigate/issues"
+    "url": "https://github.com/yunqilee69/OmniGate/issues"
   },
   "bin": {
     "omnigate": "./bin/omnigate"

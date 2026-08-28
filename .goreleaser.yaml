@@ -3,6 +3,10 @@
 
 version: 2
 
+# 固定小写项目名:压缩包/校验和文件名(postinstall 按小写 omnigate-<ver>-<os>-<arch>.tar.gz 匹配)
+# 不设的话会从 git remote 推导出 "OmniGate",大小写不符导致 npm postinstall 拉不到包
+project_name: omnigate
+
 # 前置:确保 web 产物最新,再编 Go(embed 时 dist 不能空)
 before:
   hooks:
@@ -53,8 +57,8 @@ checksum:
 # GitHub Release 自动创建 + 上传 artifact
 release:
   github:
-    owner: cloudomni
-    name: omnigate
+    owner: yunqilee69
+    name: OmniGate
   draft: false
   prerelease: auto          # -rc / -beta 标签自动标 prerelease
   name_template: "{{ .ProjectName }} v{{ .Version }}"

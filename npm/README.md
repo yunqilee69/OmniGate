@@ -1,6 +1,6 @@
 # @cloudomni/omnigate
 
-npm distribution wrapper for [OmniGate](https://github.com/cloudomni/omnigate) — an OpenAI-compatible AI gateway.
+npm distribution wrapper for [OmniGate](https://github.com/yunqilee69/OmniGate) — an OpenAI-compatible AI gateway.
 
 > ⚠️ This package **does not** ship the Go binary. It downloads the matching binary from GitHub Releases on `postinstall`. Network access is required at install time.
 
@@ -14,7 +14,7 @@ omnigate
 `postinstall` will:
 
 1. Detect your OS / architecture
-2. Download the matching `omnigate-<version>-<os>-<arch>.tar.gz` and `omnigate_<version>_checksums.txt` from the [release page](https://github.com/cloudomni/omnigate/releases/tag/v`npm view @cloudomni/omnigate version`)
+2. Download the matching `omnigate-<version>-<os>-<arch>.tar.gz` and `omnigate_<version>_checksums.txt` from the [release page](https://github.com/yunqilee69/OmniGate/releases/tag/v`npm view @cloudomni/omnigate version`)
 3. Verify the tarball's sha256 against the checksums file (install aborts on any mismatch or missing entry — fail closed)
 4. Extract it into `node_modules/@cloudomni/omnigate/vendor/`
 5. Mark the binary executable
@@ -73,6 +73,6 @@ xattr -d com.apple.quarantine "$(npm root -g)/@cloudomni/omnigate/vendor/omnigat
 
 ## See also
 
-- Main project: <https://github.com/cloudomni/omnigate>
-- Release artifacts: <https://github.com/cloudomni/omnigate/releases>
+- Main project: <https://github.com/yunqilee69/OmniGate>
+- Release artifacts: <https://github.com/yunqilee69/OmniGate/releases>
 - License: [MIT](./LICENSE)

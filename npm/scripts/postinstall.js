@@ -23,13 +23,13 @@ const goreleaserArch = archMap[process.arch];
 const goreleaserOS   = osMap[process.platform];
 if (!goreleaserArch || !goreleaserOS) {
   console.error(`[omnigate] unsupported platform: ${process.platform}/${process.arch}`);
-  console.error('  Open an issue: https://github.com/cloudomni/omnigate/issues');
+  console.error('  Open an issue: https://github.com/yunqilee69/OmniGate/issues');
   process.exit(1);
 }
 
 const archiveName   = `omnigate-${VERSION}-${goreleaserOS}-${goreleaserArch}.tar.gz`;
 const checksumsName = `omnigate_${VERSION}_checksums.txt`;
-const releaseBase   = `https://github.com/cloudomni/omnigate/releases/download/v${VERSION}`;
+const releaseBase   = `https://github.com/yunqilee69/OmniGate/releases/download/v${VERSION}`;
 const downloadUrl   = `${releaseBase}/${archiveName}`;
 const checksumsUrl  = `${releaseBase}/${checksumsName}`;
 const vendorDir     = path.join(__dirname, '..', 'vendor');
@@ -115,7 +115,7 @@ function expectedChecksum(checksumsText, fileName) {
     console.error(`[omnigate] postinstall failed: ${err.message}`);
     console.error(`  Try again, or download manually:`);
     console.error(`    ${downloadUrl}`);
-    console.error(`  Issues: https://github.com/cloudomni/omnigate/issues`);
+    console.error(`  Issues: https://github.com/yunqilee69/OmniGate/issues`);
     process.exit(1);
   } finally {
     try { fs.unlinkSync(path.join(vendorDir, archiveName + '.tmp')); } catch (_) { /* not exist */ }

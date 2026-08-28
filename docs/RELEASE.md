@@ -85,13 +85,19 @@ git tag -a v0.1.0 -m "v0.1.0: initial public release"
 git push origin v0.1.0
 ```
 
-CI 会自动:
-1. 在 6 个 OS/arch 矩阵上跑 `go test ./...` 和 `go vet ./...`
-2. 用 `goreleaser` 交叉编译 + 打包 + 生成 changelog
-3. 创建 GitHub Release 并上传 6 个 tar.gz + sha256 校验和
-4. 把 `npm/` 目录按 tag 版本号 bump 后发布到 npm(`@cloudomni/omnigate`),附带 provenance 签名
+CI 会自动(`.github/workflows/release.yaml`,三个 job 串行):
 
-**顺序约束:** goreleaser 必须先完成(把二进制推到 GitHub Releases),npm publish 再跑;否则用户装 npm 包时 postinstall 拉不到对应版本二进制。
+1. **test** — ubuntu / macOS / Windows 三平台矩阵跑 `go vet ./...` + `go test ./... -count=1`,外加 web 端 `tsc --noEmit` 类型检查(vite build 本身不查类型)
+2. **release** — `goreleaser` 交叉编译 6 目标(3 平台 × amd64/arm64)+ 打包 + 生成 changelog,创建 GitHub Release 并上传 tar.gz + sha256 校验和;发布前先跑一次 snapshot dry-run 校验
+3. **npm-publish** — 把 `npm/package.json` 版本号同步为 tag 版本后发布到 npm;`-rc`/`-beta` 等预发布 tag 发到 `@next` dist-tag(`@latest` 保持 stable)
+
+**前置 secret(缺一个对应步骤会跳过/失败):**
+
+| Secret | 用途 |
+|---|---|
+| `NPM_TOKEN` | npm 发布令牌(npmjs.com → Access Tokens,类型 Automation;未配置时 npm-publish 步骤会打 warning 跳过,Release 不受影响) |
+
+**顺序约束:** goreleaser 必须先完成(把二进制推到 GitHub Releases),npm publish 再跑;否则用户装 npm 包时 postinstall 拉不到对应版本二进制。workflow 里用 `needs: release` 保证。
 
 ### 4.3 验证发布
 
@@ -102,7 +108,7 @@ omnigate --version
 omnigate       # 看 ~/.omnigate/ 自动生成与否
 
 # 直接下载校验
-curl -L https://github.com/cloudomni/omnigate/releases/latest/download/omnigate-linux-amd64.tar.gz -o /tmp/og.tar.gz
+curl -L https://github.com/yunqilee69/OmniGate/releases/latest/download/omnigate-linux-amd64.tar.gz -o /tmp/og.tar.gz
 tar tzf /tmp/og.tar.gz | head
 sha256sum -c omnigate_0.1.0_checksums.txt
 ```
@@ -170,9 +176,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-      - run: go test ./...
+          go-version-file: go.mod
+          cache: true
       - run: go vet ./...
+      - run: go test ./... -count=1
       - run: go build ./cmd/omnigate
 ```
 

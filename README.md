@@ -4,7 +4,7 @@
 
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Release](https://img.shields.io/github/v/release/cloudomni/omnigate)](https://github.com/cloudomni/omnigate/releases)
+[![Release](https://img.shields.io/github/v/release/yunqilee69/OmniGate)](https://github.com/yunqilee69/OmniGate/releases)
 [![MCP](https://img.shields.io/badge/MCP-规划中-orange)](#路线图)
 
 OmniGate 把多个模型提供方聚合成一个 OpenAI 兼容端点,提供加权负载均衡、密钥轮询、阶梯熔断和多维统计,内嵌管理控制台——全部打包在一个 34 MB 的静态二进制里。
@@ -143,7 +143,7 @@ admin:
 前置:Go 1.22+、Node 18+(仅 web 构建需要)。
 
 ```bash
-git clone https://github.com/cloudomni/omnigate
+git clone https://github.com/yunqilee69/OmniGate
 cd omnigate
 
 ./start.sh             # 开发模式:后端 :17777 + Vite 热更新 :17778
@@ -217,7 +217,7 @@ go test ./...
 - [ ] **v1.3** — Token 用量预算与软配额
 - [ ] **v2.0** — 多实例集群模式(读写分离、配置共享)
 
-实时待办见 [issues](https://github.com/cloudomni/omnigate/issues)。
+实时待办见 [issues](https://github.com/yunqilee69/OmniGate/issues)。
 
 ---
 

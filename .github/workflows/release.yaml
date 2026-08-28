@@ -1,6 +1,6 @@
 name: release
 
-# 仅在推送形如 v* 的 tag 时触发
+# 仅在推送形如 v* 的 tag 时触发:全面测试 → 构建发行包 → 发布 npm
 on:
   push:
     tags:
@@ -8,15 +8,40 @@ on:
 
 permissions:
   contents: write   # 创建 GitHub Release
-  packages: write   # 推送 Docker 镜像到 ghcr.io
-  id-token: write   # OIDC(预留,后续接 cosign 签名)
+  id-token: write   # npm provenance 签名(OIDC)
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false  # 不要中断正在进行的发布
 
 jobs:
+  # ---------- 1. 全面测试:三大平台矩阵跑 vet + test ----------
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run go tests
+        run: go test ./... -count=1
+
+  # ---------- 2. 构建发行包:goreleaser 6 目标交叉编译 + GitHub Release ----------
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -28,7 +53,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
 
       - name: Set up Node
@@ -49,22 +74,53 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
 
-      - name: Run tests
-        run: go test ./...
-
-      - name: Run go vet
-        run: go vet ./...
+      # vite build 不做类型检查,发布前显式过一遍 tsc
+      - name: Type-check web
+        working-directory: web
+        run: npx tsc --noEmit
 
       - name: Install goreleaser
-        run: |
-          go install github.com/goreleaser/goreleaser/v2@latest
+        run: go install github.com/goreleaser/goreleaser/v2@latest
 
-      # GITHUB_TOKEN 默认有,够用;无需额外 secrets
-      - name: Create release notes (dry-run, 仅校验)
+      # 先 dry-run 校验配置与构建,失败更早暴露
+      - name: Build check (snapshot)
         run: goreleaser release --snapshot --clean --skip=publish --skip=announce
 
       - name: Publish release
         run: goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # ghcr.io 用 GITHUB_TOKEN 已经能推,无需额外 docker login
+
+  # ---------- 3. 发布 npm:版本号同步 tag,postinstall 从上一步的 Release 拉二进制 ----------
+  npm-publish:
+    needs: release   # 必须等二进制落到 GitHub Release,postinstall 才拉得到
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: https://registry.npmjs.org
+
+      - name: Sync version from tag
+        working-directory: npm
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+
+      - name: Publish to npm
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning::secret NPM_TOKEN 未配置,跳过 npm publish(配置方法见 docs/RELEASE.md §4.2)"
+            exit 0
+          fi
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            # 预发布版本(-rc/-beta)发到 @next,@latest 保持 stable
+            npm publish --access public --tag next
+          else
+            npm publish --access public
+          fi
