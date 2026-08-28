@@ -10,9 +10,8 @@ project_name: omnigate
 # 前置:确保 web 产物最新,再编 Go(embed 时 dist 不能空)
 before:
   hooks:
-    - cmd: npm --prefix web ci --no-audit --no-fund
-    - cmd: npm --prefix web run build
-      output: true
+    - npm --prefix web ci --no-audit --no-fund
+    - npm --prefix web run build
 
 builds:
   - id: omnigate
@@ -29,7 +28,8 @@ builds:
       - arm64
     flags:
       - -trimpath
-      - -ldflags=-s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 # 6 个 tar.gz(全平台 tar.gz 统一,npm postinstall 用 tar 包解压更顺;
