@@ -15,6 +15,7 @@ func newStore(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
+	t.Cleanup(func() { _ = st.Close() })
 	return st
 }
 

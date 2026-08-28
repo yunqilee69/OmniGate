@@ -252,5 +252,8 @@ func main() {
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("graceful shutdown failed", "err", err)
 	}
+	if err := st.Close(); err != nil {
+		slog.Error("close store failed", "err", err)
+	}
 	slog.Info("bye")
 }

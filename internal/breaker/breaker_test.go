@@ -15,6 +15,7 @@ func newStack(t *testing.T) (*store.Store, *Recorder, *config.Runtime) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = st.Close() })
 	rtm, err := config.NewRuntimeManager(st)
 	if err != nil {
 		t.Fatal(err)

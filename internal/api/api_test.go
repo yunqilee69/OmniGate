@@ -23,6 +23,7 @@ func newTestServerWithStore(t *testing.T) (http.Handler, *store.Store) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
+	t.Cleanup(func() { _ = st.Close() })
 	rt, err := config.NewRuntimeManager(st)
 	if err != nil {
 		t.Fatalf("init runtime config: %v", err)

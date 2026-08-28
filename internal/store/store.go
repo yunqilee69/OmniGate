@@ -48,6 +48,16 @@ func Open(path string) (*Store, error) {
 	return &Store{DB: db}, nil
 }
 
+// Close 关闭底层连接池(同时触发 WAL checkpoint 并清理 -wal/-shm 副产物)。
+// 未关闭的句柄在 Windows 上会阻止 t.TempDir 与数据目录删除。
+func (s *Store) Close() error {
+	sqlDB, err := s.DB.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.Close()
+}
+
 // migratePoolsAway 把旧版“密钥池”结构迁移为模型直绑密钥：
 // api_key.provider_id 从池回填，model_pool×池内 key 展开 成 model_key，然后删除池相关表。
 // 幂等：新库（无 key_pool 表）直接跳过。

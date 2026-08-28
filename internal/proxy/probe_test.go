@@ -111,6 +111,7 @@ func newProbeStack(t *testing.T) (*store.Store, *config.RuntimeManager) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = st.Close() })
 	rtm, err := config.NewRuntimeManager(st)
 	if err != nil {
 		t.Fatal(err)
