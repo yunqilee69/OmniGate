@@ -30,11 +30,22 @@ if (!goreleaserArch || !goreleaserOS) {
 const archiveName   = `omnigate-${VERSION}-${goreleaserOS}-${goreleaserArch}.tar.gz`;
 const checksumsName = `omnigate_${VERSION}_checksums.txt`;
 const releaseBase   = `https://github.com/yunqilee69/OmniGate/releases/download/v${VERSION}`;
+const r2Base        = `https://cdn.yunke.icu/v${VERSION}`;
+
+// 双源策略:优先 Cloudflare R2(中国大陆快),失败回退 GitHub Release(全球可用)
 const downloadUrl   = `${releaseBase}/${archiveName}`;
 const checksumsUrl  = `${releaseBase}/${checksumsName}`;
+const r2ArchiveUrl  = `${r2Base}/${archiveName}`;
+const r2ChecksumUrl = `${r2Base}/${checksumsName}`;
+
 const vendorDir     = path.join(__dirname, '..', 'vendor');
 const binName       = process.platform === 'win32' ? 'omnigate.exe' : 'omnigate';
 const binPath       = path.join(vendorDir, binName);
+
+// 可选 GitHub 加速镜像(如 ghproxy.com / ghfast.top),格式 https://镜像前缀/https://原URL。
+// 仅作用于 GitHub 归档包下载;R2 与 GitHub 校验和始终直连官方源(镜像投毒会被 sha256 拦截)。
+const ghProxy = (process.env.OMNIGATE_GH_PROXY || '').replace(/\/+$/, '');
+const ghArchiveUrlProxied = ghProxy ? `${ghProxy}/${downloadUrl}` : downloadUrl;
 
 if (fs.existsSync(binPath)) {
   console.log(`[omnigate] binary already present at vendor/${binName}, skipping download`);
@@ -44,15 +55,24 @@ if (fs.existsSync(binPath)) {
 console.log(`[omnigate] downloading ${goreleaserOS}/${goreleaserArch} for v${VERSION}`);
 fs.mkdirSync(vendorDir, { recursive: true });
 
-function download(url, redirectsLeft) {
-  redirectsLeft = redirectsLeft || 0;
+// 单次请求。空闲超时按 socket 数据流动重置,慢而不断流的下载不会被误杀;
+// autoSelectFamily 开启 IPv4/IPv6 竞速建连,规避 v6 路由黑洞导致的挂起
+// (curl 内置此行为,Node 需显式开启)。OMNIGATE_DOWNLOAD_TIMEOUT 单位秒,默认 30。
+const STALL_TIMEOUT_MS = (() => {
+  const v = parseInt(process.env.OMNIGATE_DOWNLOAD_TIMEOUT, 10);
+  return Number.isFinite(v) && v > 0 ? v * 1000 : 30000;
+})();
+
+function fetchOnce(url, redirectsLeft) {
   if (redirectsLeft > 5) return Promise.reject(new Error('too many redirects'));
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { 'user-agent': 'omnigate-npm-installer' } }, (res) => {
+    const req = https.get(url, {
+      headers: { 'user-agent': 'omnigate-npm-installer' },
+      autoSelectFamily: true,
+    }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
-        const next = new URL(res.headers.location, url).toString();
-        return resolve(download(next, redirectsLeft + 1));
+        return resolve(fetchOnce(new URL(res.headers.location, url).toString(), redirectsLeft + 1));
       }
       if (res.statusCode !== 200) {
         res.resume();
@@ -64,8 +84,32 @@ function download(url, redirectsLeft) {
       res.on('error', reject);
     });
     req.on('error', reject);
-    req.setTimeout(60000, () => req.destroy(new Error('download timeout (60s)')));
+    req.setTimeout(STALL_TIMEOUT_MS, () => req.destroy(new Error(`download stalled (no data for ${STALL_TIMEOUT_MS / 1000}s)`)));
   });
+}
+
+// 3 次重试 + 线性退避:瞬时网络抖动不应让安装直接失败。
+// 双源策略:R2(中国快)→ GitHub 镜像(如配置)→ GitHub 直连,三级回退
+function download(url) {
+  const attempt = (n) => fetchOnce(url, 0).catch((err) => {
+    if (n >= 3) throw err;
+    console.warn(`[omnigate] download attempt ${n} failed (${err.message}), retrying…`);
+    return new Promise((r) => setTimeout(r, 1000 * n)).then(() => attempt(n + 1));
+  });
+  return attempt(1);
+}
+
+async function downloadWithFallback(primaryUrl, fallbackUrl, description) {
+  try {
+    return await download(primaryUrl);
+  } catch (primaryErr) {
+    console.warn(`[omnigate] ${description} download from primary failed, trying fallback…`);
+    try {
+      return await download(fallbackUrl);
+    } catch (fallbackErr) {
+      throw new Error(`Both sources failed. Primary: ${primaryErr.message}; Fallback: ${fallbackErr.message}`);
+    }
+  }
 }
 
 // goreleaser checksums 行格式: "<sha256hex>  <filename>"
@@ -83,8 +127,8 @@ function expectedChecksum(checksumsText, fileName) {
   const tmpPath = path.join(vendorDir, archiveName + '.tmp');
   try {
     const [archive, checksums] = await Promise.all([
-      download(downloadUrl),
-      download(checksumsUrl),
+      downloadWithFallback(r2ArchiveUrl, ghArchiveUrlProxied, 'archive'),
+      downloadWithFallback(r2ChecksumUrl, checksumsUrl, 'checksums'),
     ]);
 
     // fail closed: 校验文件缺失、条目缺失、哈希不匹配都拒绝安装

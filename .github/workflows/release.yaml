@@ -92,6 +92,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # 同步 Release 资产到 Cloudflare R2(国内 CDN):dist/ 下的 tar.gz + checksums
+      # 上传到 r2://omnigate/v0.1.1/ 路径,供 postinstall 优先下载(回退 GitHub)
+      - name: Upload to Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_REGION: auto
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          aws s3 sync dist/ "s3://omnigate/v${VERSION}/" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --exclude "*" \
+            --include "*.tar.gz" \
+            --include "*checksums.txt" \
+            --no-progress
+
   # ---------- 3. 发布 npm:版本号同步 tag,postinstall 从上一步的 Release 拉二进制 ----------
   # 发布认证走 Trusted Publishing(OIDC):无需 NPM_TOKEN,靠 workflow 级
   # id-token: write 换取短期发布凭证。前提:npmjs.com 包设置里已把本仓库
