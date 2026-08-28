@@ -23,8 +23,15 @@ type Server struct {
 	rt       *config.RuntimeManager
 	auth     AdminAuth
 	sessions *sessionStore
-	chat     http.Handler
+	chat     ChatPlane
 	typed    TypedPlane
+}
+
+// ChatPlane chat 端点族（/v1/chat/completions、/v1/messages、/v1/responses）的代理处理器集合。
+type ChatPlane interface {
+	http.Handler
+	Messages(w http.ResponseWriter, r *http.Request)
+	Responses(w http.ResponseWriter, r *http.Request)
 }
 
 // TypedPlane 非 chat 端点族（/v1/embeddings、/v1/rerank）的代理处理器集合。
@@ -34,8 +41,8 @@ type TypedPlane interface {
 }
 
 // New 构造管理面服务。auth 为启动层静态鉴权配置（详见 AdminAuth）；
-// chat 为 /v1/chat/completions 处理器，typed 为 embeddings/rerank 处理器（均可为 nil，测试场景）。
-func New(st *store.Store, rt *config.RuntimeManager, auth AdminAuth, chat http.Handler, typed TypedPlane) *Server {
+// chat 为 chat 端点族处理器，typed 为 embeddings/rerank 处理器（均可为 nil，测试场景）。
+func New(st *store.Store, rt *config.RuntimeManager, auth AdminAuth, chat ChatPlane, typed TypedPlane) *Server {
 	return &Server{store: st, rt: rt, auth: auth, sessions: newSessionStore(), chat: chat, typed: typed}
 }
 
@@ -107,6 +114,8 @@ func (s *Server) Router() http.Handler {
 	r.With(s.v1AuthMW).Get("/v1/models", s.v1Models)
 	if s.chat != nil {
 		r.With(s.v1AuthMW).Post("/v1/chat/completions", s.chat.ServeHTTP)
+		r.With(s.v1AuthMW).Post("/v1/messages", s.chat.Messages)
+		r.With(s.v1AuthMW).Post("/v1/responses", s.chat.Responses)
 	}
 	if s.typed != nil {
 		r.With(s.v1AuthMW).Post("/v1/embeddings", s.typed.Embeddings)

@@ -18,6 +18,7 @@ OmniGate 把多个模型提供方聚合成一个 OpenAI 兼容端点,提供加�
 | | |
 |---|---|
 | **OpenAI 兼容代理** | `/v1/chat/completions`(SSE 流式)、`/v1/embeddings`(OpenAI 标准)、`/v1/rerank`(Cohere 骨架直通)、`/v1/models` |
+| **混合协议端点** | `/v1/messages`(Anthropic 原生)、`/v1/responses`(OpenAI Responses 原生) — 直通模式,零损耗 |
 | **两级路由** | 逻辑模型 → 加权选模型 → 模型内 key 轮询。请求 `glm`,落地到背后任意真实模型 |
 | **阶梯熔断** | 模型级 30s → 1m → 3m;key 级 401/403 立即禁用,429 短冷却 |
 | **多维统计** | 次数 / token / 首字延迟 / 总耗时 / 费用,按 路由·模型·提供方·key·状态·时间 聚合 |
@@ -100,6 +101,33 @@ rm -rf ~/.omnigate        # 数据一并清理(可选)
 ```
 
 完整设计见 [`docs/design.md`](./docs/design.md)(实体模型、熔断状态机、重试策略、Schema、里程碑)。
+
+### 混合协议方案
+
+OmniGate 提供三种协议端点，满足不同使用场景：
+
+| 端点 | 协议 | 使用场景 | 特点 |
+|---|---|---|---|
+| **`/v1/chat/completions`** | OpenAI | **推荐：日常使用** | 统一接口，自动转换，可路由到任意协议的模型 |
+| **`/v1/messages`** | Anthropic | 需要 `thinking` 等特性 | 直通模式，保留厂商独有参数，仅路由到 `protocol=anthropic` 的模型 |
+| **`/v1/responses`** | OpenAI Responses | 需要 `reasoning_content` | 直通模式，保留推理过程，仅路由到 `protocol=responses` 的模型 |
+
+**推荐用法**：
+- **80% 场景**：使用 `/v1/chat/completions` — 简单、统一、负载均衡灵活
+- **特殊需求**：需要厂商独有参数时，使用原生端点 — 零损耗、参数完整
+
+**示例**：
+```bash
+# 标准 OpenAI 格式（推荐）- 可路由到任意协议的模型
+curl http://localhost:17777/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude", "messages": [{"role": "user", "content": "Hi"}]}'
+
+# Anthropic 原生格式 - 仅路由到 protocol=anthropic 的模型
+curl http://localhost:17777/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude", "messages": [{"role": "user", "content": "Hi"}], "thinking": {"type": "enabled"}}'
+```
 
 ---
 
