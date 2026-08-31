@@ -19,6 +19,7 @@ interface Log {
   error_body?: string
   prompt_tokens: number
   completion_tokens: number
+  cached_tokens: number
   tokens_estimated: boolean
   ttft_ms: number
   total_ms: number
@@ -90,7 +91,7 @@ export default function Logs() {
         dataSource={items}
         size="small"
         tableLayout="fixed"
-        scroll={{ x: 1400 }}
+        scroll={{ x: 1480 }}
         onRow={(log) => ({ onClick: () => nav(`/logs/${log.request_id}`), style: { cursor: 'pointer' } })}
         rowClassName={(l) => l.status === 'error' ? 'log-row-error' : ''}
         pagination={{
@@ -116,6 +117,11 @@ export default function Logs() {
             <div>↓ {l.completion_tokens}{l.tokens_estimated ? '~' : ''}</div>
           </div>
         )} />
+        <Table.Column title="缓存率" width={80} render={(_, l: Log) => {
+          if (l.prompt_tokens === 0) return '-'
+          const rate = (l.cached_tokens / l.prompt_tokens * 100).toFixed(1)
+          return `${rate}%`
+        }} />
         <Table.Column title="首字/总耗时" width={120} render={(_, l: Log) => (
           <div style={{ lineHeight: '18px', color: '#666' }}>
             <div>{l.ttft_ms}ms</div>
