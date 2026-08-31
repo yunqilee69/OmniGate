@@ -97,6 +97,7 @@ func (h *Handler) InvalidateProviderCache(providerID int64) {
 type usageInfo struct {
 	prompt     int
 	completion int
+	cached     int
 	estimated  bool
 }
 
@@ -466,11 +467,18 @@ func (h *Handler) bufferedResponse(w http.ResponseWriter, resp *http.Response,
 			Usage *struct {
 				PromptTokens     int `json:"prompt_tokens"`
 				CompletionTokens int `json:"completion_tokens"`
+				PromptTokensDetails *struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
 			} `json:"usage"`
 		}
 		_ = json.Unmarshal(out, &parsed)
 		if parsed.Usage != nil {
-			res.usage = usageInfo{prompt: parsed.Usage.PromptTokens, completion: parsed.Usage.CompletionTokens}
+			cached := 0
+			if parsed.Usage.PromptTokensDetails != nil {
+				cached = parsed.Usage.PromptTokensDetails.CachedTokens
+			}
+			res.usage = usageInfo{prompt: parsed.Usage.PromptTokens, completion: parsed.Usage.CompletionTokens, cached: cached}
 		} else {
 			respText := ""
 			if len(parsed.Choices) > 0 {
@@ -565,7 +573,11 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 				if u := adapter.streamUsage(); u != nil {
 					res.usage = *u
 				} else if passthrough && scan.Usage() != nil {
-					res.usage = usageInfo{prompt: scan.Usage().PromptTokens, completion: scan.Usage().CompletionTokens}
+					cached := 0
+					if scan.Usage().PromptTokensDetails != nil {
+						cached = scan.Usage().PromptTokensDetails.CachedTokens
+					}
+					res.usage = usageInfo{prompt: scan.Usage().PromptTokens, completion: scan.Usage().CompletionTokens, cached: cached}
 				} else {
 					if passthrough {
 						textAcc.WriteString(scan.Text())
@@ -599,7 +611,7 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 		RequestID: requestID, Route: routeName,
 		Status: status, ErrorCode: errCode, ErrorBody: errorBody, IsStream: isStream,
 		IsFallback:   isFallback,
-		PromptTokens: u.prompt, CompletionTokens: u.completion, TokensEstimated: u.estimated,
+		PromptTokens: u.prompt, CompletionTokens: u.completion, CachedTokens: u.cached, TokensEstimated: u.estimated,
 		TTFTMs: ttft.Milliseconds(), TotalMs: total.Milliseconds(),
 		Cost: cost(att.Model, u, h.rt.Snapshot().USDCNY), Retries: retries,
 	}

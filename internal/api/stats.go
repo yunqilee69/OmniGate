@@ -106,18 +106,18 @@ func (s *Server) getStatsOverview(w http.ResponseWriter, r *http.Request) {
 // overviewFromRollup 走预聚合：单次 SUM 扫描返回所有标量 + 直方桶均值/p95。
 func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64, rate float64) {
 	var agg struct {
-		Total, Success, Errors, PTok, CTok int64
-		Cost                               float64
+		Total, Success, Errors, PTok, CTok, CachedTok int64
+		Cost                                          float64
 	}
 	ttftCounts := [10]int64{}
 	totalCounts := [10]int64{}
 
 	row := s.store.DB.Raw(`SELECT
 		COALESCE(SUM(total),0), COALESCE(SUM(success),0), COALESCE(SUM(errors),0),
-		COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
+		COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(cached_tokens),0),
 		COALESCE(SUM(cost),0)
 		FROM request_log_daily WHERE day BETWEEN ? AND ?`, dayFrom, dayTo).Row()
-	if err := row.Scan(&agg.Total, &agg.Success, &agg.Errors, &agg.PTok, &agg.CTok, &agg.Cost); err != nil {
+	if err := row.Scan(&agg.Total, &agg.Success, &agg.Errors, &agg.PTok, &agg.CTok, &agg.CachedTok, &agg.Cost); err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
@@ -161,12 +161,18 @@ func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64,
 	p95TTFT := store.P95FromBuckets(ttftCounts, store.TTFTBucketBounds)
 	p95Total := store.P95FromBuckets(totalCounts, store.TotalBucketBounds)
 
+	cacheRate := 0.0
+	if agg.PTok > 0 {
+		cacheRate = float64(agg.CachedTok) / float64(agg.PTok)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": agg.Total, "success": agg.Success, "errors": agg.Errors, "success_rate": successRate,
-		"prompt_tokens": agg.PTok, "completion_tokens": agg.CTok,
+		"prompt_tokens": agg.PTok, "completion_tokens": agg.CTok, "cached_tokens": agg.CachedTok,
 		"total_tokens": agg.PTok + agg.CTok,
-		"cost":         agg.Cost * rate,
-		"avg_ttft_ms":  avgTTFT, "avg_total_ms": avgTotal,
+		"cache_hit_rate": cacheRate,
+		"cost":           agg.Cost * rate,
+		"avg_ttft_ms":    avgTTFT, "avg_total_ms": avgTotal,
 		"p95_ttft_ms": p95TTFT, "p95_total_ms": p95Total,
 		"fallback_count": fallbackCount,
 		"fallback_rate":  fallbackRate,
@@ -184,6 +190,7 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate flo
 		Errors   int64
 		PTokens  int64
 		CTokens  int64
+		CachedTokens int64
 		Cost     float64
 		AvgTTFT  sql.NullFloat64
 		AvgTotal sql.NullFloat64
@@ -193,11 +200,12 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate flo
 		COALESCE(SUM(CASE WHEN status='error' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(prompt_tokens),0),
 		COALESCE(SUM(completion_tokens),0),
+		COALESCE(SUM(cached_tokens),0),
 		COALESCE(SUM(cost),0),
 		AVG(CASE WHEN status='success' THEN ttft_ms END),
 		AVG(CASE WHEN status='success' THEN total_ms END)
 		FROM request_log WHERE `+where, args...).Row()
-	if err := row.Scan(&agg.Total, &agg.Success, &agg.Errors, &agg.PTokens, &agg.CTokens, &agg.Cost,
+	if err := row.Scan(&agg.Total, &agg.Success, &agg.Errors, &agg.PTokens, &agg.CTokens, &agg.CachedTokens, &agg.Cost,
 		&agg.AvgTTFT, &agg.AvgTotal); err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
@@ -229,12 +237,17 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate flo
 	if agg.Total > 0 {
 		fallbackRate = float64(fallbackCount) / float64(agg.Total)
 	}
+	cacheRate := 0.0
+	if agg.PTokens > 0 {
+		cacheRate = float64(agg.CachedTokens) / float64(agg.PTokens)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": agg.Total, "success": agg.Success, "errors": agg.Errors, "success_rate": successRate,
-		"prompt_tokens": agg.PTokens, "completion_tokens": agg.CTokens,
+		"prompt_tokens": agg.PTokens, "completion_tokens": agg.CTokens, "cached_tokens": agg.CachedTokens,
 		"total_tokens": agg.PTokens + agg.CTokens,
-		"cost":         agg.Cost * rate,
-		"avg_ttft_ms":  agg.AvgTTFT.Float64, "avg_total_ms": agg.AvgTotal.Float64,
+		"cache_hit_rate": cacheRate,
+		"cost":           agg.Cost * rate,
+		"avg_ttft_ms":    agg.AvgTTFT.Float64, "avg_total_ms": agg.AvgTotal.Float64,
 		"p95_ttft_ms": percentile95(ttfts), "p95_total_ms": percentile95(totals),
 		"fallback_count": fallbackCount,
 		"fallback_rate":  fallbackRate,

@@ -105,6 +105,7 @@ type RequestLog struct {
 	Retries          int     `json:"retries" gorm:"not null;default:0"`
 	PromptTokens     int     `json:"prompt_tokens" gorm:"not null;default:0"`
 	CompletionTokens int     `json:"completion_tokens" gorm:"not null;default:0"`
+	CachedTokens     int     `json:"cached_tokens" gorm:"not null;default:0"`
 	TTFTMs           int64   `json:"ttft_ms" gorm:"not null;default:0"`
 	TotalMs          int64   `json:"total_ms" gorm:"not null;default:0"`
 	Cost             float64 `json:"cost" gorm:"not null;default:0"`
@@ -155,6 +156,7 @@ type RequestLogDaily struct {
 	Errors           int64   `gorm:"not null;default:0"`
 	PromptTokens     int64   `gorm:"not null;default:0"`
 	CompletionTokens int64   `gorm:"not null;default:0"`
+	CachedTokens     int64   `gorm:"not null;default:0"`
 	Cost             float64 `gorm:"not null;default:0"`
 	RetriesSum       int64   `gorm:"not null;default:0"`
 	TTFTB0           int64   `gorm:"not null;default:0;column:ttftb0"`

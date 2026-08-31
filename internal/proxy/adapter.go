@@ -125,8 +125,8 @@ func anthropicFinishReason(r anthropic.StopReason) openai.FinishReason {
 // -------------------- anthropic (/v1/messages) --------------------
 
 type anthropicAdapter struct {
-	inputTok, outputTok int
-	seenUsage           bool
+	inputTok, outputTok, cachedTok int
+	seenUsage                      bool
 }
 
 func newAnthropicAdapter() *anthropicAdapter { return &anthropicAdapter{} }
@@ -301,7 +301,7 @@ func (a *anthropicAdapter) convertBuffered(body []byte) ([]byte, usageInfo, erro
 	if err != nil {
 		return nil, usageInfo{}, err
 	}
-	return conv, usageInfo{prompt: int(msg.Usage.InputTokens), completion: int(msg.Usage.OutputTokens)}, nil
+	return conv, usageInfo{prompt: int(msg.Usage.InputTokens), completion: int(msg.Usage.OutputTokens), cached: int(msg.Usage.CacheReadInputTokens)}, nil
 }
 
 func (a *anthropicAdapter) convertStreamChunk(payload []byte) []string {
@@ -312,11 +312,15 @@ func (a *anthropicAdapter) convertStreamChunk(payload []byte) []string {
 	switch evt.Type {
 	case "message_start":
 		a.inputTok = int(evt.Message.Usage.InputTokens)
+		a.cachedTok = int(evt.Message.Usage.CacheReadInputTokens)
 		a.seenUsage = true
 	case "message_delta":
 		a.outputTok = int(evt.Usage.OutputTokens)
 		if evt.Usage.InputTokens > 0 {
 			a.inputTok = int(evt.Usage.InputTokens)
+		}
+		if evt.Usage.CacheReadInputTokens > 0 {
+			a.cachedTok = int(evt.Usage.CacheReadInputTokens)
 		}
 		a.seenUsage = true
 		return []string{marshalChunk(openai.ChatCompletionStreamResponse{
@@ -357,7 +361,7 @@ func (a *anthropicAdapter) streamUsage() *usageInfo {
 	if !a.seenUsage {
 		return nil
 	}
-	u := usageInfo{prompt: a.inputTok, completion: a.outputTok}
+	u := usageInfo{prompt: a.inputTok, completion: a.outputTok, cached: a.cachedTok}
 	return &u
 }
 
