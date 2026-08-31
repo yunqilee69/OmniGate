@@ -16,11 +16,33 @@ func TestSessionKeyHeaderWins(t *testing.T) {
 	req := reqWithMessages([]any{
 		map[string]any{"role": "user", "content": "hello"},
 	})
-	if got := sessionKey(r, req, "X-Session-ID"); got != "h:sess-1" {
+	if got := sessionKey(r, req, []string{"X-Session-ID"}); got != "h:sess-1" {
 		t.Fatalf("header must win and be trimmed: %q", got)
 	}
-	if got := sessionKey(r, req, ""); got == "" || got[:2] != "m:" {
-		t.Fatalf("empty header name must fall back to prefix hash: %q", got)
+	if got := sessionKey(r, req, []string{}); got == "" || got[:2] != "m:" {
+		t.Fatalf("empty header list must fall back to prefix hash: %q", got)
+	}
+}
+
+func TestSessionKeyMultipleHeaders(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Request-ID", "req-123")
+	r.Header.Set("X-Trace-ID", "trace-456")
+	req := reqWithMessages([]any{
+		map[string]any{"role": "user", "content": "hello"},
+	})
+
+	if got := sessionKey(r, req, []string{"X-Session-ID", "X-Request-ID", "X-Trace-ID"}); got != "h:req-123" {
+		t.Fatalf("must take first available header: %q", got)
+	}
+
+	r.Header.Set("X-Session-ID", "sess-1")
+	if got := sessionKey(r, req, []string{"X-Session-ID", "X-Request-ID"}); got != "h:sess-1" {
+		t.Fatalf("must respect priority order: %q", got)
+	}
+
+	if got := sessionKey(r, req, []string{"X-Not-Exist", "X-Also-Missing"}); got == "" || got[:2] != "m:" {
+		t.Fatalf("all missing headers must fall back to prefix hash: %q", got)
 	}
 }
 

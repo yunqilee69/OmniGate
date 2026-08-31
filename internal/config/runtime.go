@@ -28,7 +28,7 @@ type Runtime struct {
 	CaptureRetentionDays    int
 	LogRetentionDays        int
 	AffinityEnabled         bool
-	AffinityHeader          string
+	AffinityHeaders         []string
 	AffinityTTL             time.Duration
 	USDCNY                  float64
 	FallbackEnabled         bool
@@ -133,6 +133,30 @@ func headerName(v any) error {
 	return nil
 }
 
+// headerArr 校验 HTTP 头名数组（如会话亲和请求头候选列表）。
+func headerArr(v any) error {
+	arr, ok := v.([]any)
+	if !ok {
+		return errors.New("must be an array of header names")
+	}
+	for _, e := range arr {
+		s, ok := e.(string)
+		if !ok {
+			return errors.New("elements must be header name strings")
+		}
+		s = strings.TrimSpace(s)
+		if s == "" || len(s) > 128 {
+			return errors.New("header name must be non-empty (max 128 chars)")
+		}
+		for _, r := range s {
+			if r <= ' ' || r >= 127 || r == ':' {
+				return errors.New("header name must not contain whitespace, ':' or non-ASCII")
+			}
+		}
+	}
+	return nil
+}
+
 var settingSpecs = []settingSpec{
 	{key: "breaker.cooldown_ladder", def: `["30s","1m","3m"]`, validate: durArr},
 	{key: "breaker.disable_threshold", def: `3`, validate: intRange(1, 100)},
@@ -146,7 +170,7 @@ var settingSpecs = []settingSpec{
 	{key: "capture.retention_days", def: `3`, validate: intRange(1, 365)},
 	{key: "log.retention_days", def: `0`, validate: intRange(0, 3650)},
 	{key: "affinity.enabled", def: `false`, validate: boolVal},
-	{key: "affinity.header", def: `"X-Session-ID"`, validate: headerName},
+	{key: "affinity.headers", def: `["X-Session-ID"]`, validate: headerArr},
 	{key: "affinity.ttl_s", def: `3600`, validate: intRange(10, 86400)},
 	{key: "pricing.usd_cny", def: `7.25`, validate: floatRange(0.01, 10000)},
 	{key: "fallback.enabled", def: `false`, validate: boolVal},
@@ -254,9 +278,7 @@ func (m *RuntimeManager) rebuild() error {
 	rt.CaptureRetentionDays = getInt("capture.retention_days")
 	rt.LogRetentionDays = getInt("log.retention_days")
 	rt.AffinityEnabled = getBool("affinity.enabled")
-	var affHdr string
-	_ = json.Unmarshal([]byte(raw["affinity.header"]), &affHdr)
-	rt.AffinityHeader = strings.TrimSpace(affHdr)
+	_ = json.Unmarshal([]byte(raw["affinity.headers"]), &rt.AffinityHeaders)
 	rt.AffinityTTL = time.Duration(getInt("affinity.ttl_s")) * time.Second
 	// 汇率非法时兜底 7.25，保证 CNY 模型计费不致除零
 	var rate float64

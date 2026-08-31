@@ -164,10 +164,12 @@ func estimateUsage(promptChars int, respText string) usageInfo {
 
 // sessionKey 解析会话键：优先自定义请求头；缺失时按消息前缀哈希自动识别。
 // 两者皆无返回空串，调用方退化为普通加权随机。
-func sessionKey(r *http.Request, req map[string]any, header string) string {
-	if header != "" {
-		if v := strings.TrimSpace(r.Header.Get(header)); v != "" {
-			return "h:" + v
+func sessionKey(r *http.Request, req map[string]any, headers []string) string {
+	for _, h := range headers {
+		if h != "" {
+			if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
+				return "h:" + v
+			}
 		}
 	}
 	return messagePrefixKey(req)
@@ -243,7 +245,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var affKey string
 	var affModel int64
 	if rt.AffinityEnabled {
-		if sk := sessionKey(r, req, rt.AffinityHeader); sk != "" {
+		if sk := sessionKey(r, req, rt.AffinityHeaders); sk != "" {
 			affKey = routeName + "\x00" + sk
 			affModel, _ = h.sel.Affinity(affKey, time.Now())
 		}
