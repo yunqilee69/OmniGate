@@ -3,7 +3,7 @@ import {
   Button, Card, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select,
   Space, Spin, Table, Tabs, Tag, Tooltip, message,
 } from 'antd'
-import { PlusOutlined, CloudServerOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons'
+import { PlusOutlined, CloudServerOutlined, EyeOutlined, EyeInvisibleOutlined, InfoCircleOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { api } from '../api'
 import StatusTag from '../components/StatusTag'
@@ -14,6 +14,7 @@ interface Provider {
   name: string
   base_url: string
   protocol: string
+  proxy_url: string
   timeout_ms: number
   remark: string
 }
@@ -60,6 +61,26 @@ const modelTypeOptions = [
   { value: 'embedding', label: '向量（/v1/embeddings）' },
   { value: 'rerank', label: '重排（/v1/rerank）' },
 ]
+
+const proxyURLLabel = (
+  <Space size={4}>
+    代理 URL
+    <Tooltip
+      title={(
+        <div style={{ maxWidth: 320 }}>
+          <div>需要认证时，格式为：</div>
+          <code>http://用户名:密码@代理地址:端口</code>
+          <div style={{ marginTop: 6 }}>用户名和密码中的特殊字符请分别进行 URL 编码，例如：</div>
+          <code>@ → %40　: → %3A　/ → %2F　# → %23</code>
+          <div style={{ marginTop: 6 }}>例如密码为 p@ss:word，应填写：</div>
+          <code>http://user:p%40ss%3Aword@127.0.0.1:7890</code>
+        </div>
+      )}
+    >
+      <InfoCircleOutlined tabIndex={0} aria-label="代理 URL 配置说明" />
+    </Tooltip>
+  </Space>
+)
 
 const modelTypeTag = (t: string) => {
   if (t === 'embedding') return <Tag color="geekblue">embedding</Tag>
@@ -243,6 +264,14 @@ function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, o
           >
             <Input />
           </Form.Item>
+          <Form.Item
+            name="proxy_url"
+            label={proxyURLLabel}
+            extra="可选，支持 http://、https:// 或 socks5://，账号密码直接写在 URL 中"
+            rules={[{ pattern: /^(https?|socks5):\/\/\S+$/, message: '请输入有效的代理 URL' }]}
+          >
+            <Input placeholder="http://user:pass@127.0.0.1:7890" />
+          </Form.Item>
           <Form.Item name="timeout_ms" label="首字响应超时(ms)"><InputNumber min={1000} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="remark" label="备注"><Input /></Form.Item>
         </Form>
@@ -285,6 +314,14 @@ function ProviderFormButton({ providers, onSaved }: { providers: Provider[]; onS
             ]}
           >
             <Input placeholder="https://open.bigmodel.cn/api/paas/v4" />
+          </Form.Item>
+          <Form.Item
+            name="proxy_url"
+            label={proxyURLLabel}
+            extra="可选，支持 http://、https:// 或 socks5://，账号密码直接写在 URL 中"
+            rules={[{ pattern: /^(https?|socks5):\/\/\S+$/, message: '请输入有效的代理 URL' }]}
+          >
+            <Input placeholder="http://user:pass@127.0.0.1:7890" />
           </Form.Item>
           <Form.Item name="timeout_ms" label="首字响应超时(ms)" initialValue={120000}>
             <InputNumber min={1000} style={{ width: '100%' }} />
