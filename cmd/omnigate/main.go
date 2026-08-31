@@ -153,9 +153,7 @@ func main() {
 		cmd.Stderr = nil
 		
 		// 设置进程组（Unix）或创建新进程（Windows）
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			Setpgid: true,
-		}
+		cmd.SysProcAttr = daemonSysProcAttr()
 		
 		if err := cmd.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to start background process: %v\n", err)
