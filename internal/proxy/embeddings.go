@@ -163,7 +163,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 					}
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID, "type", kind.modelType)
 				}
-				
+
 				statuses := router.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, false,
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false)
@@ -230,7 +230,7 @@ func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[s
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("Authorization", "Bearer "+att.Key.KeyValue)
 
-	resp, err := h.client.Do(upReq)
+	resp, err := h.clientForProvider(att.Provider.ID).Do(upReq)
 	if err != nil {
 		res.retryable, res.status = true, "error"
 		if ctx.Err() == context.DeadlineExceeded {

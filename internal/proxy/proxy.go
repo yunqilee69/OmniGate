@@ -13,8 +13,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -27,11 +29,12 @@ import (
 const maxBodyBytes = 32 << 20
 
 type Handler struct {
-	db     *store.Store
-	rt     *config.RuntimeManager
-	sel    *router.Selector
-	rec    *breaker.Recorder
-	client *http.Client
+	db          *store.Store
+	rt          *config.RuntimeManager
+	sel         *router.Selector
+	rec         *breaker.Recorder
+	client      *http.Client
+	clientCache sync.Map
 }
 
 func New(db *store.Store, rt *config.RuntimeManager) *Handler {
@@ -45,6 +48,50 @@ func New(db *store.Store, rt *config.RuntimeManager) *Handler {
 			},
 		},
 	}
+}
+
+// clientForProvider 返回按提供商配置了代理的 HTTP 客户端。
+// ProxyURL 支持以下格式：
+//   - http://host:port
+//   - http://user:pass@host:port
+//   - socks5://host:port
+//   - socks5://user:pass@host:port
+//
+// 空 ProxyURL 返回默认客户端（直连）。
+func (h *Handler) clientForProvider(providerID int64) *http.Client {
+	if providerID == 0 {
+		return h.client
+	}
+	if cached, ok := h.clientCache.Load(providerID); ok {
+		return cached.(*http.Client)
+	}
+
+	var p store.Provider
+	if err := h.db.DB.First(&p, providerID).Error; err != nil {
+		return h.client
+	}
+
+	client := h.client
+	if p.ProxyURL != "" {
+		proxyURL, err := url.Parse(p.ProxyURL)
+		if err == nil {
+			transport := &http.Transport{
+				Proxy:               http.ProxyURL(proxyURL),
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 16,
+				IdleConnTimeout:     90 * time.Second,
+			}
+			client = &http.Client{Transport: transport}
+		}
+	}
+
+	actual, _ := h.clientCache.LoadOrStore(providerID, client)
+	return actual.(*http.Client)
+}
+
+// invalidateProviderCache 清除指定提供商的客户端缓存（配置变更时调用）。
+func (h *Handler) InvalidateProviderCache(providerID int64) {
+	h.clientCache.Delete(providerID)
 }
 
 type usageInfo struct {
@@ -240,7 +287,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID)
 				}
-				
+
 				statuses := router.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false)
@@ -340,7 +387,7 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 		upReq.Header.Set("Accept", "text/event-stream")
 	}
 
-	resp, err := h.client.Do(upReq)
+	resp, err := h.clientForProvider(att.Provider.ID).Do(upReq)
 	if err != nil {
 		res.retryable, res.status = true, "error"
 		if timedOut.Load() || errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
@@ -470,11 +517,11 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 	for {
 		n, readErr := idle.Read(buf)
 		if n > 0 {
-		if !committed {
-			committed = true
-			stopDeadline() // 首字节已到：解除建连+首字节的 deadline，之后流交给 idle 超时
-			res.committed = true
-			res.ttft = time.Since(attemptStart)
+			if !committed {
+				committed = true
+				stopDeadline() // 首字节已到：解除建连+首字节的 deadline，之后流交给 idle 超时
+				res.committed = true
+				res.ttft = time.Since(attemptStart)
 				w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 				w.Header().Set("Cache-Control", "no-cache")
 				w.Header().Set("X-Modelrouter-Model", att.Model.Name)
@@ -528,16 +575,16 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 				res.status = "success"
 				return res
 			}
-		if !committed {
-			// deadline 在首字节前触发会 cancel 流：区分超时与上游建连失败
-			if timedOut.Load() {
-				res.status, res.errCode, res.retryable = "error", "timeout", true
-			} else {
-				res.status, res.errCode, res.retryable = "error", "stream_setup_failed", true
+			if !committed {
+				// deadline 在首字节前触发会 cancel 流：区分超时与上游建连失败
+				if timedOut.Load() {
+					res.status, res.errCode, res.retryable = "error", "timeout", true
+				} else {
+					res.status, res.errCode, res.retryable = "error", "stream_setup_failed", true
+				}
+				return res
 			}
-			return res
-		}
-		res.status, res.errCode, res.streamBroke = "error", "stream_broken", true
+			res.status, res.errCode, res.streamBroke = "error", "stream_broken", true
 			res.usage = estimateUsage(res.promptChars, textAcc.String())
 			return res
 		}
@@ -551,7 +598,7 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 	entry := store.RequestLog{
 		RequestID: requestID, Route: routeName,
 		Status: status, ErrorCode: errCode, ErrorBody: errorBody, IsStream: isStream,
-		IsFallback: isFallback,
+		IsFallback:   isFallback,
 		PromptTokens: u.prompt, CompletionTokens: u.completion, TokensEstimated: u.estimated,
 		TTFTMs: ttft.Milliseconds(), TotalMs: total.Milliseconds(),
 		Cost: cost(att.Model, u, h.rt.Snapshot().USDCNY), Retries: retries,
@@ -732,7 +779,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 		openAIError(w, 400, "invalid_json", "request body is not valid JSON", nil)
 		return
 	}
-	
+
 	// 从请求体提取 model 字段（Anthropic/Responses 都在顶层）
 	routeName, _ := req["model"].(string)
 	if routeName == "" {
@@ -764,7 +811,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 		h.maybeCapture(requestID, routeName, reqSnap, cw)
 		return
 	}
-	
+
 	if snap.Route.Endpoint != endpoint {
 		openAIError(w, http.StatusBadRequest, "endpoint_mismatch",
 			fmt.Sprintf("route '%s' is configured for endpoint '%s', but you called '%s'", routeName, snap.Route.Endpoint, endpoint), nil)
@@ -797,7 +844,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 					}
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID, "endpoint", endpoint)
 				}
-				
+
 				statuses := router.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false)
@@ -808,7 +855,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 			}
 			break
 		}
-		
+
 		tried[att.Key.ID] = true
 		attemptStart := time.Now()
 		res := h.nativeAttempt(w, r, body, att, isStream, rt, endpoint)
@@ -869,7 +916,7 @@ func (h *Handler) nativeAttempt(w http.ResponseWriter, r *http.Request, reqBody 
 		upReq.Header.Set("Accept", "text/event-stream")
 	}
 
-	resp, err := h.client.Do(upReq)
+	resp, err := h.clientForProvider(att.Provider.ID).Do(upReq)
 	if err != nil {
 		res.retryable, res.status = true, "error"
 		if timedOut.Load() || errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
@@ -931,10 +978,10 @@ func (h *Handler) nativeBufferedResponse(w http.ResponseWriter, resp *http.Respo
 		}
 		return res
 	}
-	
+
 	// 原生协议不转换，直接透传
 	out := body
-	
+
 	// 尝试解析 usage（不同协议格式不同）
 	converted, usage, _ := adapter.convertBuffered(body)
 	if usage.prompt > 0 || usage.completion > 0 {
@@ -952,7 +999,7 @@ func (h *Handler) nativeBufferedResponse(w http.ResponseWriter, resp *http.Respo
 			res.usage = usageInfo{prompt: parsed.Usage.PromptTokens, completion: parsed.Usage.CompletionTokens}
 		}
 	}
-	
+
 	res.committed, res.status, res.ttft = true, "success", time.Since(attemptStart)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("X-Modelrouter-Model", res.att.Model.Name)
