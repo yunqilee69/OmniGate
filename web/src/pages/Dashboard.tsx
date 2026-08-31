@@ -15,6 +15,7 @@ interface Overview {
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number
+  cache_hit_rate: number
   cost: number
 }
 
@@ -202,6 +203,16 @@ export default function Dashboard() {
               title="输出 Tokens"
               value={ov?.completion_tokens ?? 0}
               formatter={(v) => formatNumber(+v)}
+              valueStyle={{ color: '#171717' }}
+            />
+          </div>
+        </Col>
+        <Col flex="1 1 0">
+          <div style={{ background: '#e6f7ff', padding: 20, borderRadius: 12, minHeight: 96 }}>
+            <Statistic
+              title="缓存命中率"
+              value={ov?.cache_hit_rate ?? 0}
+              formatter={(v) => `${(+v * 100).toFixed(1)}%`}
               valueStyle={{ color: '#171717' }}
             />
           </div>
