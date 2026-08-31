@@ -164,10 +164,10 @@ func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64,
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": agg.Total, "success": agg.Success, "errors": agg.Errors, "success_rate": successRate,
 		"prompt_tokens": agg.PTok, "completion_tokens": agg.CTok,
-		"total_tokens":  agg.PTok + agg.CTok,
-		"cost":          agg.Cost * rate,
-		"avg_ttft_ms":   avgTTFT, "avg_total_ms": avgTotal,
-		"p95_ttft_ms":   p95TTFT, "p95_total_ms": p95Total,
+		"total_tokens": agg.PTok + agg.CTok,
+		"cost":         agg.Cost * rate,
+		"avg_ttft_ms":  avgTTFT, "avg_total_ms": avgTotal,
+		"p95_ttft_ms": p95TTFT, "p95_total_ms": p95Total,
 		"fallback_count": fallbackCount,
 		"fallback_rate":  fallbackRate,
 	})
@@ -235,7 +235,7 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate flo
 		"total_tokens": agg.PTokens + agg.CTokens,
 		"cost":         agg.Cost * rate,
 		"avg_ttft_ms":  agg.AvgTTFT.Float64, "avg_total_ms": agg.AvgTotal.Float64,
-		"p95_ttft_ms":  percentile95(ttfts), "p95_total_ms": percentile95(totals),
+		"p95_ttft_ms": percentile95(ttfts), "p95_total_ms": percentile95(totals),
 		"fallback_count": fallbackCount,
 		"fallback_rate":  fallbackRate,
 	})
@@ -428,12 +428,20 @@ func (s *Server) getStatsTimeseries(w http.ResponseWriter, r *http.Request) {
 		conds = append(conds, "status = ?")
 		args = append(args, v)
 	}
+	if v := q.Get("provider"); v != "" {
+		conds = append(conds, "provider = ?")
+		args = append(args, v)
+	}
 	where := strings.Join(conds, " AND ")
 	rows, err := s.store.DB.Raw(`SELECT (created_at / ?) * ? AS bucket,
 		COUNT(*) AS total,
 		SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
+		SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
+		COALESCE(SUM(prompt_tokens),0) AS prompt_tokens,
+		COALESCE(SUM(completion_tokens),0) AS completion_tokens,
 		COALESCE(SUM(cost),0) AS cost,
 		COALESCE(SUM(prompt_tokens+completion_tokens),0) AS total_tokens,
+		SUM(CASE WHEN is_fallback = 1 THEN 1 ELSE 0 END) AS fallback_count,
 		AVG(CASE WHEN status='success' THEN ttft_ms END) AS avg_ttft,
 		AVG(CASE WHEN status='success' THEN total_ms END) AS avg_total
 		FROM request_log WHERE `+where+` GROUP BY bucket ORDER BY bucket`, args...).Rows()
@@ -443,19 +451,24 @@ func (s *Server) getStatsTimeseries(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type point struct {
-		Bucket      int64   `json:"bucket"`
-		Total       int64   `json:"total"`
-		Success     int64   `json:"success"`
-		Cost        float64 `json:"cost"`
-		TotalTokens int64   `json:"total_tokens"`
-		AvgTTFT     float64 `json:"avg_ttft_ms"`
-		AvgTotal    float64 `json:"avg_total_ms"`
+		Bucket           int64   `json:"bucket"`
+		Total            int64   `json:"total"`
+		Success          int64   `json:"success"`
+		Errors           int64   `json:"errors"`
+		PromptTokens     int64   `json:"prompt_tokens"`
+		CompletionTokens int64   `json:"completion_tokens"`
+		Cost             float64 `json:"cost"`
+		TotalTokens      int64   `json:"total_tokens"`
+		FallbackCount    int64   `json:"fallback_count"`
+		AvgTTFT          float64 `json:"avg_ttft_ms"`
+		AvgTotal         float64 `json:"avg_total_ms"`
 	}
 	points := []point{}
 	for rows.Next() {
 		var p point
 		var ttft, total sql.NullFloat64
-		if err := rows.Scan(&p.Bucket, &p.Total, &p.Success, &p.Cost, &p.TotalTokens, &ttft, &total); err != nil {
+		if err := rows.Scan(&p.Bucket, &p.Total, &p.Success, &p.Errors, &p.PromptTokens,
+			&p.CompletionTokens, &p.Cost, &p.TotalTokens, &p.FallbackCount, &ttft, &total); err != nil {
 			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}

@@ -661,6 +661,42 @@ func TestStatsTimeseriesAvgTotal(t *testing.T) {
 	}
 }
 
+func TestStatsTimeseriesIncludesMetricsAndFiltersProvider(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	from, to := int64(1700000000), int64(1700003600)
+	rows := []store.RequestLog{
+		{RequestID: "provider-a-success", Route: "r", Model: "m", Provider: "provider-a", Status: "success",
+			PromptTokens: 11, CompletionTokens: 7, IsFallback: true, CreatedAt: from + 10},
+		{RequestID: "provider-a-error", Route: "r", Model: "m", Provider: "provider-a", Status: "error",
+			PromptTokens: 3, CompletionTokens: 2, IsFallback: true, CreatedAt: from + 20},
+		{RequestID: "provider-b-success", Route: "r", Model: "m", Provider: "provider-b", Status: "success",
+			PromptTokens: 100, CompletionTokens: 200, CreatedAt: from + 30},
+	}
+	for i := range rows {
+		if err := st.DB.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec := do(t, h, "GET", fmt.Sprintf("/api/stats/timeseries?from=%d&to=%d&provider=provider-a", from, to), nil, "test-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("timeseries failed: %d — %s", rec.Code, rec.Body.String())
+	}
+	points := decodeObj(t, rec)["points"].([]any)
+	if len(points) != 1 {
+		t.Fatalf("expect 1 bucket, got %d", len(points))
+	}
+	p := points[0].(map[string]any)
+	for field, want := range map[string]float64{
+		"total": 2, "success": 1, "errors": 1, "prompt_tokens": 14,
+		"completion_tokens": 9, "total_tokens": 23, "fallback_count": 2,
+	} {
+		if p[field] != want {
+			t.Fatalf("%s wrong: want %v, got %v", field, want, p[field])
+		}
+	}
+}
+
 // TestModelPriceCurrency 模型价格币种：创建回显、非法值 400、更新生效。
 func TestModelPriceCurrency(t *testing.T) {
 	h := newTestServer(t)
