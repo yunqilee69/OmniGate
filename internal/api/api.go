@@ -77,6 +77,7 @@ func (s *Server) Router() http.Handler {
 		ar.Route("/providers", func(er chi.Router) {
 			er.Get("/", s.listProviders)
 			er.Post("/", s.createProvider)
+			er.Post("/fetch-models", s.fetchProviderModels)
 			er.Route("/{id}", func(ir chi.Router) {
 				ir.Put("/", s.updateProvider)
 				ir.Delete("/", s.deleteProvider)
