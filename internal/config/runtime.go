@@ -189,6 +189,9 @@ func NewRuntimeManager(db *store.Store) (*RuntimeManager, error) {
 	if err := m.seedDefaults(); err != nil {
 		return nil, err
 	}
+	if err := m.migrateSettings(); err != nil {
+		return nil, err
+	}
 	if err := m.rebuild(); err != nil {
 		return nil, err
 	}
@@ -212,6 +215,39 @@ func (m *RuntimeManager) seedDefaults() error {
 			return fmt.Errorf("seed %s: %w", sp.key, err)
 		}
 	}
+	return nil
+}
+
+func (m *RuntimeManager) migrateSettings() error {
+	var old store.AppConfig
+	if err := m.db.DB.Where("key = ?", "affinity.header").First(&old).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return fmt.Errorf("check affinity.header: %w", err)
+	}
+
+	var oldVal string
+	if err := json.Unmarshal([]byte(old.Value), &oldVal); err != nil {
+		return fmt.Errorf("parse affinity.header: %w", err)
+	}
+
+	newVal := []string{}
+	if strings.TrimSpace(oldVal) != "" {
+		newVal = append(newVal, strings.TrimSpace(oldVal))
+	}
+	newJSON, _ := json.Marshal(newVal)
+
+	if err := m.db.DB.Where("key = ?", "affinity.headers").
+		Assign(store.AppConfig{Key: "affinity.headers", Value: string(newJSON)}).
+		FirstOrCreate(&store.AppConfig{}).Error; err != nil {
+		return fmt.Errorf("migrate to affinity.headers: %w", err)
+	}
+
+	if err := m.db.DB.Delete(&old).Error; err != nil {
+		return fmt.Errorf("delete old affinity.header: %w", err)
+	}
+
 	return nil
 }
 
