@@ -3,7 +3,7 @@ import {
   Button, Card, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select,
   Space, Spin, Table, Tabs, Tag, Tooltip, message,
 } from 'antd'
-import { PlusOutlined, CloudServerOutlined, EyeOutlined, EyeInvisibleOutlined, InfoCircleOutlined } from '@ant-design/icons'
+import { PlusOutlined, CloudServerOutlined, EyeOutlined, EyeInvisibleOutlined, InfoCircleOutlined, ApiOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { api } from '../api'
 import StatusTag from '../components/StatusTag'
@@ -342,7 +342,31 @@ function ModelsTab({ provider, keys, models, onSaved }: {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Model | null>(null)
   const [testTargets, setTestTargets] = useState<TestTarget[] | null>(null)
+  const [fetchingModels, setFetchingModels] = useState(false)
+  const [availableModels, setAvailableModels] = useState<string[]>([])
   const [form] = Form.useForm()
+
+  const handleFetchModels = async () => {
+    if (keys.length === 0) {
+      message.warning('该提供商暂无密钥，至少需要一个密钥才能获取模型列表')
+      return
+    }
+    setFetchingModels(true)
+    setAvailableModels([])
+    try {
+      const res = await api<{ models: { id: string }[] }>('POST', '/api/providers/fetch-models', {
+        base_url: provider.base_url,
+        api_key: keys[0].key_value,
+        proxy_url: provider.proxy_url,
+      })
+      setAvailableModels(res.models.map((m) => m.id))
+      if (res.models.length === 0) message.info('提供商返回了空模型列表')
+    } catch (e: any) {
+      message.error(e.message || '获取模型列表失败')
+    } finally {
+      setFetchingModels(false)
+    }
+  }
 
   const testOne = (m: Model) => setTestTargets([{ id: m.id, name: m.name }])
 
@@ -427,8 +451,37 @@ function ModelsTab({ provider, keys, models, onSaved }: {
       <Modal title={editing ? '编辑模型' : `新增模型（提供商：${provider.name}）`} open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose width={560}>
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="真实模型名" rules={[{ required: true }]}>
-            <Input placeholder="如 glm-4.6 / claude-sonnet-4" />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <Input placeholder="如 glm-4.6 / claude-sonnet-4" style={{ flex: 1, minWidth: 200 }} />
+              <Tooltip title={keys.length === 0 ? '需要至少一个密钥' : `从 ${provider.base_url}/v1/models 获取可用模型列表`}>
+                <Button
+                  icon={fetchingModels ? undefined : <ApiOutlined />}
+                  loading={fetchingModels}
+                  onClick={handleFetchModels}
+                  disabled={keys.length === 0}
+                >
+                  {fetchingModels ? '获取中…' : '获取模型'}
+                </Button>
+              </Tooltip>
+            </div>
           </Form.Item>
+          {availableModels.length > 0 && (
+            <Form.Item label="可用模型">
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {availableModels.map((m) => (
+                  <Button
+                    key={m}
+                    size="small"
+                    type="dashed"
+                    onClick={() => form.setFieldValue('name', m)}
+                    style={{ fontFamily: 'monospace', fontSize: 12 }}
+                  >
+                    {m}
+                  </Button>
+                ))}
+              </div>
+            </Form.Item>
+          )}
           <Form.Item name="type" label="端点类型" initialValue="chat" rules={[{ required: true }]}
             extra="决定该模型挂在哪个代理端点下；路由会按类型过滤后端">
             <Select
