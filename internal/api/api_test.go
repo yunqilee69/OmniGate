@@ -266,8 +266,8 @@ func TestM1FullFlow(t *testing.T) {
 	if rec := do(t, h, "PUT", "/api/settings", map[string]any{"breaker.disable_threshold": 0}, "test-token"); rec.Code != http.StatusBadRequest {
 		t.Fatalf("expect 400 invalid threshold, got %d", rec.Code)
 	}
-	if rec := do(t, h, "PUT", "/api/settings", map[string]any{"unknown.key": 1}, "test-token"); rec.Code != http.StatusBadRequest {
-		t.Fatalf("expect 400 unknown key, got %d", rec.Code)
+	if rec := do(t, h, "PUT", "/api/settings", map[string]any{"unknown.key": 1}, "test-token"); rec.Code != http.StatusOK {
+		t.Fatalf("expect 200 (unknown keys are ignored), got %d", rec.Code)
 	}
 
 	// --- 健康与手动启停 ---
