@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudomni/omnigate/internal/config"
 	"github.com/cloudomni/omnigate/internal/router"
 )
 
@@ -153,7 +154,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 					if fallbackOK {
 						slog.Info("using fallback model", "route", routeName, "fallback_model_id", rt.FallbackModelID, "type", kind.modelType)
 						attemptStart := time.Now()
-						res := h.typedAttempt(w, r, req, fallbackAtt, kind)
+						res := h.typedAttempt(w, r, req, fallbackAtt, kind, rt)
 						res.latencyMs = time.Since(attemptStart).Milliseconds()
 						h.record(res, rt)
 						h.writeLog(start, requestID, routeName, fallbackAtt, false,
@@ -176,7 +177,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 		}
 		tried[att.Key.ID] = true
 		attemptStart := time.Now()
-		res := h.typedAttempt(w, r, req, att, kind)
+		res := h.typedAttempt(w, r, req, att, kind, rt)
 		res.latencyMs = time.Since(attemptStart).Milliseconds()
 		h.record(res, rt)
 		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
@@ -202,7 +203,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 // typedAttempt 单次非流式转发：出站固定 OpenAI 风格 Bearer 头 + kind.path 路径，
 // 成功时响应体直通（usage 从响应按家族格式提取），失败分类与 chat attempt 一致。
 func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[string]any,
-	att router.Attempt, kind typedKind) attemptResult {
+	att router.Attempt, kind typedKind, rt *config.Runtime) attemptResult {
 
 	attemptStart := time.Now()
 	res := attemptResult{att: att}
@@ -257,7 +258,14 @@ func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[s
 				}
 			}
 		}
-		if retryableStatus[resp.StatusCode] {
+		retryable := false
+		for _, code := range rt.RetryableStatuses {
+			if resp.StatusCode == code {
+				retryable = true
+				break
+			}
+		}
+		if retryable {
 			res.retryable, res.status = true, "error"
 			return res
 		}

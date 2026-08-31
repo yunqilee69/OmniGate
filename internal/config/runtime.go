@@ -19,7 +19,8 @@ type Runtime struct {
 	BreakerCooldownLadder   []time.Duration
 	BreakerDisableThreshold int
 	BreakerMaxHops          int
-	KeyCooldownS            int
+	RetryCooldownS          int
+	RetryableStatuses       []int
 	StreamIdleTimeoutS      int
 	StreamInjectUsage       bool
 	CaptureEnabled          bool
@@ -99,6 +100,21 @@ func strArr(v any) error {
 	return nil
 }
 
+// intArr 校验整数数组（如 HTTP 状态码列表）。
+func intArr(v any) error {
+	arr, ok := v.([]any)
+	if !ok {
+		return errors.New("must be an integer array")
+	}
+	for _, e := range arr {
+		n, ok := e.(float64)
+		if !ok || n != float64(int(n)) {
+			return errors.New("must be an integer array")
+		}
+	}
+	return nil
+}
+
 // headerName 校验 HTTP 头名：非空、无空白与冒号、可打印 ASCII。
 func headerName(v any) error {
 	s, ok := v.(string)
@@ -121,7 +137,8 @@ var settingSpecs = []settingSpec{
 	{key: "breaker.cooldown_ladder", def: `["30s","1m","3m"]`, validate: durArr},
 	{key: "breaker.disable_threshold", def: `3`, validate: intRange(1, 100)},
 	{key: "breaker.max_hops", def: `3`, validate: intRange(1, 10)},
-	{key: "ratelimit.key_cooldown_s", def: `60`, validate: intRange(1, 86400)},
+	{key: "retry.cooldown_s", def: `60`, validate: intRange(1, 86400)},
+	{key: "retry.statuses", def: `[401,403,429,500,502,503,504]`, validate: intArr},
 	{key: "stream.idle_timeout_s", def: `300`, validate: intRange(1, 86400)},
 	{key: "stream.inject_usage", def: `true`, validate: boolVal},
 	{key: "capture.enabled", def: `false`, validate: boolVal},
@@ -226,7 +243,10 @@ func (m *RuntimeManager) rebuild() error {
 
 	rt.BreakerDisableThreshold = getInt("breaker.disable_threshold")
 	rt.BreakerMaxHops = getInt("breaker.max_hops")
-	rt.KeyCooldownS = getInt("ratelimit.key_cooldown_s")
+	rt.RetryCooldownS = getInt("retry.cooldown_s")
+	var statuses []int
+	_ = json.Unmarshal([]byte(raw["retry.statuses"]), &statuses)
+	rt.RetryableStatuses = statuses
 	rt.StreamIdleTimeoutS = getInt("stream.idle_timeout_s")
 	rt.StreamInjectUsage = getBool("stream.inject_usage")
 	rt.CaptureEnabled = getBool("capture.enabled")

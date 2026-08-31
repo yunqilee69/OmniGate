@@ -331,8 +331,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.maybeCapture(requestID, routeName, reqSnap, cw)
 }
 
-var retryableStatus = map[int]bool{401: true, 403: true, 429: true, 500: true, 502: true, 503: true, 504: true}
-
 func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string]any,
 	att router.Attempt, isStream bool, rt *config.Runtime) attemptResult {
 
@@ -422,7 +420,14 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 			}
 		}
 	}
-	if retryableStatus[resp.StatusCode] {
+	retryable := false
+	for _, code := range rt.RetryableStatuses {
+		if resp.StatusCode == code {
+			retryable = true
+			break
+		}
+	}
+	if retryable {
 		res.retryable, res.status = true, "error"
 		return res
 	}
@@ -692,7 +697,7 @@ func (h *Handler) record(res attemptResult, rt *config.Runtime) {
 	case res.errCode == "401" || res.errCode == "403":
 		h.rec.RecordKeyAuthFailure(res.att.Key.ID, res.errCode)
 	case res.errCode == "429":
-		h.rec.RecordKeyRateLimited(res.att.Key.ID, res.retryAfterS, rt.KeyCooldownS)
+		h.rec.RecordKeyRateLimited(res.att.Key.ID, res.retryAfterS, rt.RetryCooldownS)
 	case res.retryable || res.streamBroke:
 		h.rec.RecordModelFailure(res.att.Model.ID, res.errCode, rt)
 	}
@@ -962,7 +967,14 @@ func (h *Handler) nativeAttempt(w http.ResponseWriter, r *http.Request, reqBody 
 			}
 		}
 	}
-	if retryableStatus[resp.StatusCode] {
+	retryable := false
+	for _, code := range rt.RetryableStatuses {
+		if resp.StatusCode == code {
+			retryable = true
+			break
+		}
+	}
+	if retryable {
 		res.retryable, res.status = true, "error"
 		return res
 	}

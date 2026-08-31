@@ -22,7 +22,7 @@ const HelpIcon = ({ tip }: { tip: string }) => (
 const numericRanges: Record<string, [number, number]> = {
   'breaker.disable_threshold': [1, 100],
   'breaker.max_hops': [1, 10],
-  'ratelimit.key_cooldown_s': [1, 86400],
+  'retry.cooldown_s': [1, 86400],
   'stream.idle_timeout_s': [1, 86400],
   'capture.retention_days': [1, 365],
   'log.retention_days': [0, 3650],
@@ -121,8 +121,14 @@ export default function Settings() {
         <Form.Item label={<span>单请求最大转移次数</span>} name="breaker.max_hops">
           <InputNumber min={1} max={10} style={{ width: '100%' }} />
         </Form.Item>
-        <Form.Item label={<span>429 缺省冷却秒数（有 Retry-After 时优先）</span>} name="ratelimit.key_cooldown_s">
+        <Form.Item label={<span>重试冷却秒数（429 有 Retry-After 时优先）</span>} name="retry.cooldown_s">
           <InputNumber min={1} max={86400} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item 
+          label={<span>可重试 HTTP 状态码<HelpIcon tip="遇到这些状态码时会重试同模型其他密钥或切换模型，而不是直接返回错误" /></span>} 
+          name="retry.statuses"
+        >
+          <Select mode="tags" placeholder="如 401, 429, 500" tokenSeparators={[',']} />
         </Form.Item>
         <Form.Item label={<span>流式空闲超时秒数</span>} name="stream.idle_timeout_s">
           <InputNumber min={1} max={86400} style={{ width: '100%' }} />
