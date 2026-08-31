@@ -14,6 +14,7 @@ type providerCreateReq struct {
 	Name      string `json:"name"`
 	BaseURL   string `json:"base_url"`
 	Protocol  string `json:"protocol"`
+	ProxyURL  string `json:"proxy_url"`
 	TimeoutMs int    `json:"timeout_ms"`
 	Remark    string `json:"remark"`
 }
@@ -35,6 +36,7 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Name = strings.TrimSpace(req.Name)
 	req.BaseURL = strings.TrimSpace(req.BaseURL)
+	req.ProxyURL = strings.TrimSpace(req.ProxyURL)
 	if req.Name == "" || req.BaseURL == "" {
 		writeErr(w, http.StatusBadRequest, "bad_request", "name and base_url are required")
 		return
@@ -51,7 +53,7 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	p := store.Provider{
 		Name: req.Name, BaseURL: req.BaseURL, Protocol: req.Protocol,
-		TimeoutMs: req.TimeoutMs, Remark: req.Remark,
+		ProxyURL: req.ProxyURL, TimeoutMs: req.TimeoutMs, Remark: req.Remark,
 	}
 	if err := s.store.DB.Create(&p).Error; err != nil {
 		if isUniqueErr(err) {
@@ -68,6 +70,7 @@ type providerUpdateReq struct {
 	Name      *string `json:"name"`
 	BaseURL   *string `json:"base_url"`
 	Protocol  *string `json:"protocol"`
+	ProxyURL  *string `json:"proxy_url"`
 	TimeoutMs *int    `json:"timeout_ms"`
 	Remark    *string `json:"remark"`
 }
@@ -116,6 +119,9 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
 		}
 		updates["protocol"] = *req.Protocol
 	}
+	if req.ProxyURL != nil {
+		updates["proxy_url"] = strings.TrimSpace(*req.ProxyURL)
+	}
 	if req.TimeoutMs != nil {
 		if *req.TimeoutMs <= 0 {
 			writeErr(w, http.StatusBadRequest, "bad_request", "timeout_ms must be positive")
@@ -139,6 +145,9 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.DB.First(&p, id).Error
+	if invalidator, ok := s.chat.(interface{ InvalidateProviderCache(int64) }); ok {
+		invalidator.InvalidateProviderCache(id)
+	}
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -191,6 +200,9 @@ func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
+	}
+	if invalidator, ok := s.chat.(interface{ InvalidateProviderCache(int64) }); ok {
+		invalidator.InvalidateProviderCache(id)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }

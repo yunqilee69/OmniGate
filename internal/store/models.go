@@ -8,6 +8,7 @@ type Provider struct {
 	Name      string `json:"name" gorm:"size:191;not null;uniqueIndex"`
 	BaseURL   string `json:"base_url" gorm:"column:base_url;size:512;not null"`
 	Protocol  string `json:"protocol" gorm:"size:32;not null;default:openai"`
+	ProxyURL  string `json:"proxy_url" gorm:"column:proxy_url;size:512;not null;default:''"`
 	TimeoutMs int    `json:"timeout_ms" gorm:"not null;default:120000"`
 	Remark    string `json:"remark" gorm:"size:1024;not null;default:''"`
 	CreatedAt int64  `json:"created_at" gorm:"autoCreateTime"`
@@ -41,10 +42,10 @@ type Model struct {
 	Name          string  `json:"name" gorm:"size:191;not null;uniqueIndex:idx_model_provider_name"`
 	Type          string  `json:"type" gorm:"size:32;not null;default:'chat'"` // chat | embedding | rerank
 	Protocol      string  `json:"protocol" gorm:"size:32;not null;default:openai"`
-	InputPrice    float64 `json:"input_price" gorm:"not null;default:0"`         // 每 1M prompt token 价格
-	OutputPrice   float64 `json:"output_price" gorm:"not null;default:0"`        // 每 1M completion token 价格
+	InputPrice    float64 `json:"input_price" gorm:"not null;default:0"`               // 每 1M prompt token 价格
+	OutputPrice   float64 `json:"output_price" gorm:"not null;default:0"`              // 每 1M completion token 价格
 	PriceCurrency string  `json:"price_currency" gorm:"size:8;not null;default:'USD'"` // 价格币种：USD | CNY；计费时统一折算为 USD 入库
-	Status        string  `json:"status" gorm:"size:32;not null;default:active"` // active | cooldown | disabled
+	Status        string  `json:"status" gorm:"size:32;not null;default:active"`       // active | cooldown | disabled
 	FailCount     int     `json:"fail_count" gorm:"not null;default:0"`
 	CooldownUntil int64   `json:"cooldown_until" gorm:"not null;default:0"`
 	DisableReason string  `json:"disable_reason" gorm:"size:512;not null;default:''"`

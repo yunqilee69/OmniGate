@@ -315,6 +315,40 @@ func TestM1FullFlow(t *testing.T) {
 	}
 }
 
+func TestProviderProxyURLIsPersisted(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+
+	proxyURL := "http://proxy-user:proxy-pass@127.0.0.1:8080"
+	rec := do(t, h, "POST", "/api/providers", map[string]any{
+		"name": "proxy-provider", "base_url": "https://api.example.com", "proxy_url": proxyURL,
+	}, "test-token")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create provider: %d — %s", rec.Code, rec.Body.String())
+	}
+
+	var provider store.Provider
+	if err := st.DB.Where("name = ?", "proxy-provider").First(&provider).Error; err != nil {
+		t.Fatalf("load provider: %v", err)
+	}
+	if provider.ProxyURL != proxyURL {
+		t.Fatalf("created proxy_url = %q, want %q", provider.ProxyURL, proxyURL)
+	}
+
+	updatedProxyURL := "http://new-user:new-pass@127.0.0.1:8081"
+	rec = do(t, h, "PUT", fmt.Sprintf("/api/providers/%d", provider.ID), map[string]any{
+		"proxy_url": updatedProxyURL,
+	}, "test-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update provider: %d — %s", rec.Code, rec.Body.String())
+	}
+	if err := st.DB.First(&provider, provider.ID).Error; err != nil {
+		t.Fatalf("reload provider: %v", err)
+	}
+	if provider.ProxyURL != updatedProxyURL {
+		t.Fatalf("updated proxy_url = %q, want %q", provider.ProxyURL, updatedProxyURL)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || indexOf(s, sub) >= 0)
 }
