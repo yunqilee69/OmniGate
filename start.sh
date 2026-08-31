@@ -95,9 +95,7 @@ build_backend() {
 if port_busy "$BACKEND_PORT"; then
   echo "[SKIP] 端口 $BACKEND_PORT 已被占用（后端可能已在运行）"
 else
-  if [ ! -x "$BIN" ] || [ -n "$(find cmd internal -name '*.go' -newer "$BIN" 2>/dev/null | head -1)" ]; then
-    build_backend
-  fi
+  build_backend
   # 开发模式:db / config 用仓库内本地路径(便于 rm -rf data/ 重置),
   # 日志走 stdout 由 shell 重定向到 backend.log(避免双重写文件)。
   echo "[..] 启动后端 (db: $DATA_DIR/omnigate.db)"
