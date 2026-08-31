@@ -364,7 +364,7 @@ func (m *RuntimeManager) Update(payload map[string]json.RawMessage) error {
 	for k, rawMsg := range payload {
 		sp, ok := specByKey[k]
 		if !ok {
-			return fmt.Errorf("unknown setting %q", k)
+			continue
 		}
 		var v any
 		if err := json.Unmarshal(rawMsg, &v); err != nil {
