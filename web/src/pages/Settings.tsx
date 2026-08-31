@@ -4,6 +4,7 @@ import { QuestionCircleOutlined } from '@ant-design/icons'
 import { api } from '../api'
 
 type Settings = Record<string, any>
+type Model = { id: number; name: string; type: string; protocol: string; provider_id: number; status: string }
 
 const fmtCounts = (m: any) =>
   Object.entries(m ?? {})
@@ -26,17 +27,24 @@ const numericRanges: Record<string, [number, number]> = {
   'capture.retention_days': [1, 365],
   'log.retention_days': [0, 3650],
   'affinity.ttl_s': [10, 86400],
+  'fallback.model_id': [0, 9999999],
 }
 
 export default function Settings() {
   const [settings, setSettings] = useState<Settings | null>(null)
+  const [models, setModels] = useState<Model[]>([])
   const [form] = Form.useForm()
   const captureOn = Form.useWatch('capture.enabled', form)
+  const fallbackOn = Form.useWatch('fallback.enabled', form)
 
   const load = async () => {
     try {
-      const s = await api('GET', '/api/settings')
+      const [s, m] = await Promise.all([
+        api('GET', '/api/settings'),
+        api<Model[]>('GET', '/api/models')
+      ])
       setSettings(s)
+      setModels(m)
       form.setFieldsValue(s)
     } catch (e: any) {
       message.error(e.message)
@@ -164,6 +172,43 @@ export default function Settings() {
         >
           <InputNumber min={0.01} max={10000} step={0.01} style={{ width: '100%' }} />
         </Form.Item>
+
+        <Form.Item
+          label={<span>启用兜底模型<HelpIcon tip="当路由配置的所有模型失败时，自动使用兜底模型（单次尝试，不重试）" /></span>}
+          name="fallback.enabled"
+          valuePropName="checked"
+        >
+          <Switch />
+        </Form.Item>
+        {fallbackOn && (
+          <>
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="兜底模型是最后的保险，建议选择稳定且成本较低的模型（如 gpt-3.5-turbo）"
+            />
+            <Form.Item
+              label={<span>兜底模型<HelpIcon tip="当所有配置模型失败后，将使用此模型（需确保模型状态为 active 且有可用 key）" /></span>}
+              name="fallback.model_id"
+            >
+              <Select
+                showSearch
+                placeholder="选择兜底模型"
+                optionFilterProp="children"
+                filterOption={(input, option) =>
+                  (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+                }
+                options={models
+                  .filter(m => m.status === 'active')
+                  .map(m => ({
+                    value: m.id,
+                    label: `${m.name} (${m.type} / ${m.protocol})`,
+                  }))}
+              />
+            </Form.Item>
+          </>
+        )}
 
         <Button type="primary" onClick={save}>保存</Button>
       </Form>

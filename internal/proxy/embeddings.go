@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -147,9 +148,25 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 		att, ok := h.sel.PickTyped(snap, tried, time.Now(), kind.modelType)
 		if !ok {
 			if attempt == 0 {
+				if rt.FallbackEnabled && rt.FallbackModelID > 0 {
+					fallbackAtt, fallbackOK := h.sel.PickFallback(rt.FallbackModelID, time.Now())
+					if fallbackOK {
+						slog.Info("using fallback model", "route", routeName, "fallback_model_id", rt.FallbackModelID, "type", kind.modelType)
+						attemptStart := time.Now()
+						res := h.typedAttempt(w, r, req, fallbackAtt, kind)
+						res.latencyMs = time.Since(attemptStart).Milliseconds()
+						h.record(res, rt)
+						h.writeLog(start, requestID, routeName, fallbackAtt, false,
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true)
+						h.maybeCapture(requestID, routeName, reqSnap, cw)
+						return
+					}
+					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID, "type", kind.modelType)
+				}
+				
 				statuses := router.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, false,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "")
+					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					"route '"+routeName+"' has no available "+kind.modelType+" type backends", statuses)
 				h.maybeCapture(requestID, routeName, reqSnap, cw)
@@ -165,7 +182,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
 		last = res
 		h.writeLog(start, requestID, routeName, att, false,
-			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody)
+			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false)
 		if res.committed || !res.retryable {
 			break
 		}

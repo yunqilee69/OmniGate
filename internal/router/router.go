@@ -237,6 +237,55 @@ func (s *Selector) pick(snap *Snapshot, tried map[int64]bool, now time.Time, pre
 	return Attempt{Model: cm.model, Provider: snap.Providers[cm.model.ProviderID], Key: key}, true
 }
 
+// PickFallback 根据指定的 modelID 选择可用的 key，用于兜底模型。
+// 检查模型是否可用（未熔断）、是否有绑定的可用 key，返回第一个可用的 Attempt。
+func (s *Selector) PickFallback(modelID int64, now time.Time) (Attempt, bool) {
+	if modelID == 0 {
+		return Attempt{}, false
+	}
+	
+	var model store.Model
+	if err := s.db.DB.Where("id = ?", modelID).First(&model).Error; err != nil {
+		return Attempt{}, false
+	}
+	
+	if !ModelAvailable(model, now) {
+		return Attempt{}, false
+	}
+	
+	var provider store.Provider
+	if err := s.db.DB.Where("id = ?", model.ProviderID).First(&provider).Error; err != nil {
+		return Attempt{}, false
+	}
+	
+	var mks []store.ModelKey
+	if err := s.db.DB.Where("model_id = ?", modelID).Find(&mks).Error; err != nil {
+		return Attempt{}, false
+	}
+	
+	keyIDs := make([]int64, 0, len(mks))
+	for _, mk := range mks {
+		keyIDs = append(keyIDs, mk.KeyID)
+	}
+	
+	if len(keyIDs) == 0 {
+		return Attempt{}, false
+	}
+	
+	var keys []store.ApiKey
+	if err := s.db.DB.Where("id IN ? AND provider_id = ?", keyIDs, model.ProviderID).Find(&keys).Error; err != nil {
+		return Attempt{}, false
+	}
+	
+	for _, k := range keys {
+		if KeyAvailable(k, now) {
+			return Attempt{Model: model, Provider: provider, Key: k}, true
+		}
+	}
+	
+	return Attempt{}, false
+}
+
 // Affinity 返回会话上次成功落地的模型；过期条目惰性删除。
 func (s *Selector) Affinity(key string, now time.Time) (int64, bool) {
 	s.affMu.Lock()

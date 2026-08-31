@@ -225,9 +225,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		att, ok := h.sel.Pick(snap, tried, time.Now(), affModel)
 		if !ok {
 			if attempt == 0 {
+				if rt.FallbackEnabled && rt.FallbackModelID > 0 {
+					fallbackAtt, fallbackOK := h.sel.PickFallback(rt.FallbackModelID, time.Now())
+					if fallbackOK {
+						slog.Info("using fallback model", "route", routeName, "fallback_model_id", rt.FallbackModelID)
+						attemptStart := time.Now()
+						res := h.attempt(w, r, req, fallbackAtt, isStream, rt)
+						res.latencyMs = time.Since(attemptStart).Milliseconds()
+						h.record(res, rt)
+						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true)
+						h.maybeCapture(requestID, routeName, reqSnap, cw)
+						return
+					}
+					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID)
+				}
+				
 				statuses := router.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "")
+					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
 				h.maybeCapture(requestID, routeName, reqSnap, cw)
@@ -243,7 +259,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
 		last = res
 		h.writeLog(start, requestID, routeName, att, isStream,
-			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody)
+			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false)
 		if res.committed || !res.retryable {
 			break
 		}
@@ -530,11 +546,12 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 
 func (h *Handler) writeLog(start time.Time, requestID, routeName string, att router.Attempt,
 	isStream bool, status, errCode string, u usageInfo, ttft, total time.Duration,
-	retries int, errorBody string) {
+	retries int, errorBody string, isFallback bool) {
 
 	entry := store.RequestLog{
 		RequestID: requestID, Route: routeName,
 		Status: status, ErrorCode: errCode, ErrorBody: errorBody, IsStream: isStream,
+		IsFallback: isFallback,
 		PromptTokens: u.prompt, CompletionTokens: u.completion, TokensEstimated: u.estimated,
 		TTFTMs: ttft.Milliseconds(), TotalMs: total.Milliseconds(),
 		Cost: cost(att.Model, u, h.rt.Snapshot().USDCNY), Retries: retries,
@@ -765,9 +782,25 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 		att, ok := h.sel.Pick(snap, tried, time.Now(), 0)
 		if !ok {
 			if attempt == 0 {
+				if rt.FallbackEnabled && rt.FallbackModelID > 0 {
+					fallbackAtt, fallbackOK := h.sel.PickFallback(rt.FallbackModelID, time.Now())
+					if fallbackOK {
+						slog.Info("using fallback model", "route", routeName, "fallback_model_id", rt.FallbackModelID, "endpoint", endpoint)
+						attemptStart := time.Now()
+						res := h.nativeAttempt(w, r, body, fallbackAtt, isStream, rt, endpoint)
+						res.latencyMs = time.Since(attemptStart).Milliseconds()
+						h.record(res, rt)
+						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true)
+						h.maybeCapture(requestID, routeName, reqSnap, cw)
+						return
+					}
+					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID, "endpoint", endpoint)
+				}
+				
 				statuses := router.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "")
+					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
 				h.maybeCapture(requestID, routeName, reqSnap, cw)
@@ -784,7 +817,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
 		last = res
 		h.writeLog(start, requestID, routeName, att, isStream,
-			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody)
+			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false)
 		if res.committed || !res.retryable {
 			break
 		}

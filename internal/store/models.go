@@ -99,6 +99,7 @@ type RequestLog struct {
 	RequestID        string  `json:"request_id" gorm:"size:64;not null"`
 	ErrorCode        string  `json:"error_code" gorm:"size:64;not null;default:''"`
 	IsStream         bool    `json:"is_stream" gorm:"not null;default:false"`
+	IsFallback       bool    `json:"is_fallback" gorm:"not null;default:false"`
 	TokensEstimated  bool    `json:"tokens_estimated" gorm:"not null;default:false"`
 	Retries          int     `json:"retries" gorm:"not null;default:0"`
 	PromptTokens     int     `json:"prompt_tokens" gorm:"not null;default:0"`

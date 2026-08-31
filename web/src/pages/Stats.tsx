@@ -32,6 +32,8 @@ interface Overview {
   cost: number
   p95_ttft_ms: number
   p95_total_ms: number
+  fallback_count?: number
+  fallback_rate?: number
 }
 
 const dims = [
@@ -142,6 +144,25 @@ export default function Stats() {
             />
           </div>
         </Col>
+        {(ov?.fallback_count ?? 0) > 0 && (
+          <Col flex="1 1 0">
+            <div style={{ background: '#fff0f0', padding: 20, borderRadius: 12, minHeight: 96 }}>
+              <Statistic
+                title="兜底使用"
+                value={ov?.fallback_count ?? 0}
+                formatter={(v) => (
+                  <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 12 }}>
+                    <span>{formatNumber(+v)}</span>
+                    <span style={{ fontSize: 12, color: '#4d4d4d', fontWeight: 400 }}>
+                      占比: {((ov?.fallback_rate ?? 0) * 100).toFixed(2)}%
+                    </span>
+                  </span>
+                )}
+                valueStyle={{ color: '#cf1322' }}
+              />
+            </div>
+          </Col>
+        )}
       </Row>
       <Card style={{ marginBottom: 16 }}>
         <Radio.Group options={dims} value={dim} onChange={(e) => setDim(e.target.value)} optionType="button" />

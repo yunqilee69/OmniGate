@@ -30,6 +30,8 @@ type Runtime struct {
 	AffinityHeader          string
 	AffinityTTL             time.Duration
 	USDCNY                  float64
+	FallbackEnabled         bool
+	FallbackModelID         int64
 }
 
 type settingSpec struct {
@@ -130,6 +132,8 @@ var settingSpecs = []settingSpec{
 	{key: "affinity.header", def: `"X-Session-ID"`, validate: headerName},
 	{key: "affinity.ttl_s", def: `3600`, validate: intRange(10, 86400)},
 	{key: "pricing.usd_cny", def: `7.25`, validate: floatRange(0.01, 10000)},
+	{key: "fallback.enabled", def: `false`, validate: boolVal},
+	{key: "fallback.model_id", def: `0`, validate: intRange(0, 9999999)},
 }
 
 // RuntimeManager 管理运行层配置：DB 为事实来源，内存快照 atomic 替换（保存即热生效）。
@@ -240,6 +244,8 @@ func (m *RuntimeManager) rebuild() error {
 		rate = 7.25
 	}
 	rt.USDCNY = rate
+	rt.FallbackEnabled = getBool("fallback.enabled")
+	rt.FallbackModelID = int64(getInt("fallback.model_id"))
 
 	m.snap.Store(rt)
 	return nil

@@ -140,13 +140,24 @@ func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64,
 		return
 	}
 
+	var fallbackCount int64
+	fallbackRow := s.store.DB.Raw(`SELECT COALESCE(COUNT(*),0) FROM request_log 
+		WHERE created_at BETWEEN ? AND ? AND is_fallback = 1`,
+		dayFrom*86400, (dayTo+1)*86400).Row()
+	if err := fallbackRow.Scan(&fallbackCount); err != nil {
+		fallbackCount = 0
+	}
+
 	successRate := 0.0
 	if agg.Total > 0 {
 		successRate = float64(agg.Success) / float64(agg.Total)
 	}
+	fallbackRate := 0.0
+	if agg.Total > 0 {
+		fallbackRate = float64(fallbackCount) / float64(agg.Total)
+	}
 	avgTTFT := avgFromBuckets(ttftCounts, store.TTFTBucketBounds)
 	avgTotal := avgFromBuckets(totalCounts, store.TotalBucketBounds)
-	// p95 直接用全量桶反查（error 行通常极少，影响可忽略；要 success-only 可加 success_ 前缀列）。
 	p95TTFT := store.P95FromBuckets(ttftCounts, store.TTFTBucketBounds)
 	p95Total := store.P95FromBuckets(totalCounts, store.TotalBucketBounds)
 
@@ -157,6 +168,8 @@ func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64,
 		"cost":          agg.Cost * rate,
 		"avg_ttft_ms":   avgTTFT, "avg_total_ms": avgTotal,
 		"p95_ttft_ms":   p95TTFT, "p95_total_ms": p95Total,
+		"fallback_count": fallbackCount,
+		"fallback_rate":  fallbackRate,
 	})
 }
 
@@ -202,9 +215,19 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate flo
 		return
 	}
 
+	var fallbackCount int64
+	fallbackRow := s.store.DB.Raw(`SELECT COALESCE(COUNT(*),0) FROM request_log WHERE is_fallback = 1 AND `+where, args...).Row()
+	if err := fallbackRow.Scan(&fallbackCount); err != nil {
+		fallbackCount = 0
+	}
+
 	successRate := 0.0
 	if agg.Total > 0 {
 		successRate = float64(agg.Success) / float64(agg.Total)
+	}
+	fallbackRate := 0.0
+	if agg.Total > 0 {
+		fallbackRate = float64(fallbackCount) / float64(agg.Total)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": agg.Total, "success": agg.Success, "errors": agg.Errors, "success_rate": successRate,
@@ -213,6 +236,8 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate flo
 		"cost":         agg.Cost * rate,
 		"avg_ttft_ms":  agg.AvgTTFT.Float64, "avg_total_ms": agg.AvgTotal.Float64,
 		"p95_ttft_ms":  percentile95(ttfts), "p95_total_ms": percentile95(totals),
+		"fallback_count": fallbackCount,
+		"fallback_rate":  fallbackRate,
 	})
 }
 
