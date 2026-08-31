@@ -3,6 +3,7 @@ package router
 
 import (
 	"math/rand/v2"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -258,10 +259,29 @@ func (s *Selector) SetAffinity(key string, modelID int64, ttl time.Duration, now
 	}
 	s.affMu.Lock()
 	defer s.affMu.Unlock()
-	if len(s.aff) >= affinityCap && !s.sweepExpiredLocked(now) {
-		s.aff = map[string]affinityEntry{}
+	if len(s.aff) >= affinityCap {
+		if !s.sweepExpiredLocked(now) {
+			s.evictHalfLRU(now)
+		}
 	}
 	s.aff[key] = affinityEntry{modelID: modelID, expireAt: now.Add(ttl).Unix()}
+}
+
+func (s *Selector) evictHalfLRU(now time.Time) {
+	type item struct {
+		key string
+		exp int64
+	}
+	items := make([]item, 0, len(s.aff))
+	for k, e := range s.aff {
+		items = append(items, item{key: k, exp: e.expireAt})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].exp < items[j].exp })
+	
+	evictCount := len(items) / 2
+	for i := 0; i < evictCount; i++ {
+		delete(s.aff, items[i].key)
+	}
 }
 
 func (s *Selector) sweepExpiredLocked(now time.Time) bool {

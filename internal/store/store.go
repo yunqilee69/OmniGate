@@ -16,7 +16,7 @@ type Store struct {
 
 // Open 打开（必要时创建）SQLite 数据库并执行迁移。
 func Open(path string) (*Store, error) {
-	db, err := gorm.Open(sqlite.Open(path), &gorm.Config{
+	db, err := gorm.Open(sqlite.Open(path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=secure_delete(1)&mode=rwc"), &gorm.Config{
 		Logger:         logger.Default.LogMode(logger.Silent),
 		NamingStrategy: schema.NamingStrategy{SingularTable: true},
 	})
@@ -25,15 +25,6 @@ func Open(path string) (*Store, error) {
 	}
 	if sqlDB, err := db.DB(); err == nil {
 		sqlDB.SetMaxOpenConns(4)
-	}
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA foreign_keys=ON",
-	} {
-		if execErr := db.Exec(pragma).Error; execErr != nil {
-			return nil, fmt.Errorf("exec %q: %w", pragma, execErr)
-		}
 	}
 	if err := migratePoolsAway(db); err != nil {
 		return nil, fmt.Errorf("migrate key pools away: %w", err)
@@ -44,6 +35,9 @@ func Open(path string) (*Store, error) {
 		&RequestLogDaily{},
 	); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	if err := migrateEndpointColumn(db); err != nil {
+		return nil, fmt.Errorf("migrate endpoint column: %w", err)
 	}
 	return &Store{DB: db}, nil
 }
@@ -56,6 +50,16 @@ func (s *Store) Close() error {
 		return err
 	}
 	return sqlDB.Close()
+}
+
+func migrateEndpointColumn(db *gorm.DB) error {
+	if db.Migrator().HasColumn(&Route{}, "endpoint") {
+		return nil
+	}
+	if err := db.Exec(`ALTER TABLE route ADD COLUMN endpoint TEXT NOT NULL DEFAULT 'chat'`).Error; err != nil {
+		return err
+	}
+	return db.Exec(`UPDATE route SET endpoint = 'chat' WHERE endpoint = ''`).Error
 }
 
 // migratePoolsAway 把旧版“密钥池”结构迁移为模型直绑密钥：

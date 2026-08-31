@@ -151,7 +151,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 				h.writeLog(start, requestID, routeName, router.Attempt{}, false,
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "")
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
-					"路由 '"+routeName+"' 无可用 "+kind.modelType+" 类型后端", statuses)
+					"route '"+routeName+"' has no available "+kind.modelType+" type backends", statuses)
 				h.maybeCapture(requestID, routeName, reqSnap, cw)
 				return
 			}
@@ -175,7 +175,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 
 	if !last.committed {
 		openAIError(w, http.StatusBadGateway, "all_attempts_failed",
-			"全部尝试失败，已转移 "+strconv.Itoa(priorFails)+" 次（错误序列: "+strings.Join(errCodes, " → ")+"）", nil)
+			"all attempts failed after "+strconv.Itoa(priorFails)+" retries (error sequence: "+strings.Join(errCodes, " → ")+")", nil)
 		h.maybeCapture(requestID, routeName, reqSnap, cw)
 		return
 	}

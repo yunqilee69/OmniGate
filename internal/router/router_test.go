@@ -197,8 +197,10 @@ func TestAffinityOverflowResets(t *testing.T) {
 	sel.affMu.Lock()
 	size := len(sel.aff)
 	sel.affMu.Unlock()
-	if size != 1 {
-		t.Fatalf("overflow must sweep-then-reset, got size %d", size)
+	expectedMin := affinityCap/2 + 1
+	expectedMax := affinityCap/2 + 2
+	if size < expectedMin || size > expectedMax {
+		t.Fatalf("overflow must evict half (oldest), expected %d-%d, got size %d", expectedMin, expectedMax, size)
 	}
 }
 

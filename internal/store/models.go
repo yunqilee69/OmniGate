@@ -60,9 +60,11 @@ type ModelKey struct {
 }
 
 // Route 逻辑路由（客户端请求的 modelId）。
+// Endpoint 决定协议族：chat(/v1/chat/completions) | messages(/v1/messages) | responses(/v1/responses)。
 type Route struct {
 	ID        int64         `json:"id" gorm:"primaryKey;autoIncrement"`
 	Name      string        `json:"name" gorm:"size:191;not null;uniqueIndex"`
+	Endpoint  string        `json:"endpoint" gorm:"size:32;not null;default:chat"` // chat | messages | responses
 	Remark    string        `json:"remark" gorm:"size:1024;not null;default:''"`
 	Targets   []RouteTarget `json:"targets" gorm:"foreignKey:RouteID"`
 	CreatedAt int64         `json:"created_at" gorm:"autoCreateTime"`
@@ -72,7 +74,7 @@ type Route struct {
 // RouteTarget 路由目标：路由 → 真实模型（带权重）。
 type RouteTarget struct {
 	ID      int64 `json:"id" gorm:"primaryKey;autoIncrement"`
-	RouteID int64 `json:"route_id" gorm:"not null;uniqueIndex:idx_rt_route_model"`
+	RouteID int64 `json:"route_id" gorm:"not null;index:idx_rt_route;uniqueIndex:idx_rt_route_model"`
 	ModelID int64 `json:"model_id" gorm:"not null;uniqueIndex:idx_rt_route_model"`
 	Weight  int   `json:"weight" gorm:"not null;default:1"`
 }
@@ -88,23 +90,23 @@ func (AppConfig) TableName() string { return "app_config" }
 // RequestLog 请求日志（统计事实表，只增不改；表结构上不存在任何请求内容字段）。
 type RequestLog struct {
 	ID               int64   `json:"id" gorm:"primaryKey;autoIncrement"`
-	RequestID        string  `json:"request_id" gorm:"size:64;not null"`
-	Route            string  `json:"route" gorm:"size:191;not null;index:idx_rl_route"`
-	Model            string  `json:"model" gorm:"size:191;not null"`
-	Provider         string  `json:"provider" gorm:"size:191;not null;index:idx_rl_provider"`
-	KeyID            int64   `json:"key_id" gorm:"not null;default:0;index:idx_rl_key"`
+	CreatedAt        int64   `json:"created_at" gorm:"autoCreateTime;index:idx_rl_time_route,priority:1;index:idx_rl_time_provider,priority:1"`
 	Status           string  `json:"status" gorm:"size:32;not null"`
+	Route            string  `json:"route" gorm:"size:191;not null;index:idx_rl_route;index:idx_rl_time_route,priority:2"`
+	Provider         string  `json:"provider" gorm:"size:191;not null;index:idx_rl_provider;index:idx_rl_time_provider,priority:2"`
+	Model            string  `json:"model" gorm:"size:191;not null"`
+	KeyID            int64   `json:"key_id" gorm:"not null;default:0;index:idx_rl_key"`
+	RequestID        string  `json:"request_id" gorm:"size:64;not null"`
 	ErrorCode        string  `json:"error_code" gorm:"size:64;not null;default:''"`
-	ErrorBody        string  `json:"error_body,omitempty" gorm:"type:text"`
 	IsStream         bool    `json:"is_stream" gorm:"not null;default:false"`
+	TokensEstimated  bool    `json:"tokens_estimated" gorm:"not null;default:false"`
+	Retries          int     `json:"retries" gorm:"not null;default:0"`
 	PromptTokens     int     `json:"prompt_tokens" gorm:"not null;default:0"`
 	CompletionTokens int     `json:"completion_tokens" gorm:"not null;default:0"`
-	TokensEstimated  bool    `json:"tokens_estimated" gorm:"not null;default:false"`
 	TTFTMs           int64   `json:"ttft_ms" gorm:"not null;default:0"`
 	TotalMs          int64   `json:"total_ms" gorm:"not null;default:0"`
 	Cost             float64 `json:"cost" gorm:"not null;default:0"`
-	Retries          int     `json:"retries" gorm:"not null;default:0"`
-	CreatedAt        int64   `json:"created_at" gorm:"autoCreateTime;index"`
+	ErrorBody        string  `json:"error_body,omitempty" gorm:"type:text"`
 }
 
 // ContentLog 内容日志（可选；全局与路由白名单开关均开启时才写入）。

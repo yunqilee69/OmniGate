@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -117,7 +118,8 @@ func main() {
 		logPath        string
 		listenOverride string
 		showVersion    bool
-		quietMode      bool
+		foreground     bool
+		isChild        bool
 	)
 	flag.StringVar(&dbPath, "db", filepath.Join(appHome, "omnigate.db"),
 		"SQLite database file path (default: ~/.omnigate/omnigate.db)")
@@ -129,12 +131,46 @@ func main() {
 		"override listen address from config.yaml (debug, highest priority)")
 	flag.BoolVar(&showVersion, "version", false,
 		"print version and exit")
-	flag.BoolVar(&quietMode, "quiet", true,
-		"quiet mode: only show startup info, suppress runtime logs to terminal (default: true, use --quiet=false for verbose)")
+	flag.BoolVar(&foreground, "foreground", false,
+		"run in foreground mode with verbose logging (default: false, background mode)")
+	flag.BoolVar(&isChild, "child", false,
+		"internal flag: marks this process as background child (do not use manually)")
 	flag.Parse()
 
 	if showVersion {
 		fmt.Printf("omnigate %s (commit %s, built %s)\n", version, commit, date)
+		return
+	}
+
+	// 如果不是前台模式且不是子进程，重启自己为后台进程
+	if !foreground && !isChild {
+		args := append(os.Args[1:], "--child")
+		cmd := exec.Command(os.Args[0], args...)
+		
+		// 分离标准输入输出
+		cmd.Stdin = nil
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		
+		// 设置进程组（Unix）或创建新进程（Windows）
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setpgid: true,
+		}
+		
+		if err := cmd.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to start background process: %v\n", err)
+			os.Exit(1)
+		}
+		
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		fmt.Printf("  OmniGate %s\n", version)
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		fmt.Printf("✓ 服务已在后台启动 (PID: %d)\n", cmd.Process.Pid)
+		fmt.Printf("  数据目录: %s\n", appHome)
+		fmt.Printf("  查看日志: tail -f %s\n", expandHome(logPath))
+		fmt.Println("\n  提示: 使用 --foreground 可切换为前台模式")
+		
+		// 父进程退出
 		return
 	}
 
@@ -274,27 +310,19 @@ func main() {
 	fmt.Printf("  认证模式:  %s\n", auth.Mode())
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	// 静默模式：输出启动信息后不再输出运行日志到终端
-	if quietMode {
-		fmt.Println("\n✓ 服务已启动（静默模式）")
-		fmt.Printf("  查看日志: tail -f %s\n", logPath)
-		fmt.Println("  提示: 进程仍在前台运行，可用 Ctrl+C 停止")
-		fmt.Println("  后台运行: Unix 用 '&' 符号，Windows 用 'Start-Process' 或安装为服务")
-		
-		// 关闭 stdin，避免阻塞
-		os.Stdin.Close()
-		
-		slog.Info("quiet mode: startup complete", "pid", os.Getpid())
-	} else {
-		// 详细模式：继续输出运行日志到终端
-		fmt.Println("\n✓ 服务已启动（详细模式，按 Ctrl+C 停止）")
-		slog.Info("verbose mode: serving",
+	// 仅在前台模式或子进程中显示启动完成消息
+	if foreground {
+		fmt.Println("\n✓ 服务已启动（前台模式，按 Ctrl+C 停止）")
+		slog.Info("foreground mode: serving",
 			"listen", listen,
 			"db", dbPath,
 			"config", cfgPath,
 			"log", logPath,
 			"admin_auth", auth.Mode(),
 			"v1_auth", auth.V1Protected())
+	} else {
+		// 后台子进程静默启动
+		slog.Info("background mode: serving", "pid", os.Getpid())
 	}
 
 	<-ctx.Done()

@@ -32,9 +32,10 @@ type routeTargetReq struct {
 }
 
 type routeCreateReq struct {
-	Name    string           `json:"name"`
-	Remark  string           `json:"remark"`
-	Targets []routeTargetReq `json:"targets"`
+	Name     string           `json:"name"`
+	Endpoint string           `json:"endpoint"`
+	Remark   string           `json:"remark"`
+	Targets  []routeTargetReq `json:"targets"`
 }
 
 func (s *Server) enrichTargets(targets []store.RouteTarget) []routeTargetResp {
@@ -78,8 +79,8 @@ func (s *Server) listRoutes(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// validateTargets 校验目标模型存在、权重合法、无重复模型。
-func (s *Server) validateTargets(targets []routeTargetReq) (bool, string) {
+// validateTargets 校验目标模型存在、权重合法、无重复模型、协议匹配endpoint。
+func (s *Server) validateTargets(endpoint string, targets []routeTargetReq) (bool, string) {
 	seen := map[int64]bool{}
 	var ids []int64
 	for i := range targets {
@@ -106,7 +107,25 @@ func (s *Server) validateTargets(targets []routeTargetReq) (bool, string) {
 	if len(models) != len(ids) {
 		return false, "one or more target models do not exist"
 	}
+	
+	expectedProtocol := endpointToProtocol(endpoint)
+	for _, m := range models {
+		if m.Protocol != expectedProtocol {
+			return false, "model '" + m.Name + "' has protocol '" + m.Protocol + "' but route endpoint '" + endpoint + "' requires '" + expectedProtocol + "'"
+		}
+	}
 	return true, ""
+}
+
+func endpointToProtocol(endpoint string) string {
+	switch endpoint {
+	case "messages":
+		return "anthropic"
+	case "responses":
+		return "responses"
+	default:
+		return "openai"
+	}
 }
 
 func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
@@ -120,11 +139,19 @@ func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "name is required")
 		return
 	}
-	if ok, msg := s.validateTargets(req.Targets); !ok {
+	req.Endpoint = strings.TrimSpace(req.Endpoint)
+	if req.Endpoint == "" {
+		req.Endpoint = "chat"
+	}
+	if req.Endpoint != "chat" && req.Endpoint != "messages" && req.Endpoint != "responses" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: chat, messages, responses")
+		return
+	}
+	if ok, msg := s.validateTargets(req.Endpoint, req.Targets); !ok {
 		writeErr(w, http.StatusBadRequest, "bad_request", msg)
 		return
 	}
-	rt := store.Route{Name: req.Name, Remark: req.Remark}
+	rt := store.Route{Name: req.Name, Endpoint: req.Endpoint, Remark: req.Remark}
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&rt).Error; err != nil {
 			return err
@@ -150,9 +177,10 @@ func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 type routeUpdateReq struct {
-	Name    *string          `json:"name"`
-	Remark  *string          `json:"remark"`
-	Targets []routeTargetReq `json:"targets"`
+	Name     *string          `json:"name"`
+	Endpoint *string          `json:"endpoint"`
+	Remark   *string          `json:"remark"`
+	Targets  []routeTargetReq `json:"targets"`
 }
 
 func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
@@ -184,6 +212,14 @@ func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
 		}
 		simple["name"] = v
 	}
+	if req.Endpoint != nil {
+		v := strings.TrimSpace(*req.Endpoint)
+		if v != "chat" && v != "messages" && v != "responses" {
+			writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: chat, messages, responses")
+			return
+		}
+		simple["endpoint"] = v
+	}
 	if req.Remark != nil {
 		simple["remark"] = *req.Remark
 	}
@@ -191,8 +227,13 @@ func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "no fields to update")
 		return
 	}
+	
+	effectiveEndpoint := rt.Endpoint
+	if req.Endpoint != nil {
+		effectiveEndpoint = strings.TrimSpace(*req.Endpoint)
+	}
 	if req.Targets != nil {
-		if ok, msg := s.validateTargets(req.Targets); !ok {
+		if ok, msg := s.validateTargets(effectiveEndpoint, req.Targets); !ok {
 			writeErr(w, http.StatusBadRequest, "bad_request", msg)
 			return
 		}

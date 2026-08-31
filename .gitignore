@@ -27,3 +27,5 @@
 # OS noise
 .DS_Store
 Thumbs.db
+npm/node_modules/
+npm/package-lock.json

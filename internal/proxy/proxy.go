@@ -229,7 +229,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "")
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
-					fmt.Sprintf("路由 '%s' 无可用后端", routeName), statuses)
+					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
 				h.maybeCapture(requestID, routeName, reqSnap, cw)
 				return
 			}
@@ -260,7 +260,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if !last.committed {
 		openAIError(w, http.StatusBadGateway, "all_attempts_failed",
-			fmt.Sprintf("全部尝试失败，已转移 %d 次（错误序列: %s）", priorFails, strings.Join(errCodes, " → ")), nil)
+			fmt.Sprintf("all attempts failed after %d retries (error sequence: %s)", priorFails, strings.Join(errCodes, " → ")), nil)
 		h.maybeCapture(requestID, routeName, reqSnap, cw)
 		return
 	}
@@ -747,8 +747,14 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 		h.maybeCapture(requestID, routeName, reqSnap, cw)
 		return
 	}
+	
+	if snap.Route.Endpoint != endpoint {
+		openAIError(w, http.StatusBadRequest, "endpoint_mismatch",
+			fmt.Sprintf("route '%s' is configured for endpoint '%s', but you called '%s'", routeName, snap.Route.Endpoint, endpoint), nil)
+		h.maybeCapture(requestID, routeName, reqSnap, cw)
+		return
+	}
 
-	// 协议过滤：只选择匹配 protocol 的模型
 	tried := map[int64]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult
@@ -763,17 +769,11 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "")
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
-					fmt.Sprintf("路由 '%s' 无可用后端", routeName), statuses)
+					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
 				h.maybeCapture(requestID, routeName, reqSnap, cw)
 				return
 			}
 			break
-		}
-		
-		// 协议不匹配，跳过此后端
-		if att.Model.Protocol != protocol {
-			tried[att.Key.ID] = true
-			continue
 		}
 		
 		tried[att.Key.ID] = true
@@ -796,7 +796,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 
 	if !last.committed {
 		openAIError(w, http.StatusBadGateway, "all_attempts_failed",
-			fmt.Sprintf("全部尝试失败，已转移 %d 次（错误序列: %s）", priorFails, strings.Join(errCodes, " → ")), nil)
+			fmt.Sprintf("all attempts failed after %d retries (error sequence: %s)", priorFails, strings.Join(errCodes, " → ")), nil)
 		h.maybeCapture(requestID, routeName, reqSnap, cw)
 		return
 	}

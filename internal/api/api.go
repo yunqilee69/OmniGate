@@ -50,6 +50,8 @@ func New(st *store.Store, rt *config.RuntimeManager, auth AdminAuth, chat ChatPl
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 
+	r.Use(corsMiddleware)
+
 	// 公开端点：登录页引导与凭据校验，不经过 authMW
 	r.Get("/api/auth-info", s.handleAuthInfo)
 	r.Post("/api/login", s.handleLogin)
