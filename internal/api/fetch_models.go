@@ -55,7 +55,15 @@ func (s *Server) fetchProviderModels(w http.ResponseWriter, r *http.Request) {
 
 // callProviderModels 向提供商发起 GET {baseURL}/v1/models 请求并解析返回的模型列表。
 func callProviderModels(baseURL, apiKey, proxyURL string) ([]fetchModelItem, error) {
-	endpoint := strings.TrimRight(baseURL, "/") + "/v1/models"
+	baseURL = strings.TrimRight(baseURL, "/")
+	
+	// 智能拼接路径，避免重复 /v1
+	endpoint := baseURL
+	if strings.HasSuffix(baseURL, "/v1") {
+		endpoint = baseURL + "/models"
+	} else {
+		endpoint = baseURL + "/v1/models"
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	if proxyURL != "" {

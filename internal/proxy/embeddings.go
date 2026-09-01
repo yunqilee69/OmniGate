@@ -165,7 +165,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID, "type", kind.modelType)
 				}
 
-				statuses := router.BackendStatuses(snap, time.Now())
+				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, false,
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
@@ -182,13 +182,20 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 		h.record(res, rt)
 		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
 		last = res
-		h.writeLog(start, requestID, routeName, att, false,
-			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false)
+		// 只在最后一次记录 request_log（committed 或不可重试时）
 		if res.committed || !res.retryable {
+			h.writeLog(start, requestID, routeName, att, false,
+				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false)
 			break
 		}
 		priorFails++
 		errCodes = append(errCodes, res.errCode)
+	}
+
+	// 如果循环结束但没有记录日志（所有尝试都失败且可重试），记录最后一次的结果
+	if last.att.Model.ID != 0 && !last.committed && last.retryable {
+		h.writeLog(start, requestID, routeName, last.att, false,
+			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails, last.errorBody, false)
 	}
 
 	if !last.committed {

@@ -16,6 +16,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -110,6 +112,160 @@ func setupLogger(logPath string) (io.Closer, error) {
 }
 
 func main() {
+	// 解析子命令
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "start":
+			startCommand()
+			return
+		case "stop":
+			stopCommand()
+			return
+		case "status":
+			statusCommand()
+			return
+		case "help", "-h", "--help":
+			printHelp()
+			return
+		case "-version", "--version":
+			fmt.Printf("omnigate %s (commit %s, built %s)\n", version, commit, date)
+			return
+		}
+	}
+
+	// 无子命令时默认为 start
+	startCommand()
+}
+
+func printHelp() {
+	fmt.Println("OmniGate - OpenAI 兼容的 AI 网关")
+	fmt.Printf("版本: %s\n\n", version)
+	fmt.Println("用法:")
+	fmt.Println("  omnigate [command] [flags]")
+	fmt.Println()
+	fmt.Println("可用命令:")
+	fmt.Println("  start        启动服务（默认后台模式）")
+	fmt.Println("  stop         停止运行中的服务")
+	fmt.Println("  status       查看服务状态")
+	fmt.Println("  help         显示帮助信息")
+	fmt.Println()
+	fmt.Println("start 命令标志:")
+	fmt.Println("  --db <path>         数据库文件路径 (默认: ~/.omnigate/omnigate.db)")
+	fmt.Println("  --config <path>     配置文件路径 (默认: ~/.omnigate/config.yaml)")
+	fmt.Println("  --log <path>        日志输出 (默认: ~/.omnigate/omnigate.log)")
+	fmt.Println("  --listen <addr>     监听地址 (覆盖配置文件)")
+	fmt.Println("  --foreground        前台运行模式")
+	fmt.Println("  --version           显示版本信息")
+	fmt.Println()
+	fmt.Println("示例:")
+	fmt.Println("  omnigate              # 后台启动服务")
+	fmt.Println("  omnigate start        # 后台启动服务")
+	fmt.Println("  omnigate start --foreground  # 前台启动服务")
+	fmt.Println("  omnigate stop         # 停止服务")
+	fmt.Println("  omnigate status       # 查看状态")
+}
+
+func pidFilePath() string {
+	return filepath.Join(appHomeDir(), "omnigate.pid")
+}
+
+func writePidFile(pid int) error {
+	pidFile := pidFilePath()
+	return os.WriteFile(pidFile, []byte(strconv.Itoa(pid)), 0o644)
+}
+
+func readPidFile() (int, error) {
+	pidFile := pidFilePath()
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(data)))
+}
+
+func removePidFile() error {
+	pidFile := pidFilePath()
+	return os.Remove(pidFile)
+}
+
+func isProcessRunning(pid int) bool {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// 在Unix上，发送信号0检查进程是否存在
+	// 在Windows上，FindProcess总是成功，需要尝试其他方法
+	err = process.Signal(syscall.Signal(0))
+	return err == nil
+}
+
+func stopCommand() {
+	pid, err := readPidFile()
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("✗ 服务未运行（找不到PID文件）")
+		} else {
+			fmt.Printf("✗ 读取PID文件失败: %v\n", err)
+		}
+		os.Exit(1)
+	}
+
+	if !isProcessRunning(pid) {
+		fmt.Printf("✗ 进程 %d 不存在，清理PID文件\n", pid)
+		removePidFile()
+		os.Exit(1)
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		fmt.Printf("✗ 查找进程失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("正在停止服务 (PID: %d)...\n", pid)
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		fmt.Printf("✗ 发送停止信号失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 等待进程退出（最多5秒）
+	for range 50 {
+		time.Sleep(100 * time.Millisecond)
+		if !isProcessRunning(pid) {
+			removePidFile()
+			fmt.Println("✓ 服务已停止")
+			return
+		}
+	}
+}
+
+func statusCommand() {
+	pid, err := readPidFile()
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("状态: 未运行")
+		} else {
+			fmt.Printf("状态: 未知 (读取PID失败: %v)\n", err)
+		}
+		os.Exit(1)
+	}
+
+	if isProcessRunning(pid) {
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		fmt.Printf("  OmniGate %s\n", version)
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		fmt.Println("  状态: 运行中 ✓")
+		fmt.Printf("  PID: %d\n", pid)
+		fmt.Printf("  数据目录: %s\n", appHomeDir())
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	} else {
+		fmt.Println("状态: 未运行 (PID文件存在但进程不存在)")
+		removePidFile()
+		os.Exit(1)
+	}
+}
+
+func startCommand() {
 	appHome := appHomeDir()
 
 	var (
@@ -121,30 +277,55 @@ func main() {
 		foreground     bool
 		isChild        bool
 	)
-	flag.StringVar(&dbPath, "db", filepath.Join(appHome, "omnigate.db"),
+	
+	fs := flag.NewFlagSet("start", flag.ExitOnError)
+	fs.StringVar(&dbPath, "db", filepath.Join(appHome, "omnigate.db"),
 		"SQLite database file path (default: ~/.omnigate/omnigate.db)")
-	flag.StringVar(&cfgPath, "config", filepath.Join(appHome, "config.yaml"),
+	fs.StringVar(&cfgPath, "config", filepath.Join(appHome, "config.yaml"),
 		"bootstrap config file path (auto-initialized with defaults on first run)")
-	flag.StringVar(&logPath, "log", filepath.Join(appHome, "omnigate.log"),
+	fs.StringVar(&logPath, "log", filepath.Join(appHome, "omnigate.log"),
 		"log output: file path (default ~/.omnigate/omnigate.log) | stdout | stderr | off")
-	flag.StringVar(&listenOverride, "listen", "",
+	fs.StringVar(&listenOverride, "listen", "",
 		"override listen address from config.yaml (debug, highest priority)")
-	flag.BoolVar(&showVersion, "version", false,
+	fs.BoolVar(&showVersion, "version", false,
 		"print version and exit")
-	flag.BoolVar(&foreground, "foreground", false,
+	fs.BoolVar(&foreground, "foreground", false,
 		"run in foreground mode with verbose logging (default: false, background mode)")
-	flag.BoolVar(&isChild, "child", false,
+	fs.BoolVar(&isChild, "child", false,
 		"internal flag: marks this process as background child (do not use manually)")
-	flag.Parse()
+	
+	// 跳过 "start" 子命令解析标志
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "start" {
+		args = args[1:]
+	}
+	fs.Parse(args)
 
 	if showVersion {
 		fmt.Printf("omnigate %s (commit %s, built %s)\n", version, commit, date)
 		return
 	}
 
+	// 检查是否已有实例运行
+	if !isChild {
+		if pid, err := readPidFile(); err == nil && isProcessRunning(pid) {
+			fmt.Printf("✗ 服务已在运行 (PID: %d)\n", pid)
+			fmt.Println("  使用 'omnigate status' 查看状态")
+			fmt.Println("  使用 'omnigate stop' 停止服务")
+			os.Exit(1)
+		}
+	}
+
 	// 如果不是前台模式且不是子进程，重启自己为后台进程
 	if !foreground && !isChild {
-		args := append(os.Args[1:], "--child")
+		args := []string{"start"}
+		args = append(args, os.Args[1:]...)
+		// 跳过重复的 "start"
+		if len(args) > 1 && args[1] == "start" {
+			args = append(args[:1], args[2:]...)
+		}
+		args = append(args, "--child")
+		
 		cmd := exec.Command(os.Args[0], args...)
 		
 		// 分离标准输入输出
@@ -156,8 +337,13 @@ func main() {
 		cmd.SysProcAttr = daemonSysProcAttr()
 		
 		if err := cmd.Start(); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to start background process: %v\n", err)
+			fmt.Fprintf(os.Stderr, "✗ 启动后台进程失败: %v\n", err)
 			os.Exit(1)
+		}
+		
+		// 写入PID文件
+		if err := writePidFile(cmd.Process.Pid); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ 写入PID文件失败: %v\n", err)
 		}
 		
 		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -166,10 +352,22 @@ func main() {
 		fmt.Printf("✓ 服务已在后台启动 (PID: %d)\n", cmd.Process.Pid)
 		fmt.Printf("  数据目录: %s\n", appHome)
 		fmt.Printf("  查看日志: tail -f %s\n", expandHome(logPath))
-		fmt.Println("\n  提示: 使用 --foreground 可切换为前台模式")
+		fmt.Println()
+		fmt.Println("  命令:")
+		fmt.Println("    omnigate status  - 查看状态")
+		fmt.Println("    omnigate stop    - 停止服务")
 		
 		// 父进程退出
 		return
+	}
+
+	// 子进程写入自己的PID
+	if isChild {
+		if err := writePidFile(os.Getpid()); err != nil {
+			slog.Warn("write pid file failed", "err", err)
+		}
+		// 确保退出时清理PID文件
+		defer removePidFile()
 	}
 
 	// 展开 ~ 到用户主目录(日志的流/关闭 token 不展开)

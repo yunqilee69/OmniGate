@@ -78,6 +78,8 @@ func (s *Server) Router() http.Handler {
 			er.Get("/", s.listProviders)
 			er.Post("/", s.createProvider)
 			er.Post("/fetch-models", s.fetchProviderModels)
+			er.Get("/export", s.exportProviders)
+			er.Post("/import", s.importProviders)
 			er.Route("/{id}", func(ir chi.Router) {
 				ir.Put("/", s.updateProvider)
 				ir.Delete("/", s.deleteProvider)
@@ -102,6 +104,7 @@ func (s *Server) Router() http.Handler {
 				ir.Post("/disable", s.disableModel)
 				ir.Post("/test", s.testModel)
 				ir.Post("/test-keys", s.testModelKeys)
+				ir.Delete("/bans/{key_id}", s.unbanModelKey)
 			})
 		})
 		ar.Route("/routes", func(er chi.Router) {
@@ -114,16 +117,22 @@ func (s *Server) Router() http.Handler {
 		})
 	})
 
-	r.With(s.v1AuthMW).Get("/v1/models", s.v1Models)
-	if s.chat != nil {
-		r.With(s.v1AuthMW).Post("/v1/chat/completions", s.chat.ServeHTTP)
-		r.With(s.v1AuthMW).Post("/v1/messages", s.chat.Messages)
-		r.With(s.v1AuthMW).Post("/v1/responses", s.chat.Responses)
-	}
-	if s.typed != nil {
-		r.With(s.v1AuthMW).Post("/v1/embeddings", s.typed.Embeddings)
-		r.With(s.v1AuthMW).Post("/v1/rerank", s.typed.Rerank)
-	}
+	r.Route("/v1", func(vr chi.Router) {
+		vr.Use(s.v1AuthMW)
+		vr.Get("/models", s.v1Models)
+		if s.chat != nil {
+			vr.Post("/chat/completions", s.chat.ServeHTTP)
+			vr.Post("/messages", s.chat.Messages)
+			vr.Post("/responses", s.chat.Responses)
+		}
+		if s.typed != nil {
+			vr.Post("/embeddings", s.typed.Embeddings)
+			vr.Post("/rerank", s.typed.Rerank)
+		}
+		vr.NotFound(func(w http.ResponseWriter, r *http.Request) {
+			writeErr(w, http.StatusNotFound, "not_found", "endpoint not found")
+		})
+	})
 	r.NotFound(webui.Handler().ServeHTTP)
 	return r
 }

@@ -33,6 +33,7 @@ type Runtime struct {
 	USDCNY                  float64
 	FallbackEnabled         bool
 	FallbackModelID         int64
+	DebugStreamLog          bool
 }
 
 type settingSpec struct {
@@ -175,6 +176,7 @@ var settingSpecs = []settingSpec{
 	{key: "pricing.usd_cny", def: `7.25`, validate: floatRange(0.01, 10000)},
 	{key: "fallback.enabled", def: `false`, validate: boolVal},
 	{key: "fallback.model_id", def: `0`, validate: intRange(0, 9999999)},
+	{key: "debug.stream_log", def: `false`, validate: boolVal},
 }
 
 // RuntimeManager 管理运行层配置：DB 为事实来源，内存快照 atomic 替换（保存即热生效）。
@@ -323,7 +325,7 @@ func (m *RuntimeManager) rebuild() error {
 	}
 	rt.USDCNY = rate
 	rt.FallbackEnabled = getBool("fallback.enabled")
-	rt.FallbackModelID = int64(getInt("fallback.model_id"))
+	rt.DebugStreamLog = getBool("debug.stream_log")
 
 	m.snap.Store(rt)
 	return nil

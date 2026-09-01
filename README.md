@@ -32,14 +32,37 @@ OmniGate 把多个模型提供方聚合成一个 OpenAI 兼容端点,提供加�
 
 ## 快速开始
 
+### 安装
+
 ```bash
 npm install -g @cloudomni/omnigate
-omnigate
+```
+
+### 基本命令
+
+```bash
+omnigate                   # 后台启动服务（默认）
+omnigate start             # 后台启动服务
+omnigate stop              # 停止服务
+omnigate status            # 查看服务状态
+omnigate help              # 显示帮助信息
 ```
 
 浏览器打开 <http://127.0.0.1:17777> 进入管理台。
 
-> 首次运行会在 `~/.omnigate/` 下自动创建数据目录、初始化 SQLite、生成默认 `config.yaml`、开始记录日志,**完全无需手工准备**。
+> 首次运行会在 `~/.omnigate/` 下自动创建数据目录、初始化 SQLite、生成默认 `config.yaml`、开始记录日志，**完全无需手工准备**。
+> 
+> **Windows 用户注意**：服务以真正的后台模式运行，关闭 CMD 窗口不影响服务。
+
+### 启动选项
+
+```bash
+omnigate start --foreground          # 前台运行（按 Ctrl+C 停止）
+omnigate start --listen 0.0.0.0:8080 # 自定义监听地址
+omnigate start --db ~/work/og.db     # 覆盖 db 路径（支持 ~ 展开）
+omnigate start --log stdout          # 仅输出到 stdout
+omnigate start --config ~/my.yaml    # 指定配置文件
+```
 
 ### 数据布局
 
@@ -48,19 +71,15 @@ omnigate
 ├── omnigate.db           # SQLite(实体、运行层配置、请求日志、可选内容日志)
 ├── omnigate.db-wal       # SQLite WAL(写入中,正常关闭后会被清理)
 ├── omnigate.db-shm       # SQLite 共享内存
+├── omnigate.pid          # 后台进程 PID 文件
 ├── config.yaml           # 启动层:监听地址 / 账号密码 / api_key(自动生成,含注释)
 └── omnigate.log          # 结构化日志(slog,stderr 同写)
-```
-
-所有路径都用 `--db` / `--config` / `--log` 覆盖,也接受 `~`:
-
-```bash
-omnigate --db ~/workbench/og.db --config ~/workbench/cfg.yaml --log stdout
 ```
 
 ### 卸载
 
 ```bash
+omnigate stop             # 先停止服务
 npm uninstall -g @cloudomni/omnigate
 rm -rf ~/.omnigate        # 数据一并清理(可选)
 ```

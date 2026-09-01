@@ -35,14 +35,48 @@ OMNIGATE_USE_CDN=1 npm install -g @cloudomni/omnigate
 
 ## 使用
 
+### 基本命令
+
 ```bash
-omnigate                        # 默认启动(数据目录 ~/.omnigate/)
-omnigate --listen 0.0.0.0:8080  # 自定义监听地址
-omnigate --db ~/work/og.db      # 覆盖 db 路径(支持 ~ 展开)
-omnigate --log stdout           # 仅输出到 stdout
+omnigate                   # 后台启动服务（默认）
+omnigate start             # 后台启动服务
+omnigate stop              # 停止服务
+omnigate status            # 查看服务状态
+omnigate help              # 显示帮助信息
 ```
 
-所有命令行参数原样透传给底层 Go 二进制。完整功能(加权路由、密钥轮询、阶梯熔断、统计、管理台)见[主项目 README](https://github.com/yunqilee69/OmniGate)。
+### 启动选项
+
+```bash
+omnigate start --foreground          # 前台运行（按 Ctrl+C 停止）
+omnigate start --listen 0.0.0.0:8080 # 自定义监听地址
+omnigate start --db ~/work/og.db     # 覆盖 db 路径（支持 ~ 展开）
+omnigate start --log stdout          # 仅输出到 stdout
+omnigate start --config ~/my.yaml    # 指定配置文件
+```
+
+首次运行会在 `~/.omnigate/` 下自动创建数据目录（SQLite、配置、日志），浏览器打开 <http://127.0.0.1:17777> 进入内嵌管理台。
+
+### 守护进程管理
+
+服务默认以**后台模式**运行，关闭终端窗口不影响服务：
+
+```bash
+# 启动服务
+omnigate start
+# ✓ 服务已在后台启动 (PID: 12345)
+
+# 查看状态
+omnigate status
+# 状态: 运行中 ✓
+# PID: 12345
+
+# 停止服务
+omnigate stop
+# ✓ 服务已停止
+```
+
+完整功能（加权路由、密钥轮询、阶梯熔断、统计、管理台）见[主项目 README](https://github.com/yunqilee69/OmniGate)。
 
 ## 支持平台
 

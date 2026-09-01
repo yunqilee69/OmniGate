@@ -3,10 +3,13 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"gorm.io/gorm"
 
+	"github.com/cloudomni/omnigate/internal/breaker"
 	"github.com/cloudomni/omnigate/internal/store"
 )
 
@@ -396,4 +399,49 @@ func (s *Server) disableModel(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.store.DB.First(&m, id).Error
 	writeJSON(w, http.StatusOK, m)
+}
+
+// unbanModelKey 手动解禁模型-密钥组合。
+func (s *Server) unbanModelKey(w http.ResponseWriter, r *http.Request) {
+	modelID, ok := pathID(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "invalid_id", "invalid model id")
+		return
+	}
+	keyIDStr := chi.URLParam(r, "key_id")
+	keyID, err := strconv.ParseInt(keyIDStr, 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_id", "invalid key id")
+		return
+	}
+
+	// 验证模型和密钥存在
+	var m store.Model
+	if err := s.store.DB.First(&m, modelID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			writeErr(w, http.StatusNotFound, "not_found", "model not found")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+
+	var k store.ApiKey
+	if err := s.store.DB.First(&k, keyID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			writeErr(w, http.StatusNotFound, "not_found", "key not found")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+
+	// 解禁
+	rec := breaker.New(s.store)
+	if err := rec.UnbanModelKey(modelID, keyID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "model-key combination unbanned"})
 }

@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  Button, Card, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select,
+  Button, Card, Checkbox, Dropdown, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select,
   Space, Spin, Table, Tabs, Tag, Tooltip, message,
 } from 'antd'
-import { PlusOutlined, CloudServerOutlined, EyeOutlined, EyeInvisibleOutlined, InfoCircleOutlined, ApiOutlined } from '@ant-design/icons'
+import { 
+  PlusOutlined, CloudServerOutlined, EyeOutlined, EyeInvisibleOutlined, 
+  InfoCircleOutlined, ApiOutlined, DownloadOutlined, UploadOutlined, 
+  DeleteOutlined, MoreOutlined 
+} from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { api } from '../api'
 import StatusTag from '../components/StatusTag'
@@ -114,6 +118,8 @@ export default function ConfigCenter() {
   const [models, setModels] = useState<Model[]>([])
   const [selected, setSelected] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
+  const [selectedProviders, setSelectedProviders] = useState<number[]>([])
+  const [importing, setImporting] = useState(false)
 
   const load = async (prefer?: number) => {
     setLoading(true)
@@ -126,13 +132,71 @@ export default function ConfigCenter() {
       setModels(ms)
       const cur = prefer ?? selected
       setSelected(cur && ps.some((p) => p.id === cur) ? cur : (ps[0]?.id ?? null))
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
   }
   useEffect(() => { load() }, [])
+
+  const handleExport = async () => {
+    try {
+      const config = await api('GET', '/api/providers/export')
+      const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `omnigate-config-${new Date().toISOString().split('T')[0]}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      message.success('配置已导出')
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const handleImport = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.json'
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0]
+      if (!file) return
+      setImporting(true)
+      try {
+        const text = await file.text()
+        const config = JSON.parse(text)
+        const result = await api<{ imported: number; skipped: number; errors: string[] }>('POST', '/api/providers/import', config)
+        if (result.errors.length > 0) {
+          message.warning(`导入完成：成功 ${result.imported} 个，跳过 ${result.skipped} 个，失败 ${result.errors.length} 个`)
+        } else {
+          message.success(`导入成功：${result.imported} 个提供商，跳过 ${result.skipped} 个已存在`)
+        }
+        load()
+      } catch (e: unknown) {
+        message.error('导入失败：' + (e instanceof Error ? e.message : String(e)))
+      } finally {
+        setImporting(false)
+      }
+    }
+    input.click()
+  }
+
+  const handleBatchDelete = async () => {
+    if (selectedProviders.length === 0) {
+      message.warning('请先选择要删除的提供商')
+      return
+    }
+    try {
+      await Promise.all(selectedProviders.map(id => api('DELETE', `/api/providers/${id}`)))
+      message.success(`已删除 ${selectedProviders.length} 个提供商`)
+      setSelectedProviders([])
+      load()
+    } catch (e: unknown) {
+      message.error('批量删除失败：' + (e instanceof Error ? e.message : String(e)))
+    }
+  }
 
   const provider = providers.find((p) => p.id === selected) ?? null
   const providerKeys = keys.filter((k) => k.provider_id === selected)
@@ -144,7 +208,36 @@ export default function ConfigCenter() {
         <Card
           title="提供商"
           size="small"
-          extra={<ProviderFormButton providers={providers} onSaved={() => load()} />}
+          extra={
+            <Space size={4}>
+              <Dropdown
+                menu={{
+                  items: [
+                    { key: 'export', label: '导出配置', icon: <DownloadOutlined /> },
+                    { key: 'import', label: '导入配置', icon: <UploadOutlined />, disabled: importing },
+                    { key: 'divider', type: 'divider' },
+                    { key: 'batch-delete', label: '批量删除', icon: <DeleteOutlined />, danger: true, disabled: selectedProviders.length === 0 },
+                  ],
+                  onClick: ({ key }) => {
+                    if (key === 'export') handleExport()
+                    else if (key === 'import') handleImport()
+                    else if (key === 'batch-delete') {
+                      Modal.confirm({
+                        title: '确认批量删除',
+                        content: `将删除 ${selectedProviders.length} 个提供商及其关联的密钥和模型，此操作不可恢复。`,
+                        okText: '确认删除',
+                        okType: 'danger',
+                        onOk: handleBatchDelete,
+                      })
+                    }
+                  }
+                }}
+              >
+                <Button size="small" icon={<MoreOutlined />} />
+              </Dropdown>
+              <ProviderFormButton providers={providers} onSaved={() => load()} />
+            </Space>
+          }
         >
           {loading && providers.length === 0 ? <Spin /> : providers.length === 0 ? (
             <Empty description="暂无提供商" image={Empty.PRESENTED_IMAGE_SIMPLE} />
@@ -160,6 +253,14 @@ export default function ConfigCenter() {
                   onClick={() => setSelected(p.id)}
                   onSaved={() => load(p.id)}
                   onDeleted={() => load(providers.find((x) => x.id !== p.id)?.id)}
+                  selected={selectedProviders.includes(p.id)}
+                  onSelect={(checked) => {
+                    if (checked) {
+                      setSelectedProviders([...selectedProviders, p.id])
+                    } else {
+                      setSelectedProviders(selectedProviders.filter(id => id !== p.id))
+                    }
+                  }}
                 />
               ))}
             </div>
@@ -198,7 +299,7 @@ export default function ConfigCenter() {
   )
 }
 
-function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, onDeleted }: {
+function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, onDeleted, selected, onSelect }: {
   p: Provider
   active: boolean
   modelCount: number
@@ -206,6 +307,8 @@ function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, o
   onClick: () => void
   onSaved: () => void
   onDeleted: () => void
+  selected: boolean
+  onSelect: (checked: boolean) => void
 }) {
   const [open, setOpen] = useState(false)
   const [form] = Form.useForm()
@@ -217,8 +320,8 @@ function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, o
       message.success('已保存')
       setOpen(false)
       onSaved()
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -231,6 +334,11 @@ function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, o
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Space>
+          <Checkbox 
+            checked={selected} 
+            onClick={(e) => e.stopPropagation()} 
+            onChange={(e) => onSelect(e.target.checked)}
+          />
           <CloudServerOutlined />
           <b>{p.name}</b>
         </Space>
@@ -239,7 +347,13 @@ function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, o
           <Popconfirm
             title="删除将级联清理密钥/模型，确认？"
             onConfirm={async () => {
-              try { await api('DELETE', `/api/providers/${p.id}`); message.success('已删除'); onDeleted() } catch (e: any) { message.error(e.message) }
+              try { 
+                await api('DELETE', `/api/providers/${p.id}`)
+                message.success('已删除')
+                onDeleted() 
+              } catch (e: unknown) { 
+                message.error(e instanceof Error ? e.message : String(e))
+              }
             }}
           >
             <a style={{ color: '#ee0000' }}>删除</a>
@@ -374,13 +488,15 @@ function ModelsTab({ provider, keys, models, onSaved }: {
 
   const openForm = (m?: Model) => {
     setEditing(m ?? null)
-    form.resetFields()
+    setAvailableModels([]) // 清空可用模型列表，避免干扰
     if (m) {
       form.setFieldsValue({
         name: m.name, type: m.type || 'chat', protocol: m.protocol,
         input_price: m.input_price, output_price: m.output_price,
         price_currency: m.price_currency || 'USD', key_ids: m.key_ids,
       })
+    } else {
+      form.resetFields()
     }
     setOpen(true)
   }

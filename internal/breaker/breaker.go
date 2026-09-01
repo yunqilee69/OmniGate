@@ -97,3 +97,95 @@ func (rec *Recorder) RecordKeySuccess(keyID int64) {
 		"status": "active", "cooldown_until": 0, "last_used_at": time.Now().Unix(),
 	})
 }
+
+// RecordModelKeyFailure 记录模型-密钥组合失败，短暂或永久禁用该组合。
+// retryable=true 时短暂禁用（阶梯冷却），retryable=false 时永久禁用。
+func (rec *Recorder) RecordModelKeyFailure(modelID, keyID int64, errCode string, retryable bool, rt *config.Runtime) {
+	now := time.Now()
+	var ban store.ModelKeyBan
+	err := rec.db.DB.Where("model_id = ? AND key_id = ?", modelID, keyID).First(&ban).Error
+	
+	if err == gorm.ErrRecordNotFound {
+		// 创建新的禁用记录
+		status := "temp_banned"
+		bannedUntil := int64(0)
+		failCount := 1
+		
+		if retryable {
+			// 可重试错误：使用第一级冷却时间
+			if len(rt.BreakerCooldownLadder) > 0 {
+				bannedUntil = now.Add(rt.BreakerCooldownLadder[0]).Unix()
+			}
+		} else {
+			// 不可重试错误：永久禁用
+			status = "perm_banned"
+		}
+		
+		ban = store.ModelKeyBan{
+			ModelID:     modelID,
+			KeyID:       keyID,
+			Status:      status,
+			BannedUntil: bannedUntil,
+			BanReason:   clamp(errCode),
+			LastError:   clamp(errCode),
+			FailCount:   failCount,
+		}
+		rec.db.DB.Create(&ban)
+	} else if err == nil {
+		// 更新现有记录
+		ban.FailCount++
+		ban.LastError = clamp(errCode)
+		
+		if retryable {
+			// 可重试错误：阶梯升级冷却时间
+			idx := ban.FailCount - 1
+			if idx >= len(rt.BreakerCooldownLadder) {
+				idx = len(rt.BreakerCooldownLadder) - 1
+			}
+			ban.Status = "temp_banned"
+			ban.BannedUntil = now.Add(rt.BreakerCooldownLadder[idx]).Unix()
+			ban.BanReason = clamp(fmt.Sprintf("连续 %d 次失败（最近错误: %s）", ban.FailCount, errCode))
+		} else {
+			// 不可重试错误：永久禁用
+			ban.Status = "perm_banned"
+			ban.BannedUntil = 0
+			ban.BanReason = clamp(fmt.Sprintf("不可重试错误: %s", errCode))
+		}
+		
+		rec.db.DB.Save(&ban)
+	}
+}
+
+// RecordModelKeySuccess 记录模型-密钥组合成功，清除禁用状态。
+func (rec *Recorder) RecordModelKeySuccess(modelID, keyID int64) {
+	rec.db.DB.Where("model_id = ? AND key_id = ?", modelID, keyID).Delete(&store.ModelKeyBan{})
+}
+
+// IsModelKeyBanned 检查模型-密钥组合是否被禁用（临时禁用检查是否过期）。
+func (rec *Recorder) IsModelKeyBanned(modelID, keyID int64, now time.Time) bool {
+	var ban store.ModelKeyBan
+	err := rec.db.DB.Where("model_id = ? AND key_id = ?", modelID, keyID).First(&ban).Error
+	if err != nil {
+		return false // 未找到记录，说明未被禁用
+	}
+	
+	if ban.Status == "perm_banned" {
+		return true // 永久禁用
+	}
+	
+	if ban.Status == "temp_banned" && ban.BannedUntil > now.Unix() {
+		return true // 临时禁用且未过期
+	}
+	
+	// 临时禁用已过期，可以删除记录
+	if ban.Status == "temp_banned" && ban.BannedUntil <= now.Unix() {
+		rec.db.DB.Delete(&ban)
+	}
+	
+	return false
+}
+
+// UnbanModelKey 手动解禁模型-密钥组合。
+func (rec *Recorder) UnbanModelKey(modelID, keyID int64) error {
+	return rec.db.DB.Where("model_id = ? AND key_id = ?", modelID, keyID).Delete(&store.ModelKeyBan{}).Error
+}

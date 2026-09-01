@@ -30,7 +30,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("migrate key pools away: %w", err)
 	}
 	if err := db.AutoMigrate(
-		&Provider{}, &ApiKey{}, &Model{}, &ModelKey{},
+		&Provider{}, &ApiKey{}, &Model{}, &ModelKey{}, &ModelKeyBan{},
 		&Route{}, &RouteTarget{}, &AppConfig{}, &RequestLog{}, &RequestAttempt{}, &ContentLog{},
 		&RequestLogDaily{},
 	); err != nil {

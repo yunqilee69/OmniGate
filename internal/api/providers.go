@@ -206,3 +206,203 @@ func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
+
+// exportConfig 导出配置的数据结构
+type exportConfig struct {
+	Version   string               `json:"version"`
+	Providers []exportProviderData `json:"providers"`
+}
+
+type exportProviderData struct {
+	Provider store.Provider `json:"provider"`
+	Keys     []exportKeyData `json:"keys"`
+	Models   []exportModelData `json:"models"`
+}
+
+type exportKeyData struct {
+	Name     string `json:"name"`
+	KeyValue string `json:"key_value"`
+}
+
+type exportModelData struct {
+	Name          string   `json:"name"`
+	Type          string   `json:"type"`
+	Protocol      string   `json:"protocol"`
+	InputPrice    float64  `json:"input_price"`
+	OutputPrice   float64  `json:"output_price"`
+	PriceCurrency string   `json:"price_currency"`
+	KeyNames      []string `json:"key_names"` // 使用密钥名称而不是ID
+}
+
+// exportProviders 导出所有提供商配置（包括密钥和模型）
+func (s *Server) exportProviders(w http.ResponseWriter, _ *http.Request) {
+	var providers []store.Provider
+	if err := s.store.DB.Order("id").Find(&providers).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+
+	config := exportConfig{
+		Version:   "1.0",
+		Providers: make([]exportProviderData, 0, len(providers)),
+	}
+
+	for _, p := range providers {
+		// 获取该提供商的所有密钥
+		var keys []store.ApiKey
+		s.store.DB.Where("provider_id = ?", p.ID).Find(&keys)
+
+		exportKeys := make([]exportKeyData, 0, len(keys))
+		keyIDToName := make(map[int64]string)
+		for _, k := range keys {
+			exportKeys = append(exportKeys, exportKeyData{
+				Name:     k.Name,
+				KeyValue: k.KeyValue,
+			})
+			keyIDToName[k.ID] = k.Name
+		}
+
+		// 获取该提供商的所有模型
+		var models []store.Model
+		s.store.DB.Where("provider_id = ?", p.ID).Find(&models)
+
+		exportModels := make([]exportModelData, 0, len(models))
+		for _, m := range models {
+			// 获取模型绑定的密钥
+			var modelKeys []store.ModelKey
+			s.store.DB.Where("model_id = ?", m.ID).Find(&modelKeys)
+
+			keyNames := make([]string, 0, len(modelKeys))
+			for _, mk := range modelKeys {
+				if name, ok := keyIDToName[mk.KeyID]; ok {
+					keyNames = append(keyNames, name)
+				}
+			}
+
+			exportModels = append(exportModels, exportModelData{
+				Name:          m.Name,
+				Type:          m.Type,
+				Protocol:      m.Protocol,
+				InputPrice:    m.InputPrice,
+				OutputPrice:   m.OutputPrice,
+				PriceCurrency: m.PriceCurrency,
+				KeyNames:      keyNames,
+			})
+		}
+
+		// 清除提供商的ID和时间戳字段
+		p.ID = 0
+		p.CreatedAt = 0
+		p.UpdatedAt = 0
+
+		config.Providers = append(config.Providers, exportProviderData{
+			Provider: p,
+			Keys:     exportKeys,
+			Models:   exportModels,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, config)
+}
+
+// importProviders 导入提供商配置
+func (s *Server) importProviders(w http.ResponseWriter, r *http.Request) {
+	var config exportConfig
+	if err := decodeBody(r, &config); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	if config.Version != "1.0" {
+		writeErr(w, http.StatusBadRequest, "unsupported_version", "unsupported config version")
+		return
+	}
+
+	imported := 0
+	skipped := 0
+	errors := []string{}
+
+	for _, pd := range config.Providers {
+		// 检查提供商是否已存在
+		var existing store.Provider
+		err := s.store.DB.Where("name = ?", pd.Provider.Name).First(&existing).Error
+		if err == nil {
+			skipped++
+			continue // 已存在，跳过
+		}
+
+		// 开始事务
+		tx := s.store.DB.Begin()
+
+		// 创建提供商
+		provider := pd.Provider
+		provider.ID = 0 // 确保ID为0，让数据库自动分配
+		if err := tx.Create(&provider).Error; err != nil {
+			tx.Rollback()
+			errors = append(errors, "provider "+provider.Name+": "+err.Error())
+			continue
+		}
+
+		// 创建密钥并建立名称到ID的映射
+		keyNameToID := make(map[string]int64)
+		for _, kd := range pd.Keys {
+			key := store.ApiKey{
+				ProviderID: provider.ID,
+				KeyValue:   kd.KeyValue,
+				Name:       kd.Name,
+				Status:     "active",
+			}
+			if err := tx.Create(&key).Error; err != nil {
+				tx.Rollback()
+				errors = append(errors, "key "+kd.Name+": "+err.Error())
+				goto nextProvider
+			}
+			keyNameToID[kd.Name] = key.ID
+		}
+
+		// 创建模型
+		for _, md := range pd.Models {
+			model := store.Model{
+				ProviderID:    provider.ID,
+				Name:          md.Name,
+				Type:          md.Type,
+				Protocol:      md.Protocol,
+				InputPrice:    md.InputPrice,
+				OutputPrice:   md.OutputPrice,
+				PriceCurrency: md.PriceCurrency,
+				Status:        "active",
+			}
+			if err := tx.Create(&model).Error; err != nil {
+				tx.Rollback()
+				errors = append(errors, "model "+md.Name+": "+err.Error())
+				goto nextProvider
+			}
+
+			// 绑定密钥
+			for _, keyName := range md.KeyNames {
+				if keyID, ok := keyNameToID[keyName]; ok {
+					modelKey := store.ModelKey{
+						ModelID: model.ID,
+						KeyID:   keyID,
+					}
+					if err := tx.Create(&modelKey).Error; err != nil {
+						tx.Rollback()
+						errors = append(errors, "model-key binding: "+err.Error())
+						goto nextProvider
+					}
+				}
+			}
+		}
+
+		tx.Commit()
+		imported++
+
+	nextProvider:
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"imported": imported,
+		"skipped":  skipped,
+		"errors":   errors,
+	})
+}

@@ -60,6 +60,21 @@ type ModelKey struct {
 	KeyID   int64 `json:"key_id" gorm:"primaryKey"`
 }
 
+// ModelKeyBan 模型-密钥组合禁用记录（细粒度熔断）。
+// 当某个模型+密钥组合出现错误时，短暂或永久禁用该组合，而不影响其他组合。
+type ModelKeyBan struct {
+	ID            int64  `json:"id" gorm:"primaryKey;autoIncrement"`
+	ModelID       int64  `json:"model_id" gorm:"not null;uniqueIndex:idx_model_key_ban"`
+	KeyID         int64  `json:"key_id" gorm:"not null;uniqueIndex:idx_model_key_ban"`
+	Status        string `json:"status" gorm:"size:32;not null;default:temp_banned"` // temp_banned | perm_banned
+	BannedUntil   int64  `json:"banned_until" gorm:"not null;default:0"`             // 临时禁用到期时间（unix秒），永久禁用时为0
+	BanReason     string `json:"ban_reason" gorm:"size:512;not null;default:''"`
+	LastError     string `json:"last_error" gorm:"size:512;not null;default:''"`
+	FailCount     int    `json:"fail_count" gorm:"not null;default:0"` // 连续失败次数
+	CreatedAt     int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt     int64  `json:"updated_at" gorm:"autoUpdateTime"`
+}
+
 // Route 逻辑路由（客户端请求的 modelId）。
 // Endpoint 决定协议族：chat(/v1/chat/completions) | messages(/v1/messages) | responses(/v1/responses)。
 type Route struct {

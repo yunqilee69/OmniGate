@@ -17,6 +17,7 @@
 # Build artifacts
 /omnigate
 /omnigate-*
+/cmd/omnigate/omnigate
 
 # Frontend deps (pnpm-lock + src 仍入仓)
 /web/node_modules/

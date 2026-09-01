@@ -156,12 +156,29 @@ func KeyAvailable(k store.ApiKey, now time.Time) bool {
 	}
 }
 
-func availableKeys(keys []store.ApiKey, tried map[int64]bool, now time.Time) []store.ApiKey {
+func (s *Selector) availableKeys(modelID int64, keys []store.ApiKey, tried map[int64]bool, now time.Time) []store.ApiKey {
 	out := make([]store.ApiKey, 0, len(keys))
 	for _, k := range keys {
-		if !tried[k.ID] && KeyAvailable(k, now) {
-			out = append(out, k)
+		if tried[k.ID] || !KeyAvailable(k, now) {
+			continue
 		}
+		// 检查模型-密钥组合是否被禁用
+		var ban store.ModelKeyBan
+		err := s.db.DB.Where("model_id = ? AND key_id = ?", modelID, k.ID).First(&ban).Error
+		if err == nil {
+			// 找到禁用记录
+			if ban.Status == "perm_banned" {
+				continue // 永久禁用，跳过
+			}
+			if ban.Status == "temp_banned" && ban.BannedUntil > now.Unix() {
+				continue // 临时禁用且未过期，跳过
+			}
+			// 临时禁用已过期，删除记录并允许使用
+			if ban.Status == "temp_banned" && ban.BannedUntil <= now.Unix() {
+				s.db.DB.Delete(&ban)
+			}
+		}
+		out = append(out, k)
 	}
 	return out
 }
@@ -220,7 +237,7 @@ func (s *Selector) pick(snap *Snapshot, tried map[int64]bool, now time.Time, pre
 		if _, hasProvider := snap.Providers[m.ProviderID]; !hasProvider {
 			continue
 		}
-		if ks := availableKeys(snap.Keys[m.ID], tried, now); len(ks) > 0 {
+		if ks := s.availableKeys(m.ID, snap.Keys[m.ID], tried, now); len(ks) > 0 {
 			if preferModel != 0 && m.ID == preferModel {
 				key := ks[s.nextRR(m.ID, len(ks))]
 				return Attempt{Model: m, Provider: snap.Providers[m.ProviderID], Key: key}, true
@@ -377,7 +394,7 @@ func (s *Selector) LoadSnapshotByModel(modelID int64) (*Snapshot, bool, error) {
 // PickForModel 在单模型快照内选 key（探测用；轮询语义与 Pick 第二级一致）。
 func (s *Selector) PickForModel(snap *Snapshot, now time.Time) (Attempt, bool) {
 	m := snap.Targets[0].ModelID
-	keys := availableKeys(snap.Keys[m], nil, now)
+	keys := s.availableKeys(m, snap.Keys[m], nil, now)
 	if len(keys) == 0 {
 		return Attempt{}, false
 	}
@@ -393,7 +410,7 @@ type BackendStatus struct {
 	RetryAfter int64  `json:"retry_after_s,omitempty"`
 }
 
-func BackendStatuses(snap *Snapshot, now time.Time) []BackendStatus {
+func (s *Selector) BackendStatuses(snap *Snapshot, now time.Time) []BackendStatus {
 	out := make([]BackendStatus, 0, len(snap.Targets))
 	for _, t := range snap.Targets {
 		m, ok := snap.Models[t.ModelID]
@@ -407,7 +424,7 @@ func BackendStatuses(snap *Snapshot, now time.Time) []BackendStatus {
 		case m.Status == "cooldown" && m.CooldownUntil > now.Unix():
 			bs.RetryAfter = m.CooldownUntil - now.Unix()
 		default:
-			if len(snap.Keys[m.ID]) > 0 && len(availableKeys(snap.Keys[m.ID], nil, now)) == 0 {
+			if len(snap.Keys[m.ID]) > 0 && len(s.availableKeys(m.ID, snap.Keys[m.ID], nil, now)) == 0 {
 				bs.Status = "no_available_key"
 				bs.Reason = "所有绑定密钥不可用（禁用/冷却中）"
 			}
