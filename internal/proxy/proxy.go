@@ -291,7 +291,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID)
 				}
 
-				statuses := router.BackendStatuses(snap, time.Now())
+				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
@@ -308,9 +308,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.record(res, rt)
 		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
 		last = res
-		h.writeLog(start, requestID, routeName, att, isStream,
-			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false)
+		// 只在最后一次记录 request_log（committed 或不可重试时）
 		if res.committed || !res.retryable {
+			h.writeLog(start, requestID, routeName, att, isStream,
+				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false)
 			break
 		}
 		priorFails++
@@ -319,16 +320,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"model", att.Model.Name, "key_id", att.Key.ID, "code", res.errCode)
 	}
 
+	// 如果循环结束但没有记录日志（所有尝试都失败且可重试），记录最后一次的结果
+	if last.att.Model.ID != 0 && !last.committed && last.retryable {
+		h.writeLog(start, requestID, routeName, last.att, isStream,
+			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails, last.errorBody, false)
+	}
+
 	// 亲和只在最终成功后回写：失败转移到别的模型成功时，记住的是缓存真正生效的落点。
 	if affKey != "" && last.att.Model.ID != 0 && last.status == "success" {
 		h.sel.SetAffinity(affKey, last.att.Model.ID, rt.AffinityTTL, time.Now())
 	}
 
-	if !last.committed {
-		openAIError(w, http.StatusBadGateway, "all_attempts_failed",
-			fmt.Sprintf("all attempts failed after %d retries (error sequence: %s)", priorFails, strings.Join(errCodes, " → ")), nil)
-		h.maybeCapture(requestID, routeName, reqSnap, cw)
-		return
+	if len(errCodes) > 1 {
+		slog.Info("all attempts exhausted", "route", routeName,
+			"attempts", len(errCodes), "errors", errCodes)
 	}
 	h.maybeCapture(requestID, routeName, reqSnap, cw)
 }
@@ -373,6 +378,19 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 		return res
 	}
 
+	// Debug: 记录即将发送的请求
+	if rt.DebugStreamLog {
+		slog.Info("[DEBUG] Outbound request to upstream",
+			"provider", att.Provider.Name,
+			"model", att.Model.Name,
+			"key_id", att.Key.ID,
+			"protocol", att.Model.Protocol,
+			"endpoint", adapter.endpoint(att.Provider.BaseURL),
+			"timeout_ms", att.Provider.TimeoutMs,
+			"is_stream", isStream,
+			"request_body", string(outBody))
+	}
+
 	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, adapter.endpoint(att.Provider.BaseURL), bytes.NewReader(outBody))
 	if err != nil {
 		res.errCode, res.status = "bad_upstream_url", "error"
@@ -388,8 +406,30 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 		upReq.Header.Set("Accept", "text/event-stream")
 	}
 
+	// Debug: 记录请求头（脱敏）
+	if rt.DebugStreamLog {
+		headers := make(map[string]string)
+		for k := range upReq.Header {
+			v := upReq.Header.Get(k)
+			// 脱敏敏感头
+			if strings.Contains(strings.ToLower(k), "auth") || strings.Contains(strings.ToLower(k), "key") {
+				if len(v) > 10 {
+					v = v[:10] + "..."
+				}
+			}
+			headers[k] = v
+		}
+		slog.Info("[DEBUG] Request headers", "headers", headers)
+	}
+
 	resp, err := h.clientForProvider(att.Provider.ID).Do(upReq)
 	if err != nil {
+		if rt.DebugStreamLog {
+			slog.Info("[DEBUG] Request failed",
+				"error", err.Error(),
+				"timed_out", timedOut.Load(),
+				"model", att.Model.Name)
+		}
 		res.retryable, res.status = true, "error"
 		if timedOut.Load() || errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
 			res.errCode = "timeout"
@@ -403,6 +443,20 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 		_ = resp.Body.Close()
 	}()
 
+	// Debug: 记录响应状态和头
+	if rt.DebugStreamLog {
+		headers := make(map[string]string)
+		for k := range resp.Header {
+			headers[k] = resp.Header.Get(k)
+		}
+		slog.Info("[DEBUG] Response received",
+			"status_code", resp.StatusCode,
+			"status", resp.Status,
+			"headers", headers,
+			"model", att.Model.Name,
+			"provider", att.Provider.Name)
+	}
+
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		res.httpStatus = resp.StatusCode
 		if isStream {
@@ -415,6 +469,15 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 	errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	res.errCode = strconv.Itoa(resp.StatusCode)
 	res.errorBody = captureErrBody(errBody)
+
+	// Debug: 记录错误响应体
+	if rt.DebugStreamLog {
+		slog.Info("[DEBUG] Error response body",
+			"status_code", resp.StatusCode,
+			"body", string(errBody),
+			"model", att.Model.Name)
+	}
+
 	if resp.StatusCode == 429 {
 		if ra := resp.Header.Get("Retry-After"); ra != "" {
 			if secs, convErr := strconv.Atoi(ra); convErr == nil && secs > 0 {
@@ -457,6 +520,20 @@ func (h *Handler) bufferedResponse(w http.ResponseWriter, resp *http.Response,
 		}
 		return res
 	}
+
+	// Debug: 记录非流式响应体
+	if h.rt.Snapshot().DebugStreamLog {
+		bodyPreview := string(body)
+		if len(bodyPreview) > 2000 {
+			bodyPreview = bodyPreview[:2000] + "... (truncated)"
+		}
+		slog.Info("[DEBUG] Buffered response body received",
+			"model", res.att.Model.Name,
+			"provider", res.att.Provider.Name,
+			"body_size", len(body),
+			"body", bodyPreview)
+	}
+
 	out, u, convErr := adapter.convertBuffered(body)
 	if convErr != nil {
 		res.errCode, res.status, res.retryable = "convert_error", "error", true
@@ -532,6 +609,18 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 	for {
 		n, readErr := idle.Read(buf)
 		if n > 0 {
+			// Debug模式：打印接收到的原始chunk
+			if h.rt.Snapshot().DebugStreamLog {
+				chunkPreview := string(buf[:n])
+				if len(chunkPreview) > 500 {
+					chunkPreview = chunkPreview[:500] + "... (truncated)"
+				}
+				slog.Info("[DEBUG] Stream chunk received",
+					"model", att.Model.Name,
+					"provider", att.Provider.Name,
+					"chunk_size", n,
+					"chunk_data", chunkPreview)
+			}
 			if !committed {
 				committed = true
 				stopDeadline() // 首字节已到：解除建连+首字节的 deadline，之后流交给 idle 超时
@@ -560,6 +649,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 			}
 		}
 		if readErr != nil {
+			// 先判断错误类型和最终状态，再决定是否记录日志
 			if errors.Is(readErr, io.EOF) {
 				if !passthrough {
 					for _, payload := range splitter.flush() {
@@ -593,19 +683,63 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 				}
 				res.status = "success"
 				return res
+		}
+		// 已 committed 但遇到非 EOF 错误（如 context canceled）
+		if !committed {
+			// deadline 在首字节前触发会 cancel 流：区分超时与上游建连失败
+			if timedOut.Load() {
+				res.status, res.errCode, res.retryable = "error", "timeout", true
+			} else {
+				res.status, res.errCode, res.retryable = "error", "stream_setup_failed", true
 			}
-			if !committed {
-				// deadline 在首字节前触发会 cancel 流：区分超时与上游建连失败
-				if timedOut.Load() {
-					res.status, res.errCode, res.retryable = "error", "timeout", true
-				} else {
-					res.status, res.errCode, res.retryable = "error", "stream_setup_failed", true
-				}
-				return res
-			}
-			res.status, res.errCode, res.streamBroke = "error", "stream_broken", true
-			res.usage = estimateUsage(res.promptChars, textAcc.String())
 			return res
+		}
+		
+		// 流已 committed 且遇到错误：尝试提取真实 usage，并判断是否为成功后的客户端断开
+		if passthrough {
+			scan.Finish() // 确保解析完所有已收到的数据
+		}
+		
+		// 尝试获取真实 usage
+		if u := adapter.streamUsage(); u != nil {
+			res.usage = *u
+		} else if passthrough && scan.Usage() != nil {
+			// passthrough 模式下从 scan 中获取真实 token
+			cached := 0
+			if scan.Usage().PromptTokensDetails != nil {
+				cached = scan.Usage().PromptTokensDetails.CachedTokens
+			}
+			res.usage = usageInfo{
+				prompt:     scan.Usage().PromptTokens,
+				completion: scan.Usage().CompletionTokens,
+				cached:     cached,
+				estimated:  false, // 真实值，非估算
+			}
+		} else {
+			// 无法获取真实 usage，使用估算
+			if passthrough {
+				textAcc.WriteString(scan.Text())
+			}
+			res.usage = estimateUsage(res.promptChars, textAcc.String())
+		}
+		
+		// 判断：如果已获得 usage（说明流传输完整），将 context canceled 视为成功
+		// 典型场景：客户端收到 [DONE] 后立即关闭连接
+		if res.usage.prompt > 0 || res.usage.completion > 0 {
+			res.status = "success"
+		} else {
+			// usage 缺失，确实是流中断
+			res.status, res.errCode, res.streamBroke = "error", "stream_broken", true
+			// 只记录真正的错误
+			if h.rt.Snapshot().DebugStreamLog {
+				slog.Info("[DEBUG] Stream broken",
+					"model", att.Model.Name,
+					"provider", att.Provider.Name,
+					"error", readErr.Error(),
+					"committed", committed)
+			}
+		}
+		return res
 		}
 	}
 }
@@ -864,7 +998,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID, "endpoint", endpoint)
 				}
 
-				statuses := router.BackendStatuses(snap, time.Now())
+				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
