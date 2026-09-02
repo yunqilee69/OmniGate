@@ -19,12 +19,13 @@ import (
 
 // Server 管理面 HTTP 服务。
 type Server struct {
-	store    *store.Store
-	rt       *config.RuntimeManager
-	auth     AdminAuth
-	sessions *sessionStore
-	chat     ChatPlane
-	typed    TypedPlane
+	store     *store.Store
+	rt        *config.RuntimeManager
+	auth      AdminAuth
+	sessions  *sessionStore
+	chat      ChatPlane
+	typed     TypedPlane
+	vkHandler *VirtualKeyHandler
 }
 
 // ChatPlane chat 端点族（/v1/chat/completions、/v1/messages、/v1/responses）的代理处理器集合。
@@ -43,7 +44,7 @@ type TypedPlane interface {
 // New 构造管理面服务。auth 为启动层静态鉴权配置（详见 AdminAuth）；
 // chat 为 chat 端点族处理器，typed 为 embeddings/rerank 处理器（均可为 nil，测试场景）。
 func New(st *store.Store, rt *config.RuntimeManager, auth AdminAuth, chat ChatPlane, typed TypedPlane) *Server {
-	return &Server{store: st, rt: rt, auth: auth, sessions: newSessionStore(), chat: chat, typed: typed}
+	return &Server{store: st, rt: rt, auth: auth, sessions: newSessionStore(), chat: chat, typed: typed, vkHandler: NewVirtualKeyHandler(st)}
 }
 
 // Router 组装全部 HTTP 路由。
@@ -115,10 +116,23 @@ func (s *Server) Router() http.Handler {
 				ir.Delete("/", s.deleteRoute)
 			})
 		})
+		ar.Route("/virtual-keys", func(er chi.Router) {
+			er.Get("/", s.vkHandler.List)
+			er.Post("/", s.vkHandler.Create)
+			er.Route("/{id}", func(ir chi.Router) {
+				ir.Get("/", s.vkHandler.Get)
+				ir.Put("/", s.vkHandler.Update)
+				ir.Delete("/", s.vkHandler.Delete)
+				ir.Post("/reset-budget", s.vkHandler.ResetBudget)
+				ir.Get("/reveal-key", s.vkHandler.RevealKey)
+			})
+		})
 	})
-
 	r.Route("/v1", func(vr chi.Router) {
-		vr.Use(s.v1AuthMW)
+		// 使用虚拟 key 鉴权 + 限流 + 配额中间件
+		vr.Use(VKAuthMiddleware(s.store))
+		vr.Use(VKRateLimitMiddleware(s.store))
+		vr.Use(VKBudgetMiddleware(s.store))
 		vr.Get("/models", s.v1Models)
 		if s.chat != nil {
 			vr.Post("/chat/completions", s.chat.ServeHTTP)

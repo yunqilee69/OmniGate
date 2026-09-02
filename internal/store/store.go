@@ -33,6 +33,7 @@ func Open(path string) (*Store, error) {
 		&Provider{}, &ApiKey{}, &Model{}, &ModelKey{}, &ModelKeyBan{},
 		&Route{}, &RouteTarget{}, &AppConfig{}, &RequestLog{}, &RequestAttempt{}, &ContentLog{},
 		&RequestLogDaily{},
+		&VirtualKey{}, &VKRateLimit{},
 	); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}

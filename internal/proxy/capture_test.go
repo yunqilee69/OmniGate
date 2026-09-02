@@ -12,7 +12,7 @@ import (
 
 // TestContentCaptureOffByDefault：开关关闭时不写 content_log（隐私默认）。
 func TestContentCaptureOffByDefault(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hi"}}]}`))
@@ -30,7 +30,7 @@ func TestContentCaptureOffByDefault(t *testing.T) {
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
 
-	resp := post(t, h, chatBody(false))
+	resp := postWithAuth(t, h, chatBody(false), vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("upstream call should succeed, got %d", resp.StatusCode)
 	}

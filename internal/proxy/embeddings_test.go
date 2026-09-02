@@ -50,18 +50,19 @@ func seedTypedRoute(t *testing.T, st *store.Store, baseURL string) {
 	}
 }
 
-func typedPost(t *testing.T, h http.Handler, path string, body any) *http.Response {
+func typedPost(t *testing.T, h http.Handler, path string, body any, vkToken string) *http.Response {
 	t.Helper()
 	buf, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(buf))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+vkToken)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec.Result()
 }
 
 func TestEmbeddingsProxy(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/embeddings" {
 			t.Errorf("upstream path = %s, want /v1/embeddings", r.URL.Path)
@@ -84,8 +85,7 @@ func TestEmbeddingsProxy(t *testing.T) {
 	}))
 	defer up.Close()
 	seedTypedRoute(t, st, up.URL+"/v1")
-
-	resp := typedPost(t, h, "/v1/embeddings", map[string]any{"model": "mixed", "input": "hello"})
+	resp := typedPost(t, h, "/v1/embeddings", map[string]any{"model": "mixed", "input": "hello"}, vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
@@ -110,7 +110,7 @@ func TestEmbeddingsProxy(t *testing.T) {
 }
 
 func TestRerankProxy(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/rerank" {
 			t.Errorf("upstream path = %s, want /v1/rerank", r.URL.Path)
@@ -133,7 +133,7 @@ func TestRerankProxy(t *testing.T) {
 
 	resp := typedPost(t, h, "/v1/rerank", map[string]any{
 		"model": "mixed", "query": "什么是网关", "documents": []string{"OmniGate 是网关", "无关文本"}, "top_n": 2,
-	})
+	}, vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
@@ -151,7 +151,7 @@ func TestRerankProxy(t *testing.T) {
 }
 
 func TestTypedEndpointsFilterModelType(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	var embModels []string
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -171,7 +171,7 @@ func TestTypedEndpointsFilterModelType(t *testing.T) {
 	// chat 后端权重与 embedding 相同(100)，若类型过滤失效大概率命中 chat 模型；
 	// 多次调用保证确定性排除偶然
 	for i := 0; i < 20; i++ {
-		resp := typedPost(t, h, "/v1/embeddings", map[string]any{"model": "mixed", "input": "x"})
+		resp := typedPost(t, h, "/v1/embeddings", map[string]any{"model": "mixed", "input": "x"}, vkToken)
 		if resp.StatusCode != 200 {
 			t.Fatalf("iter %d: status = %d", i, resp.StatusCode)
 		}
@@ -197,7 +197,7 @@ func TestTypedEndpointsFilterModelType(t *testing.T) {
 	st.DB.Create(&r2)
 	st.DB.Create(&store.RouteTarget{RouteID: r2.ID, ModelID: mc.ID, Weight: 1})
 
-	resp := typedPost(t, h, "/v1/embeddings", map[string]any{"model": "chatonly", "input": "x"})
+	resp := typedPost(t, h, "/v1/embeddings", map[string]any{"model": "chatonly", "input": "x"}, vkToken)
 	if resp.StatusCode != 503 {
 		t.Fatalf("chat-only route on embeddings: status = %d, want 503", resp.StatusCode)
 	}
@@ -208,14 +208,14 @@ func TestTypedEndpointsFilterModelType(t *testing.T) {
 }
 
 func TestTypedEndpointValidation(t *testing.T) {
-	_, h := newTestStack(t)
-	if resp := typedPost(t, h, "/v1/embeddings", map[string]any{"input": "x"}); resp.StatusCode != 400 {
+	_, h, vkToken := newTestStackWithVK(t)
+	if resp := typedPost(t, h, "/v1/embeddings", map[string]any{"input": "x"}, vkToken); resp.StatusCode != 400 {
 		t.Errorf("missing model: status = %d", resp.StatusCode)
 	}
-	if resp := typedPost(t, h, "/v1/rerank", map[string]any{"model": "nope", "query": "q"}); resp.StatusCode != 404 {
+	if resp := typedPost(t, h, "/v1/rerank", map[string]any{"model": "nope", "query": "q"}, vkToken); resp.StatusCode != 404 {
 		t.Errorf("unknown route: status = %d", resp.StatusCode)
 	}
-	if resp := typedPost(t, h, "/v1/embeddings", "not-json"); resp.StatusCode != 400 {
+	if resp := typedPost(t, h, "/v1/embeddings", "not-json", vkToken); resp.StatusCode != 400 {
 		t.Errorf("bad json: status = %d", resp.StatusCode)
 	}
 }

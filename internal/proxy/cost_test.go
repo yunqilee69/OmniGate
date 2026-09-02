@@ -46,12 +46,12 @@ func usageUpstream(prompt, completion int) *httptest.Server {
 	}))
 }
 
-func postChat(t *testing.T, h http.Handler, model string) {
+func postChat(t *testing.T, h http.Handler, model string, vkToken string) {
 	t.Helper()
-	resp := post(t, h, map[string]any{
+	resp := postWithAuth(t, h, map[string]any{
 		"model":    model,
 		"messages": []map[string]any{{"role": "user", "content": "hi"}},
-	})
+	}, vkToken)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expect 200, got %d", resp.StatusCode)
@@ -69,13 +69,13 @@ func approxEq(a, b float64) bool {
 // CNY 定价模型按快照汇率折算为 USD 入库：输入 7.25/输出 14.5 CNY、100/50 token
 // → 原始 0.00145 CNY → 默认汇率 7.25 下 USD 成本恰为 0.0002。
 func TestCostCNYConversion(t *testing.T) {
-	st, rtm := newStackWithRTM(t)
+	st, rtm, vkToken := newStackWithRTMAndVK(t)
 	h := hWithRTM(st, rtm)
 	up := usageUpstream(100, 50)
 	defer up.Close()
 	seedCostTarget(t, st, up.URL, "cc", 7.25, 14.5, "CNY")
 
-	postChat(t, h, "cc")
+	postChat(t, h, "cc", vkToken)
 	ls := logs(t, st)
 	if len(ls) != 1 {
 		t.Fatalf("expect 1 log, got %d", len(ls))
@@ -88,7 +88,7 @@ func TestCostCNYConversion(t *testing.T) {
 	if err := rtm.Update(map[string]json.RawMessage{"pricing.usd_cny": json.RawMessage("2")}); err != nil {
 		t.Fatalf("update rate: %v", err)
 	}
-	postChat(t, h, "cc")
+	postChat(t, h, "cc", vkToken)
 	ls = logs(t, st)
 	if !approxEq(ls[len(ls)-1].Cost, 0.000725) {
 		t.Fatalf("cost should follow updated rate, got %v", ls[len(ls)-1].Cost)
@@ -97,13 +97,13 @@ func TestCostCNYConversion(t *testing.T) {
 
 // USD 定价（含历史模型缺省值）不折算。
 func TestCostUSDUntouched(t *testing.T) {
-	st, rtm := newStackWithRTM(t)
+	st, rtm, vkToken := newStackWithRTMAndVK(t)
 	h := hWithRTM(st, rtm)
 	up := usageUpstream(12, 6)
 	defer up.Close()
 	seedCostTarget(t, st, up.URL, "cu", 10, 20, "USD")
 
-	postChat(t, h, "cu")
+	postChat(t, h, "cu", vkToken)
 	ls := logs(t, st)
 	if !approxEq(ls[0].Cost, (12*10+6*20)/1e6) {
 		t.Fatalf("USD cost should stay raw, got %v", ls[0].Cost)
@@ -111,7 +111,7 @@ func TestCostUSDUntouched(t *testing.T) {
 
 	// 缺省币种（历史行）等价 USD
 	seedCostTarget(t, st, up.URL, "cd", 10, 20, "")
-	postChat(t, h, "cd")
+	postChat(t, h, "cd", vkToken)
 	ls = logs(t, st)
 	if !approxEq(ls[len(ls)-1].Cost, (12*10+6*20)/1e6) {
 		t.Fatalf("default currency should be USD, got %v", ls[len(ls)-1].Cost)

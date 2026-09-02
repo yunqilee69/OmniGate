@@ -19,6 +19,11 @@ import (
 )
 
 func newTestStack(t *testing.T) (*store.Store, http.Handler) {
+	st, h, _ := newTestStackWithVK(t)
+	return st, h
+}
+
+func newTestStackWithVK(t *testing.T) (*store.Store, http.Handler, string) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "proxy.db"))
 	if err != nil {
@@ -29,7 +34,22 @@ func newTestStack(t *testing.T) (*store.Store, http.Handler) {
 	if err != nil {
 		t.Fatalf("init runtime: %v", err)
 	}
-	return st, api.New(st, rt, api.AdminAuth{}, proxy.New(st, rt), proxy.New(st, rt)).Router()
+	
+	// 为测试创建一个无限制的虚拟 key
+	vk := &store.VirtualKey{
+		Name:          "test-key",
+		Status:        "active",
+		RPMLimit:      0, // 无限制
+		TPMLimit:      0,
+		BudgetUSD:     0,
+		BudgetReset:   "never",
+		AllowedModels: "[]", // 允许所有模型
+	}
+	if err := st.CreateVirtualKey(vk); err != nil {
+		t.Fatalf("create test virtual key: %v", err)
+	}
+	
+	return st, api.New(st, rt, api.AdminAuth{}, proxy.New(st, rt), proxy.New(st, rt)).Router(), vk.KeyValue
 }
 
 func chatBody(stream bool) map[string]any {
@@ -41,10 +61,17 @@ func chatBody(stream bool) map[string]any {
 }
 
 func post(t *testing.T, h http.Handler, body any) *http.Response {
+	return postWithAuth(t, h, body, "")
+}
+
+func postWithAuth(t *testing.T, h http.Handler, body any, vkToken string) *http.Response {
 	t.Helper()
 	buf, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(buf))
 	req.Header.Set("Content-Type", "application/json")
+	if vkToken != "" {
+		req.Header.Set("Authorization", "Bearer "+vkToken)
+	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec.Result()
@@ -60,7 +87,7 @@ func logs(t *testing.T, st *store.Store) []store.RequestLog {
 }
 
 func TestNonStreamRoutingAndStats(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	upA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
 		time.Sleep(2 * time.Millisecond)
@@ -99,7 +126,7 @@ func TestNonStreamRoutingAndStats(t *testing.T) {
 	counts := map[string]int{}
 	const n = 1000
 	for i := 0; i < n; i++ {
-		resp := post(t, h, chatBody(false))
+		resp := postWithAuth(t, h, chatBody(false), vkToken)
 		if resp.StatusCode != 200 {
 			t.Fatalf("status %d", resp.StatusCode)
 		}
@@ -145,7 +172,7 @@ func TestNonStreamRoutingAndStats(t *testing.T) {
 }
 
 func TestStreamPassthroughAndUsage(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -186,7 +213,7 @@ func TestStreamPassthroughAndUsage(t *testing.T) {
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
 
-	resp := post(t, h, chatBody(true))
+	resp := postWithAuth(t, h, chatBody(true), vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -216,7 +243,7 @@ func TestStreamPassthroughAndUsage(t *testing.T) {
 }
 
 func TestStreamEstimationWithoutUsage(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"abcdefgh\"}}]}\n\n")
@@ -235,7 +262,7 @@ func TestStreamEstimationWithoutUsage(t *testing.T) {
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
 
-	resp := post(t, h, chatBody(true))
+	resp := postWithAuth(t, h, chatBody(true), vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -250,7 +277,7 @@ func TestStreamEstimationWithoutUsage(t *testing.T) {
 }
 
 func TestFailoverOn500(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(500)
 		fmt.Fprint(w, `{"error":"boom"}`)
@@ -282,7 +309,7 @@ func TestFailoverOn500(t *testing.T) {
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: mBad.ID, Weight: 999})
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: mGood.ID, Weight: 1})
 
-	resp := post(t, h, chatBody(false))
+	resp := postWithAuth(t, h, chatBody(false), vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("failover should succeed, got %d", resp.StatusCode)
 	}
@@ -303,7 +330,7 @@ func TestFailoverOn500(t *testing.T) {
 }
 
 func TestAllAttemptsFail(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(500)
 		fmt.Fprint(w, `{"error":"down"}`)
@@ -323,7 +350,7 @@ func TestAllAttemptsFail(t *testing.T) {
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
 
-	resp := post(t, h, chatBody(false))
+	resp := postWithAuth(t, h, chatBody(false), vkToken)
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("expect 502, got %d", resp.StatusCode)
 	}
@@ -339,7 +366,7 @@ func TestAllAttemptsFail(t *testing.T) {
 }
 
 func TestTimeoutTransfer(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(500 * time.Millisecond)
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"late"}}]}`)
@@ -371,7 +398,7 @@ func TestTimeoutTransfer(t *testing.T) {
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: mSlow.ID, Weight: 999})
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: mFast.ID, Weight: 1})
 
-	resp := post(t, h, chatBody(false))
+	resp := postWithAuth(t, h, chatBody(false), vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("timeout should transfer to fast, got %d", resp.StatusCode)
 	}
@@ -389,7 +416,7 @@ func TestTimeoutTransfer(t *testing.T) {
 }
 
 func TestAllBackendsUnavailable(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	p := store.Provider{Name: "zhipu", BaseURL: "http://127.0.0.1:1"}
 	st.DB.Create(&p)
 	m := store.Model{ProviderID: p.ID, Name: "m0", Status: "disabled", DisableReason: "连续3次超时"}
@@ -398,7 +425,7 @@ func TestAllBackendsUnavailable(t *testing.T) {
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
 
-	resp := post(t, h, chatBody(false))
+	resp := postWithAuth(t, h, chatBody(false), vkToken)
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("expect 503, got %d", resp.StatusCode)
 	}
@@ -417,7 +444,7 @@ func TestAllBackendsUnavailable(t *testing.T) {
 }
 
 func TestClientErrorPassthrough(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(400)
 		w.Header().Set("Content-Type", "application/json")
@@ -436,7 +463,7 @@ func TestClientErrorPassthrough(t *testing.T) {
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
 
-	resp := post(t, h, chatBody(false))
+	resp := postWithAuth(t, h, chatBody(false), vkToken)
 	if resp.StatusCode != 400 {
 		t.Fatalf("expect 400 passthrough, got %d", resp.StatusCode)
 	}
@@ -447,10 +474,10 @@ func TestClientErrorPassthrough(t *testing.T) {
 }
 
 func TestUnknownRoute(t *testing.T) {
-	_, h := newTestStack(t)
+	_, h, vkToken := newTestStackWithVK(t)
 	body := chatBody(false)
 	body["model"] = "nope"
-	resp := post(t, h, body)
+	resp := postWithAuth(t, h, body, vkToken)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expect 404, got %d", resp.StatusCode)
 	}
@@ -472,7 +499,7 @@ func setupSingleUpstream(t *testing.T, st *store.Store, url string, timeoutMs in
 
 // 流式请求：响应头已到但首字节数据慢于 provider 超时 → 必须记为 timeout（而非 stream_setup_failed）
 func TestStreamFirstByteTimeout(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -484,7 +511,7 @@ func TestStreamFirstByteTimeout(t *testing.T) {
 	defer up.Close()
 	setupSingleUpstream(t, st, up.URL, 80)
 
-	resp := post(t, h, chatBody(true))
+	resp := postWithAuth(t, h, chatBody(true), vkToken)
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("expect 502 after timeout exhaustion, got %d", resp.StatusCode)
 	}
@@ -501,7 +528,7 @@ func TestStreamFirstByteTimeout(t *testing.T) {
 
 // 流式请求：首字节立即到达后，总时长超过 provider 超时的长流必须存活到完成
 func TestStreamLongOutputSurvivesTimeout(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
@@ -516,7 +543,7 @@ func TestStreamLongOutputSurvivesTimeout(t *testing.T) {
 	defer up.Close()
 	setupSingleUpstream(t, st, up.URL, 250)
 
-	resp := post(t, h, chatBody(true))
+	resp := postWithAuth(t, h, chatBody(true), vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("long stream should survive, got %d", resp.StatusCode)
 	}
@@ -540,7 +567,7 @@ func TestStreamLongOutputSurvivesTimeout(t *testing.T) {
 
 // 非流式请求：响应头已到但 body 慢于 provider 超时 → 必须记为 timeout（而非 read_error）
 func TestNonStreamBodyTimeout(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -551,7 +578,7 @@ func TestNonStreamBodyTimeout(t *testing.T) {
 	defer up.Close()
 	setupSingleUpstream(t, st, up.URL, 80)
 
-	resp := post(t, h, chatBody(false))
+	resp := postWithAuth(t, h, chatBody(false), vkToken)
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("expect 502 after timeout exhaustion, got %d", resp.StatusCode)
 	}

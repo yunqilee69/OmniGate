@@ -105,13 +105,13 @@ func (s *Server) validateTargets(endpoint string, targets []routeTargetReq) (boo
 		return false, err.Error()
 	}
 	if len(models) != len(ids) {
-		return false, "one or more target models do not exist"
+		return false, "部分目标模型不存在"
 	}
 	
 	expectedProtocol := endpointToProtocol(endpoint)
 	for _, m := range models {
 		if m.Protocol != expectedProtocol {
-			return false, "model '" + m.Name + "' has protocol '" + m.Protocol + "' but route endpoint '" + endpoint + "' requires '" + expectedProtocol + "'"
+			return false, "模型 '" + m.Name + "' 使用协议 '" + m.Protocol + "'，但路由端点 '" + endpoint + "' 需要协议 '" + expectedProtocol + "'"
 		}
 	}
 	return true, ""

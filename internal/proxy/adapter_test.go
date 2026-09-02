@@ -58,20 +58,20 @@ func anthropicUpstream(t *testing.T, gotReq *map[string]any, gotAuth *string) *h
 }
 
 func TestAnthropicBufferedConversion(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	var gotReq map[string]any
 	var gotAuth string
 	up := anthropicUpstream(t, &gotReq, &gotAuth)
 	defer up.Close()
 	seedProtocolModel(t, st, up.URL, "claude-sonnet-4", "anthropic")
 
-	resp := post(t, h, map[string]any{
+	resp := postWithAuth(t, h, map[string]any{
 		"model": "claude-sonnet-4-route",
 		"messages": []map[string]any{
 			{"role": "system", "content": "你是助手"},
 			{"role": "user", "content": "hi"},
 		},
-	})
+	}, vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -103,17 +103,17 @@ func TestAnthropicBufferedConversion(t *testing.T) {
 }
 
 func TestAnthropicStreamConversion(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	var gotReq map[string]any
 	var gotAuth string
 	up := anthropicUpstream(t, &gotReq, &gotAuth)
 	defer up.Close()
 	seedProtocolModel(t, st, up.URL, "claude-sonnet-4", "anthropic")
 
-	resp := post(t, h, map[string]any{
+	resp := postWithAuth(t, h, map[string]any{
 		"model": "claude-sonnet-4-route", "stream": true,
 		"messages": []map[string]any{{"role": "user", "content": "hi"}},
-	})
+	}, vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -167,18 +167,18 @@ func responsesUpstream(t *testing.T, gotReq *map[string]any, gotPath *string) *h
 }
 
 func TestResponsesBufferedConversion(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	var gotReq map[string]any
 	var gotPath string
 	up := responsesUpstream(t, &gotReq, &gotPath)
 	defer up.Close()
 	seedProtocolModel(t, st, up.URL, "gpt-5", "responses")
 
-	resp := post(t, h, map[string]any{
+	resp := postWithAuth(t, h, map[string]any{
 		"model":      "gpt-5-route",
 		"max_tokens": 777,
 		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
-	})
+	}, vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -199,17 +199,17 @@ func TestResponsesBufferedConversion(t *testing.T) {
 }
 
 func TestResponsesStreamConversion(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	var gotReq map[string]any
 	var gotPath string
 	up := responsesUpstream(t, &gotReq, &gotPath)
 	defer up.Close()
 	seedProtocolModel(t, st, up.URL, "gpt-5", "responses")
 
-	resp := post(t, h, map[string]any{
+	resp := postWithAuth(t, h, map[string]any{
 		"model": "gpt-5-route", "stream": true,
 		"messages": []map[string]any{{"role": "user", "content": "hi"}},
-	})
+	}, vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}

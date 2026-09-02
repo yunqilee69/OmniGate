@@ -101,6 +101,42 @@ type AppConfig struct {
 	Value string `json:"value" gorm:"not null"`
 }
 
+// VirtualKey 虚拟密钥（消费者凭证）。客户端使用虚拟 key 访问网关，网关负责限流、配额控制和转发。
+type VirtualKey struct {
+	ID     int64  `gorm:"primaryKey;autoIncrement"`
+	KeyValue string `gorm:"uniqueIndex;not null" json:"-"` // vk-xxx 格式
+	Name   string `gorm:"not null"`
+	Status string `gorm:"not null;default:active"` // active | disabled
+
+	// 限流
+	RPMLimit int64 `gorm:"not null;default:0"` // 0=不限制
+	TPMLimit int64 `gorm:"not null;default:0"` // 0=不限制
+
+	// 配额
+	BudgetUSD   float64 `gorm:"not null;default:0"`    // 0=不限制
+	UsedUSD     float64 `gorm:"not null;default:0"`
+	BudgetReset string  `gorm:"not null;default:''"` // daily | monthly | never
+	ResetAt     int64   `gorm:"not null;default:0"`  // 下次重置时间戳
+
+	// 访问控制
+	AllowedModels string `gorm:"not null;default:''"` // JSON 数组,空=全部
+
+	// 统计
+	TotalRequests int64 `gorm:"not null;default:0"`
+	LastUsedAt    int64 `gorm:"not null;default:0"`
+
+	CreatedAt int64 `gorm:"autoCreateTime"`
+	UpdatedAt int64 `gorm:"autoUpdateTime"`
+}
+
+// VKRateLimit 虚拟 key 限流窗口（滑动窗口计数，按分钟聚合）。
+type VKRateLimit struct {
+	VKId        int64 `gorm:"primaryKey;not null"`
+	WindowStart int64 `gorm:"primaryKey;not null"` // 窗口起始时间戳(秒)
+	Requests    int64 `gorm:"not null;default:0"`
+	Tokens      int64 `gorm:"not null;default:0"`
+}
+
 func (AppConfig) TableName() string { return "app_config" }
 
 // RequestLog 请求日志（统计事实表，只增不改；表结构上不存在任何请求内容字段）。

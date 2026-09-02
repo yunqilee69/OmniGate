@@ -16,7 +16,7 @@ import (
 	"github.com/cloudomni/omnigate/internal/store"
 )
 
-func newTestServerWithStore(t *testing.T) (http.Handler, *store.Store) {
+func newTestServerWithStore(t *testing.T) (http.Handler, *store.Store, string) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	st, err := store.Open(dbPath)
@@ -28,13 +28,28 @@ func newTestServerWithStore(t *testing.T) (http.Handler, *store.Store) {
 	if err != nil {
 		t.Fatalf("init runtime config: %v", err)
 	}
-	return New(st, rt, AdminAuth{Username: "admin", Password: "test-token"}, nil, nil).Router(), st
+	
+	// 创建测试虚拟 key
+	vk := &store.VirtualKey{
+		Name:          "test-vk",
+		Status:        "active",
+		RPMLimit:      0,
+		TPMLimit:      0,
+		BudgetUSD:     0,
+		BudgetReset:   "never",
+		AllowedModels: "[]",
+	}
+	if err := st.CreateVirtualKey(vk); err != nil {
+		t.Fatal(err)
+	}
+	
+	return New(st, rt, AdminAuth{Username: "admin", Password: "test-token"}, nil, nil).Router(), st, vk.KeyValue
 }
 
-func newTestServer(t *testing.T) http.Handler {
+func newTestServer(t *testing.T) (http.Handler, string) {
 	t.Helper()
-	h, _ := newTestServerWithStore(t)
-	return h
+	h, _, vk := newTestServerWithStore(t)
+	return h, vk
 }
 
 func do(t *testing.T, h http.Handler, method, path string, body any, token string) *httptest.ResponseRecorder {
@@ -50,6 +65,24 @@ func do(t *testing.T, h http.Handler, method, path string, body any, token strin
 	if token != "" {
 		// 测试服务器凭据为 admin:<token>，走管理面 Basic 通道
 		req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:"+token)))
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func doV1(t *testing.T, h http.Handler, method, path string, body any, vkToken string) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		if err := json.NewEncoder(&buf).Encode(body); err != nil {
+			t.Fatalf("encode body: %v", err)
+		}
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	req.Header.Set("Content-Type", "application/json")
+	if vkToken != "" {
+		req.Header.Set("Authorization", "Bearer "+vkToken)
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -85,7 +118,7 @@ func idOf(t *testing.T, body map[string]any) int64 {
 
 // TestM1FullFlow 覆盖 M1 验收标准：实体全链路配置 + 保存即生效 + 鉴权 + 级联删除。
 func TestM1FullFlow(t *testing.T) {
-	h := newTestServer(t)
+	h, _, vkToken := newTestServerWithStore(t)
 
 	// --- 鉴权 ---
 	if rec := do(t, h, "GET", "/api/providers", nil, ""); rec.Code != http.StatusUnauthorized {
@@ -237,7 +270,7 @@ func TestM1FullFlow(t *testing.T) {
 	}
 
 	// --- /v1/models 返回逻辑路由名（Basic 凭据走代理面通道） ---
-	v1 := decodeObj(t, do(t, h, "GET", "/v1/models", nil, "test-token"))
+	v1 := decodeObj(t, doV1(t, h, "GET", "/v1/models", nil, vkToken))
 	v1data := v1["data"].([]any)
 	if len(v1data) != 1 || v1data[0].(map[string]any)["id"] != "glm-pool" {
 		t.Fatalf("v1/models wrong: %v", v1)
@@ -316,7 +349,7 @@ func TestM1FullFlow(t *testing.T) {
 }
 
 func TestProviderProxyURLIsPersisted(t *testing.T) {
-	h, st := newTestServerWithStore(t)
+	h, st, _ := newTestServerWithStore(t)
 
 	proxyURL := "http://proxy-user:proxy-pass@127.0.0.1:8080"
 	rec := do(t, h, "POST", "/api/providers", map[string]any{
@@ -364,7 +397,7 @@ func indexOf(s, sub string) int {
 
 // TestBreakdownKeyDimMaskedLabel 密钥回显链路须带名称与脱敏标签（裸 key#id 不可辨识密钥）
 func TestBreakdownKeyDimMaskedLabel(t *testing.T) {
-	h, st := newTestServerWithStore(t)
+	h, st, _ := newTestServerWithStore(t)
 
 	prov := store.Provider{Name: "zhipu", BaseURL: "https://api.example.com", Protocol: "openai"}
 	if err := st.DB.Create(&prov).Error; err != nil {
@@ -419,7 +452,7 @@ func TestBreakdownKeyDimMaskedLabel(t *testing.T) {
 
 // TestStatsEmptyDBNoNullPanic 回归：空库时 SUM 返回 NULL 不得导致 Scan 报错
 func TestStatsEmptyDBNoNullPanic(t *testing.T) {
-	h := newTestServer(t)
+	h, _ := newTestServer(t)
 	rec := do(t, h, "GET", "/api/stats/overview", nil, "test-token")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("overview on empty db: %d — %s", rec.Code, rec.Body.String())
@@ -440,7 +473,7 @@ func TestStatsEmptyDBNoNullPanic(t *testing.T) {
 
 // TestEmptyKeysNotNullArray 回归：空密钥列表必须序列化为 [] 而非 null（前端 .length 会崩）
 func TestEmptyKeysNotNullArray(t *testing.T) {
-	h := newTestServer(t)
+	h, _ := newTestServer(t)
 	rec := do(t, h, "GET", "/api/keys", nil, "test-token")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list keys on empty db: %d — %s", rec.Code, rec.Body.String())
@@ -452,7 +485,7 @@ func TestEmptyKeysNotNullArray(t *testing.T) {
 
 // TestModelRequiresKeys 回归：模型必须绑定至少一个密钥
 func TestModelRequiresKeys(t *testing.T) {
-	h := newTestServer(t)
+	h, _ := newTestServer(t)
 	do(t, h, "POST", "/api/providers", map[string]any{"name": "zhipu", "base_url": "https://x"}, "test-token")
 	rec := do(t, h, "POST", "/api/models", map[string]any{
 		"provider_id": 1, "name": "no-key", "key_ids": []int64{},
@@ -463,7 +496,7 @@ func TestModelRequiresKeys(t *testing.T) {
 }
 
 func TestModelTypeValidation(t *testing.T) {
-	h := newTestServer(t)
+	h, _ := newTestServer(t)
 	do(t, h, "POST", "/api/providers", map[string]any{"name": "zhipu", "base_url": "https://x"}, "test-token")
 	do(t, h, "POST", "/api/keys", map[string]any{"provider_id": 1, "key_value": "sk-zzzz1111", "name": "k1"}, "test-token")
 
@@ -504,7 +537,7 @@ func TestModelTypeValidation(t *testing.T) {
 }
 
 func TestMaintenanceCleanup(t *testing.T) {
-	h, st := newTestServerWithStore(t)
+	h, st, _ := newTestServerWithStore(t)
 	rec := do(t, h, "PUT", "/api/settings",
 		map[string]any{"log.retention_days": 5, "capture.retention_days": 5}, "test-token")
 	if rec.Code != http.StatusOK {
@@ -552,7 +585,7 @@ func TestMaintenanceCleanup(t *testing.T) {
 }
 
 func TestMaintenanceClearStatsRequiresConfirm(t *testing.T) {
-	h, st := newTestServerWithStore(t)
+	h, st, _ := newTestServerWithStore(t)
 	now := time.Now().Unix()
 	for i := 0; i < 2; i++ {
 		if err := st.DB.Create(&store.RequestLog{
@@ -594,7 +627,7 @@ func TestMaintenanceClearStatsRequiresConfirm(t *testing.T) {
 }
 
 func TestStatsErrorCodeBreakdown(t *testing.T) {
-	h, st := newTestServerWithStore(t)
+	h, st, _ := newTestServerWithStore(t)
 	now := time.Now().Unix()
 	rows := []store.RequestLog{
 		{RequestID: "s1", Route: "r", Model: "m", Provider: "p", Status: "success", CreatedAt: now},
@@ -629,7 +662,7 @@ func TestStatsErrorCodeBreakdown(t *testing.T) {
 }
 
 func TestStatsTimeseriesAvgTotal(t *testing.T) {
-	h, st := newTestServerWithStore(t)
+	h, st, _ := newTestServerWithStore(t)
 	now := time.Now().Unix()
 	rows := []store.RequestLog{
 		{RequestID: "a", Route: "r", Model: "m", Provider: "p", Status: "success",
@@ -662,7 +695,7 @@ func TestStatsTimeseriesAvgTotal(t *testing.T) {
 }
 
 func TestStatsTimeseriesIncludesMetricsAndFiltersProvider(t *testing.T) {
-	h, st := newTestServerWithStore(t)
+	h, st, _ := newTestServerWithStore(t)
 	from, to := int64(1700000000), int64(1700003600)
 	rows := []store.RequestLog{
 		{RequestID: "provider-a-success", Route: "r", Model: "m", Provider: "provider-a", Status: "success",
@@ -699,7 +732,7 @@ func TestStatsTimeseriesIncludesMetricsAndFiltersProvider(t *testing.T) {
 
 // TestModelPriceCurrency 模型价格币种：创建回显、非法值 400、更新生效。
 func TestModelPriceCurrency(t *testing.T) {
-	h := newTestServer(t)
+	h, _ := newTestServer(t)
 	rec := do(t, h, "POST", "/api/providers", map[string]any{"name": "cc-prov", "base_url": "https://x"}, "test-token")
 	provID := idOf(t, decodeObj(t, rec))
 	rec = do(t, h, "POST", "/api/keys", map[string]any{"provider_id": provID, "key_value": "sk-cc1111", "name": "k1"}, "test-token")
@@ -731,7 +764,7 @@ func TestModelPriceCurrency(t *testing.T) {
 
 // TestPricingSetting 汇率配置：默认值可见、合法值热更新、非法值拒绝。
 func TestPricingSetting(t *testing.T) {
-	h := newTestServer(t)
+	h, _ := newTestServer(t)
 	settings := decodeObj(t, do(t, h, "GET", "/api/settings", nil, "test-token"))
 	if _, ok := settings["pricing.usd_cny"]; !ok {
 		t.Fatal("settings should expose pricing.usd_cny")
@@ -752,7 +785,7 @@ func TestPricingSetting(t *testing.T) {
 
 // TestStatsCurrencyParam currency=CNY 时统计费用按快照汇率放大（rollup 与 raw 双路径一致）。
 func TestStatsCurrencyParam(t *testing.T) {
-	h, st := newTestServerWithStore(t)
+	h, st, _ := newTestServerWithStore(t)
 	now := time.Now().Unix()
 	for i := 0; i < 2; i++ {
 		entry := store.RequestLog{
@@ -788,7 +821,7 @@ func TestStatsCurrencyParam(t *testing.T) {
 
 // TestModelTestKeysEndpoint 逐密钥测试端点：好/坏 key 并存，各自出结果。
 func TestModelTestKeysEndpoint(t *testing.T) {
-	h := newTestServer(t)
+	h, _ := newTestServer(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.Header.Get("Authorization"), "sk-bad") {
 			w.WriteHeader(http.StatusUnauthorized)

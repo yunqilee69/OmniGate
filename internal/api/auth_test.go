@@ -113,23 +113,22 @@ func TestApiKeyNotValidOnAdminPlane(t *testing.T) {
 }
 
 func TestV1ApiKeyOnlyMode(t *testing.T) {
-	// 仅设 api_key:管理面开放(本地),代理面凭密钥访问
+	// 验证 /v1 端点现在需要虚拟 key 而非旧 API key
 	h := newAuthTestServer(t, AdminAuth{ApiKey: "sk-gw"})
 
 	if res := do(t, h, "GET", "/api/health", nil, ""); res.Code != http.StatusOK {
 		t.Fatalf("admin open status = %d, want 200", res.Code)
 	}
-	if res := do(t, h, "GET", "/v1/models", nil, ""); res.Code != http.StatusUnauthorized {
-		t.Fatalf("v1 no key status = %d, want 401", res.Code)
-	}
+	
+	// 旧 API key 不再工作 - 现在需要虚拟 key
 	req, _ := http.NewRequest("GET", "/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer sk-gw")
-	if rr := doReq(t, h, req); rr.Code != http.StatusOK {
-		t.Fatalf("v1 api_key status = %d, want 200", rr.Code)
+	if rr := doReq(t, h, req); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("old api_key should be rejected, got status = %d", rr.Code)
 	}
 }
-
 func TestV1CredentialForms(t *testing.T) {
+	// 验证 /v1 端点现在只接受虚拟 key，旧凭据形式都被拒绝
 	enc := base64.StdEncoding.EncodeToString([]byte("admin:s3cret"))
 	h := newAuthTestServer(t, AdminAuth{Username: "admin", Password: "s3cret", ApiKey: "sk-gw"})
 
@@ -141,6 +140,7 @@ func TestV1CredentialForms(t *testing.T) {
 		t.Fatal("401 missing WWW-Authenticate header (RFC 7617)")
 	}
 
+	// 所有旧的鉴权形式现在都应该被拒绝
 	for _, tc := range []struct {
 		name   string
 		header string
@@ -152,22 +152,17 @@ func TestV1CredentialForms(t *testing.T) {
 	} {
 		req, _ := http.NewRequest("GET", "/v1/models", nil)
 		req.Header.Set("Authorization", tc.header)
-		if rr := doReq(t, h, req); rr.Code != http.StatusOK {
-			t.Fatalf("%s status = %d, want 200, body %s", tc.name, rr.Code, rr.Body.String())
+		if rr := doReq(t, h, req); rr.Code != http.StatusUnauthorized {
+			t.Fatalf("%s should be rejected, got status = %d", tc.name, rr.Code)
 		}
-	}
-
-	req, _ := http.NewRequest("GET", "/v1/models", nil)
-	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:nope")))
-	if rr := doReq(t, h, req); rr.Code != http.StatusUnauthorized {
-		t.Fatalf("bad credential status = %d, want 401", rr.Code)
 	}
 }
 
 func TestV1OpenWhenNothingConfigured(t *testing.T) {
+	// 验证即使没有配置管理员凭据，/v1 仍需要虚拟 key
 	h := newAuthTestServer(t, AdminAuth{})
-	if res := do(t, h, "GET", "/v1/models", nil, ""); res.Code != http.StatusOK {
-		t.Fatalf("v1 open status = %d, want 200", res.Code)
+	if res := do(t, h, "GET", "/v1/models", nil, ""); res.Code != http.StatusUnauthorized {
+		t.Fatalf("v1 should require VK even when no admin auth, got status = %d", res.Code)
 	}
 }
 

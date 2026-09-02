@@ -48,12 +48,12 @@ func seedTwoKeys(t *testing.T, st *store.Store, url string) {
 }
 
 func TestKeyDisabledOn401ThroughProxy(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := authKeyServer(t, map[string]int{"Bearer sk-bad": 401}, "")
 	defer up.Close()
 	seedTwoKeys(t, st, up.URL)
 
-	resp := post(t, h, chatBody(false))
+	resp := postWithAuth(t, h, chatBody(false), vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("should transfer to good key, got %d", resp.StatusCode)
 	}
@@ -78,7 +78,7 @@ func TestKeyDisabledOn401ThroughProxy(t *testing.T) {
 	}
 
 	// sk-bad 已禁用：下一个请求直接走 sk-good，不再消耗重试
-	resp = post(t, h, chatBody(false))
+	resp = postWithAuth(t, h, chatBody(false), vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("second request failed: %d", resp.StatusCode)
 	}
@@ -89,12 +89,12 @@ func TestKeyDisabledOn401ThroughProxy(t *testing.T) {
 }
 
 func TestKeyCooldownOn429ThroughProxy(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := authKeyServer(t, map[string]int{"Bearer sk-bad": 429}, "7")
 	defer up.Close()
 	seedTwoKeys(t, st, up.URL)
 
-	resp := post(t, h, chatBody(false))
+	resp := postWithAuth(t, h, chatBody(false), vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("should transfer on 429, got %d", resp.StatusCode)
 	}
@@ -115,7 +115,7 @@ func TestKeyCooldownOn429ThroughProxy(t *testing.T) {
 }
 
 func TestModelBreakerEscalationThroughProxy(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := authKeyServer(t, map[string]int{}, "")
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(503)
@@ -135,7 +135,7 @@ func TestModelBreakerEscalationThroughProxy(t *testing.T) {
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: mBad.ID, Weight: 1})
 
-	if resp := post(t, h, chatBody(false)); resp.StatusCode != 502 {
+	if resp := postWithAuth(t, h, chatBody(false), vkToken); resp.StatusCode != 502 {
 		t.Fatalf("single-broken-backend expected 502, got %d", resp.StatusCode)
 	}
 	st.DB.First(&mBad, mBad.ID)
@@ -148,7 +148,7 @@ func TestModelBreakerEscalationThroughProxy(t *testing.T) {
 	}
 
 	// 冷却中：无其他后端 → 503 all_backends（证明被跳过）
-	if resp := post(t, h, chatBody(false)); resp.StatusCode != 503 {
+	if resp := postWithAuth(t, h, chatBody(false), vkToken); resp.StatusCode != 503 {
 		t.Fatalf("cooldown model must be skipped (503), got %d", resp.StatusCode)
 	}
 	ls := logs(t, st)
@@ -158,7 +158,7 @@ func TestModelBreakerEscalationThroughProxy(t *testing.T) {
 
 	// 半开探测失败 → 升级第 2 档（60s）
 	st.DB.Model(&mBad).Update("cooldown_until", time.Now().Unix()-1)
-	post(t, h, chatBody(false))
+	postWithAuth(t, h, chatBody(false), vkToken)
 	st.DB.First(&mBad, mBad.ID)
 	if mBad.FailCount != 2 {
 		t.Fatalf("half-open probe failure should escalate: %+v", mBad)
@@ -170,7 +170,7 @@ func TestModelBreakerEscalationThroughProxy(t *testing.T) {
 
 	// 第 3 次失败 → 禁用 + 原因
 	st.DB.Model(&mBad).Update("cooldown_until", time.Now().Unix()-1)
-	post(t, h, chatBody(false))
+	postWithAuth(t, h, chatBody(false), vkToken)
 	st.DB.First(&mBad, mBad.ID)
 	if mBad.Status != "disabled" || mBad.DisableReason == "" {
 		t.Fatalf("threshold=3 should disable: %+v", mBad)
@@ -186,7 +186,7 @@ func TestModelBreakerEscalationThroughProxy(t *testing.T) {
 	st.DB.Create(&kGood)
 	st.DB.Model(&mBad).Update("provider_id", pGood.ID)
 	st.DB.Create(&store.ModelKey{ModelID: mBad.ID, KeyID: kGood.ID})
-	if resp := post(t, h, chatBody(false)); resp.StatusCode != 200 {
+	if resp := postWithAuth(t, h, chatBody(false), vkToken); resp.StatusCode != 200 {
 		t.Fatalf("probe request failed: %d", resp.StatusCode)
 	}
 	st.DB.First(&mBad, mBad.ID)
@@ -196,7 +196,7 @@ func TestModelBreakerEscalationThroughProxy(t *testing.T) {
 }
 
 func TestHalfOpenProbeSuccessFlow(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	fail := true
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if fail {
@@ -219,7 +219,7 @@ func TestHalfOpenProbeSuccessFlow(t *testing.T) {
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
 
-	if resp := post(t, h, chatBody(false)); resp.StatusCode != 502 {
+	if resp := postWithAuth(t, h, chatBody(false), vkToken); resp.StatusCode != 502 {
 		t.Fatalf("all-fail expected 502, got %d", resp.StatusCode)
 	}
 	st.DB.First(&m, m.ID)
@@ -229,7 +229,7 @@ func TestHalfOpenProbeSuccessFlow(t *testing.T) {
 
 	fail = false
 	st.DB.Model(&m).Update("cooldown_until", time.Now().Unix()-1)
-	if resp := post(t, h, chatBody(false)); resp.StatusCode != 200 {
+	if resp := postWithAuth(t, h, chatBody(false), vkToken); resp.StatusCode != 200 {
 		t.Fatalf("probe should succeed, got %d", resp.StatusCode)
 	}
 	st.DB.First(&m, m.ID)
@@ -239,7 +239,7 @@ func TestHalfOpenProbeSuccessFlow(t *testing.T) {
 }
 
 func TestClientErrorNoBreakerRecord(t *testing.T) {
-	st, h := newTestStack(t)
+	st, h, vkToken := newTestStackWithVK(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(400)
 		fmt.Fprint(w, `{"error":{"message":"bad param"}}`)
@@ -257,7 +257,7 @@ func TestClientErrorNoBreakerRecord(t *testing.T) {
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
 
-	post(t, h, chatBody(false))
+	postWithAuth(t, h, chatBody(false), vkToken)
 	st.DB.First(&m, m.ID)
 	var k store.ApiKey
 	st.DB.First(&k)

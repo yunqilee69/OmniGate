@@ -232,6 +232,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	isStream, _ := req["stream"].(bool)
 
+	// 检查虚拟 key 模型访问权限
+	if vk, ok := getVKFromContext(r.Context()); ok {
+		if err := checkVKModelAccess(h.db, vk, routeName); err != nil {
+			if err == errVKModelDenied {
+				openAIError(w, 403, "model_denied", fmt.Sprintf("model '%s' not allowed by virtual key", routeName), nil)
+			} else {
+				openAIError(w, 500, "model_check_error", err.Error(), nil)
+			}
+			return
+		}
+	}
+
 	rt := h.rt.Snapshot()
 	captureOn := rt.CaptureEnabled && (len(rt.CaptureRoutes) == 0 || containsStr(rt.CaptureRoutes, routeName))
 	var cw *captureWriter
@@ -329,6 +341,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 亲和只在最终成功后回写：失败转移到别的模型成功时，记住的是缓存真正生效的落点。
 	if affKey != "" && last.att.Model.ID != 0 && last.status == "success" {
 		h.sel.SetAffinity(affKey, last.att.Model.ID, rt.AffinityTTL, time.Now())
+	}
+
+	// 记录虚拟 key 使用量（成功请求才扣费）
+	if last.status == "success" && last.att.Model.ID != 0 {
+		if vk, ok := getVKFromContext(r.Context()); ok {
+			costUSD := cost(last.att.Model, last.usage, h.rt.Snapshot().USDCNY)
+			if err := h.db.RecordVKUsage(vk.ID, costUSD); err != nil {
+				slog.Warn("failed to record vk usage", "vk_id", vk.ID, "cost", costUSD, "err", err)
+			}
+		}
 	}
 
 	if len(errCodes) > 1 {
