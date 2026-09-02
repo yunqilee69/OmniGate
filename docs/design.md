@@ -28,7 +28,7 @@
 
 - 多实例集群 / 高可用（单机单进程）
 - 用户体系、配额计费（仅一个可选的管理 token）
-- 协议转换仅覆盖 chat/completions（openai ↔ responses ↔ anthropic，见 `model.protocol`）；embeddings/rerank 按业界事实格式**直通**（仅重写 model 字段），不做跨厂商转换
+- 协议转换仅覆盖 chat/completions（openai ↔ responses ↔ anthropic，见 `model.protocol`）；embeddings/rerank 按业界事实格式**直通**（仅重写 model 字段），不做跨厂商转换；完整字段映射与限制见 [`protocol-conversion.md`](./protocol-conversion.md)
 - 按用户/按 key 的限流
 
 ---

@@ -148,6 +148,8 @@ curl http://localhost:17777/v1/messages \
   -d '{"model": "claude", "messages": [{"role": "user", "content": "Hi"}], "thinking": {"type": "enabled"}}'
 ```
 
+> **协议转换详情**: 完整的字段映射、已知限制和最佳实践见 [`docs/protocol-conversion.md`](./docs/protocol-conversion.md)。
+
 ---
 
 ## 截图
