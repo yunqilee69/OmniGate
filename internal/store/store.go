@@ -34,6 +34,7 @@ func Open(path string) (*Store, error) {
 		&Route{}, &RouteTarget{}, &AppConfig{}, &RequestLog{}, &RequestAttempt{}, &ContentLog{},
 		&RequestLogDaily{},
 		&VirtualKey{}, &VKRateLimit{},
+		&MCPBackend{}, &RouteMcpTarget{},
 	); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}

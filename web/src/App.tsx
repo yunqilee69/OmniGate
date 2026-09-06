@@ -9,9 +9,11 @@ import {
   SettingOutlined,
   LogoutOutlined,
   KeyOutlined,
+  ApiOutlined,
 } from '@ant-design/icons'
 import { Routes, Route, Navigate, useLocation, Link } from 'react-router-dom'
 import { api, clearToken } from './api'
+import McpBackends from './pages/McpBackends'
 import Dashboard from './pages/Dashboard'
 import ConfigCenter from './pages/ConfigCenter'
 import RoutesPage from './pages/Routes'
@@ -27,7 +29,7 @@ const items = [
   { key: '/config', icon: <DatabaseOutlined />, label: <Link to="/config">配置中心</Link> },
   { key: '/routes', icon: <BranchesOutlined />, label: <Link to="/routes">路由</Link> },
   { key: '/keys', icon: <KeyOutlined />, label: <Link to="/keys">虚拟密钥</Link> },
-  { key: '/stats', icon: <BarChartOutlined />, label: <Link to="/stats">统计</Link> },
+  { key: '/mcp-backends', icon: <ApiOutlined />, label: <Link to="/mcp-backends">MCP</Link> },
   { key: '/logs', icon: <FileTextOutlined />, label: <Link to="/logs">请求日志</Link> },
   { key: '/settings', icon: <SettingOutlined />, label: <Link to="/settings">设置</Link> },
 ]
@@ -107,6 +109,7 @@ export default function App() {
           <Route path="/logs" element={<Logs />} />
           <Route path="/logs/:request_id" element={<LogDetail />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/mcp-backends" element={<McpBackends />} />
         </Routes>
       </Layout.Content>
     </Layout>

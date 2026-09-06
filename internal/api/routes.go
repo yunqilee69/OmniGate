@@ -20,10 +20,20 @@ type routeTargetResp struct {
 	Weight       int    `json:"weight"`
 }
 
-// routeResp 内嵌 store.Route；外层 Targets 字段遮蔽内层同名 json 键，输出富化后的目标。
+// routeMcpTargetResp MCP 后端目标的对外展示。
+type routeMcpTargetResp struct {
+	ID           int64  `json:"id"`
+	MCPBackendID int64  `json:"mcp_backend_id"`
+	BackendName  string `json:"backend_name"`
+	TargetURL    string `json:"target_url"`
+	Status       string `json:"status"`
+}
+
+// routeResp 内嵌 store.Route；外层 Targets/McpTargets 字段遮蔽内层同名 json 键，输出富化后的目标。
 type routeResp struct {
 	store.Route
-	Targets []routeTargetResp `json:"targets"`
+	Targets    []routeTargetResp    `json:"targets"`
+	McpTargets []routeMcpTargetResp `json:"mcp_targets"`
 }
 
 type routeTargetReq struct {
@@ -31,11 +41,16 @@ type routeTargetReq struct {
 	Weight  int   `json:"weight"`
 }
 
+type routeMcpTargetReq struct {
+	MCPBackendID int64 `json:"mcp_backend_id"`
+}
+
 type routeCreateReq struct {
-	Name     string           `json:"name"`
-	Endpoint string           `json:"endpoint"`
-	Remark   string           `json:"remark"`
-	Targets  []routeTargetReq `json:"targets"`
+	Name       string              `json:"name"`
+	Endpoint   string              `json:"endpoint"`
+	Remark     string              `json:"remark"`
+	Targets    []routeTargetReq    `json:"targets"`
+	McpTargets []routeMcpTargetReq `json:"mcp_targets"`
 }
 
 func (s *Server) enrichTargets(targets []store.RouteTarget) []routeTargetResp {
@@ -66,15 +81,39 @@ func (s *Server) enrichTargets(targets []store.RouteTarget) []routeTargetResp {
 	return out
 }
 
+func (s *Server) enrichMcpTargets(targets []store.RouteMcpTarget) []routeMcpTargetResp {
+	var backends []store.MCPBackend
+	_ = s.store.DB.Find(&backends).Error
+	bInfo := map[int64]store.MCPBackend{}
+	for _, b := range backends {
+		bInfo[b.ID] = b
+	}
+	out := make([]routeMcpTargetResp, 0, len(targets))
+	for _, t := range targets {
+		tr := routeMcpTargetResp{ID: t.ID, MCPBackendID: t.MCPBackendID}
+		if b, ok := bInfo[t.MCPBackendID]; ok {
+			tr.BackendName = b.Name
+			tr.TargetURL = b.TargetURL
+			tr.Status = b.Status
+		}
+		out = append(out, tr)
+	}
+	return out
+}
+
 func (s *Server) listRoutes(w http.ResponseWriter, _ *http.Request) {
 	var routes []store.Route
-	if err := s.store.DB.Preload("Targets").Order("id").Find(&routes).Error; err != nil {
+	if err := s.store.DB.Preload("Targets").Preload("McpTargets").Order("id").Find(&routes).Error; err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
 	out := make([]routeResp, 0, len(routes))
 	for _, rt := range routes {
-		out = append(out, routeResp{Route: rt, Targets: s.enrichTargets(rt.Targets)})
+		out = append(out, routeResp{
+			Route:      rt,
+			Targets:    s.enrichTargets(rt.Targets),
+			McpTargets: s.enrichMcpTargets(rt.McpTargets),
+		})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -117,12 +156,41 @@ func (s *Server) validateTargets(endpoint string, targets []routeTargetReq) (boo
 	return true, ""
 }
 
+// validateMcpTargets 校验 MCP 后端存在、无重复后端。
+func (s *Server) validateMcpTargets(targets []routeMcpTargetReq) (bool, string) {
+	if len(targets) == 0 {
+		return false, "mcp endpoint requires at least one mcp backend"
+	}
+	seen := map[int64]bool{}
+	var ids []int64
+	for _, t := range targets {
+		if t.MCPBackendID <= 0 {
+			return false, "mcp_backend_id must be positive"
+		}
+		if seen[t.MCPBackendID] {
+			return false, "duplicate mcp backend in targets"
+		}
+		seen[t.MCPBackendID] = true
+		ids = append(ids, t.MCPBackendID)
+	}
+	var backends []store.MCPBackend
+	if err := s.store.DB.Where("id IN ?", ids).Find(&backends).Error; err != nil {
+		return false, err.Error()
+	}
+	if len(backends) != len(ids) {
+		return false, "部分 MCP 后端不存在"
+	}
+	return true, ""
+}
+
 func endpointToProtocol(endpoint string) string {
 	switch endpoint {
 	case "messages":
 		return "messages"
 	case "responses":
 		return "responses"
+	case "mcp":
+		return "mcp"
 	default:
 		return "completions"
 	}
@@ -143,22 +211,40 @@ func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
 	if req.Endpoint == "" {
 		req.Endpoint = "completions"
 	}
-	if req.Endpoint != "completions" && req.Endpoint != "messages" && req.Endpoint != "responses" {
-		writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses")
+	if req.Endpoint != "completions" && req.Endpoint != "messages" && req.Endpoint != "responses" && req.Endpoint != "mcp" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses, mcp")
 		return
 	}
-	if ok, msg := s.validateTargets(req.Endpoint, req.Targets); !ok {
-		writeErr(w, http.StatusBadRequest, "bad_request", msg)
-		return
+	
+	// MCP 路由使用 mcp_targets，其他端点使用 targets
+	if req.Endpoint == "mcp" {
+		if ok, msg := s.validateMcpTargets(req.McpTargets); !ok {
+			writeErr(w, http.StatusBadRequest, "bad_request", msg)
+			return
+		}
+	} else {
+		if ok, msg := s.validateTargets(req.Endpoint, req.Targets); !ok {
+			writeErr(w, http.StatusBadRequest, "bad_request", msg)
+			return
+		}
 	}
+	
 	rt := store.Route{Name: req.Name, Endpoint: req.Endpoint, Remark: req.Remark}
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&rt).Error; err != nil {
 			return err
 		}
-		for _, t := range req.Targets {
-			if err := tx.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: t.ModelID, Weight: t.Weight}).Error; err != nil {
-				return err
+		if req.Endpoint == "mcp" {
+			for _, t := range req.McpTargets {
+				if err := tx.Create(&store.RouteMcpTarget{RouteID: rt.ID, MCPBackendID: t.MCPBackendID}).Error; err != nil {
+					return err
+				}
+			}
+		} else {
+			for _, t := range req.Targets {
+				if err := tx.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: t.ModelID, Weight: t.Weight}).Error; err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -171,16 +257,24 @@ func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	var targets []store.RouteTarget
-	_ = s.store.DB.Where("route_id = ?", rt.ID).Order("id").Find(&targets).Error
-	writeJSON(w, http.StatusCreated, routeResp{Route: rt, Targets: s.enrichTargets(targets)})
+	
+	if req.Endpoint == "mcp" {
+		var mcpTargets []store.RouteMcpTarget
+		_ = s.store.DB.Where("route_id = ?", rt.ID).Order("id").Find(&mcpTargets).Error
+		writeJSON(w, http.StatusCreated, routeResp{Route: rt, McpTargets: s.enrichMcpTargets(mcpTargets)})
+	} else {
+		var targets []store.RouteTarget
+		_ = s.store.DB.Where("route_id = ?", rt.ID).Order("id").Find(&targets).Error
+		writeJSON(w, http.StatusCreated, routeResp{Route: rt, Targets: s.enrichTargets(targets)})
+	}
 }
 
 type routeUpdateReq struct {
-	Name     *string          `json:"name"`
-	Endpoint *string          `json:"endpoint"`
-	Remark   *string          `json:"remark"`
-	Targets  []routeTargetReq `json:"targets"`
+	Name       *string             `json:"name"`
+	Endpoint   *string             `json:"endpoint"`
+	Remark     *string             `json:"remark"`
+	Targets    []routeTargetReq    `json:"targets"`
+	McpTargets []routeMcpTargetReq `json:"mcp_targets"`
 }
 
 func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
@@ -214,8 +308,8 @@ func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Endpoint != nil {
 		v := strings.TrimSpace(*req.Endpoint)
-		if v != "completions" && v != "messages" && v != "responses" {
-			writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses")
+		if v != "completions" && v != "messages" && v != "responses" && v != "mcp" {
+			writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses, mcp")
 			return
 		}
 		simple["endpoint"] = v
@@ -223,7 +317,7 @@ func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
 	if req.Remark != nil {
 		simple["remark"] = *req.Remark
 	}
-	if len(simple) == 0 && req.Targets == nil {
+	if len(simple) == 0 && req.Targets == nil && req.McpTargets == nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", "no fields to update")
 		return
 	}
@@ -232,19 +326,41 @@ func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
 	if req.Endpoint != nil {
 		effectiveEndpoint = strings.TrimSpace(*req.Endpoint)
 	}
-	if req.Targets != nil {
-		if ok, msg := s.validateTargets(effectiveEndpoint, req.Targets); !ok {
-			writeErr(w, http.StatusBadRequest, "bad_request", msg)
-			return
+	
+	// 根据有效端点类型验证相应的目标
+	if effectiveEndpoint == "mcp" {
+		if req.McpTargets != nil {
+			if ok, msg := s.validateMcpTargets(req.McpTargets); !ok {
+				writeErr(w, http.StatusBadRequest, "bad_request", msg)
+				return
+			}
+		}
+	} else {
+		if req.Targets != nil {
+			if ok, msg := s.validateTargets(effectiveEndpoint, req.Targets); !ok {
+				writeErr(w, http.StatusBadRequest, "bad_request", msg)
+				return
+			}
 		}
 	}
+	
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
 		if len(simple) > 0 {
 			if err := tx.Model(&rt).Updates(simple).Error; err != nil {
 				return err
 			}
 		}
-		if req.Targets != nil {
+		
+		if effectiveEndpoint == "mcp" && req.McpTargets != nil {
+			if err := tx.Where("route_id = ?", id).Delete(&store.RouteMcpTarget{}).Error; err != nil {
+				return err
+			}
+			for _, t := range req.McpTargets {
+				if err := tx.Create(&store.RouteMcpTarget{RouteID: id, MCPBackendID: t.MCPBackendID}).Error; err != nil {
+					return err
+				}
+			}
+		} else if effectiveEndpoint != "mcp" && req.Targets != nil {
 			if err := tx.Where("route_id = ?", id).Delete(&store.RouteTarget{}).Error; err != nil {
 				return err
 			}
@@ -264,8 +380,12 @@ func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	_ = s.store.DB.Preload("Targets").First(&rt, id).Error
-	writeJSON(w, http.StatusOK, routeResp{Route: rt, Targets: s.enrichTargets(rt.Targets)})
+	_ = s.store.DB.Preload("Targets").Preload("McpTargets").First(&rt, id).Error
+	writeJSON(w, http.StatusOK, routeResp{
+		Route:      rt,
+		Targets:    s.enrichTargets(rt.Targets),
+		McpTargets: s.enrichMcpTargets(rt.McpTargets),
+	})
 }
 
 func (s *Server) deleteRoute(w http.ResponseWriter, r *http.Request) {
@@ -285,6 +405,9 @@ func (s *Server) deleteRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("route_id = ?", id).Delete(&store.RouteTarget{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("route_id = ?", id).Delete(&store.RouteMcpTarget{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&store.Route{}, id).Error

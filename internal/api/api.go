@@ -28,11 +28,12 @@ type Server struct {
 	vkHandler *VirtualKeyHandler
 }
 
-// ChatPlane chat 端点族（/v1/chat/completions、/v1/messages、/v1/responses）的代理处理器集合。
+// ChatPlane chat 端点族（/v1/chat/completions、/v1/messages、/v1/responses）+ MCP 的代理处理器集合。
 type ChatPlane interface {
 	http.Handler
 	Messages(w http.ResponseWriter, r *http.Request)
 	Responses(w http.ResponseWriter, r *http.Request)
+	Mcp(w http.ResponseWriter, r *http.Request)
 }
 
 // TypedPlane 非 chat 端点族（/v1/embeddings、/v1/rerank）的代理处理器集合。
@@ -116,6 +117,15 @@ func (s *Server) Router() http.Handler {
 				ir.Delete("/", s.deleteRoute)
 			})
 		})
+		ar.Route("/mcp-backends", func(er chi.Router) {
+			er.Get("/", s.listMcpBackends)
+			er.Post("/", s.createMcpBackend)
+			er.Route("/{id}", func(ir chi.Router) {
+				ir.Get("/", s.getMcpBackend)
+				ir.Put("/", s.updateMcpBackend)
+				ir.Delete("/", s.deleteMcpBackend)
+			})
+		})
 		ar.Route("/virtual-keys", func(er chi.Router) {
 			er.Get("/", s.vkHandler.List)
 			er.Post("/", s.vkHandler.Create)
@@ -138,6 +148,9 @@ func (s *Server) Router() http.Handler {
 			vr.Post("/chat/completions", s.chat.ServeHTTP)
 			vr.Post("/messages", s.chat.Messages)
 			vr.Post("/responses", s.chat.Responses)
+			vr.Post("/mcp/{route_name}", s.chat.Mcp)
+			vr.Get("/mcp/{route_name}", s.chat.Mcp)
+			vr.Delete("/mcp/{route_name}", s.chat.Mcp)
 		}
 		if s.typed != nil {
 			vr.Post("/embeddings", s.typed.Embeddings)

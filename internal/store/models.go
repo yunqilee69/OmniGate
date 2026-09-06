@@ -78,16 +78,17 @@ type ModelKeyBan struct {
 }
 
 // Route 逻辑路由（客户端请求的 modelId）。
-// Endpoint 决定协议族：completions(/v1/chat/completions) | messages(/v1/messages) | responses(/v1/responses)。
+// Endpoint 决定协议族：completions(/v1/chat/completions) | messages(/v1/messages) | responses(/v1/responses) | mcp(/v1/mcp/{name})。
 type Route struct {
-	ID           int64         `json:"id" gorm:"primaryKey;autoIncrement"`
-	Name         string        `json:"name" gorm:"size:191;not null;uniqueIndex"`
-	Endpoint     string        `json:"endpoint" gorm:"size:32;not null;default:completions"` // completions | messages | responses
-	BodyOverride string        `json:"body_override" gorm:"type:text;not null;default:''"`   // 请求体覆盖 JSON
-	Remark       string        `json:"remark" gorm:"size:1024;not null;default:''"`
-	Targets      []RouteTarget `json:"targets" gorm:"foreignKey:RouteID"`
-	CreatedAt    int64         `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt    int64         `json:"updated_at" gorm:"autoUpdateTime"`
+	ID           int64            `json:"id" gorm:"primaryKey;autoIncrement"`
+	Name         string           `json:"name" gorm:"size:191;not null;uniqueIndex"`
+	Endpoint     string           `json:"endpoint" gorm:"size:32;not null;default:completions"` // completions | messages | responses | mcp
+	BodyOverride string           `json:"body_override" gorm:"type:text;not null;default:''"`   // 请求体覆盖 JSON
+	Remark       string           `json:"remark" gorm:"size:1024;not null;default:''"`
+	Targets      []RouteTarget    `json:"targets" gorm:"foreignKey:RouteID"`
+	McpTargets   []RouteMcpTarget `json:"mcp_targets" gorm:"foreignKey:RouteID"`
+	CreatedAt    int64            `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt    int64            `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 // RouteTarget 路由目标：路由 → 真实模型（带权重）。
@@ -96,6 +97,26 @@ type RouteTarget struct {
 	RouteID int64 `json:"route_id" gorm:"not null;index:idx_rt_route;uniqueIndex:idx_rt_route_model"`
 	ModelID int64 `json:"model_id" gorm:"not null;uniqueIndex:idx_rt_route_model"`
 	Weight  int   `json:"weight" gorm:"not null;default:1"`
+}
+
+// MCPBackend 上游 MCP Server 连接信息。
+type MCPBackend struct {
+	ID        int64  `json:"id" gorm:"primaryKey;autoIncrement"`
+	Name      string `json:"name" gorm:"size:191;not null;uniqueIndex"`
+	TargetURL string `json:"target_url" gorm:"size:512;not null"`
+	ApiKey    string `json:"api_key" gorm:"size:512;not null;default:''"`
+	TimeoutMs int    `json:"timeout_ms" gorm:"not null;default:30000"`
+	Status    string `json:"status" gorm:"size:32;not null;default:'active'"`
+	Remark    string `json:"remark" gorm:"size:1024;not null;default:''"`
+	CreatedAt int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt int64  `json:"updated_at" gorm:"autoUpdateTime"`
+}
+
+// RouteMcpTarget 路由 ↔ MCPBackend 多对多关联。
+type RouteMcpTarget struct {
+	ID            int64 `json:"id" gorm:"primaryKey;autoIncrement"`
+	RouteID       int64 `json:"route_id" gorm:"not null;index:idx_rmt_route;uniqueIndex:idx_rmt_route_mcp"`
+	MCPBackendID  int64 `json:"mcp_backend_id" gorm:"not null;uniqueIndex:idx_rmt_route_mcp"`
 }
 
 // AppConfig 运行层配置（key-value，value 为 JSON 编码）。

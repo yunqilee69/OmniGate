@@ -14,21 +14,32 @@ interface Target {
   weight: number
 }
 
+interface McpTarget {
+  id: number
+  mcp_backend_id: number
+  backend_name: string
+  target_url: string
+  status: string
+}
+
 interface Route {
   id: number
   name: string
   endpoint: string
   remark: string
   targets: Target[]
+  mcp_targets: McpTarget[]
 }
 
 interface Model { id: number; name: string; provider_id: number; protocol: string; type: string }
 interface Provider { id: number; name: string }
+interface MCPBackend { id: number; name: string; target_url: string; status: string }
 
 export default function RoutesPage() {
   const [rows, setRows] = useState<Route[]>([])
   const [models, setModels] = useState<Model[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
+  const [mcpBackends, setMcpBackends] = useState<MCPBackend[]>([])
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Route | null>(null)
   const [exampleRoute, setExampleRoute] = useState<Route | null>(null)
@@ -36,12 +47,16 @@ export default function RoutesPage() {
 
   const load = async () => {
     try {
-      const [rs, ms, ps] = await Promise.all([
-        api('GET', '/api/routes'), api('GET', '/api/models'), api('GET', '/api/providers'),
+      const [rs, ms, ps, mbs] = await Promise.all([
+        api('GET', '/api/routes'),
+        api('GET', '/api/models'),
+        api('GET', '/api/providers'),
+        api('GET', '/api/mcp-backends'),
       ])
       setRows(rs)
       setModels(ms)
       setProviders(ps)
+      setMcpBackends(mbs)
     } catch (e: any) {
       message.error(e.message)
     }
@@ -56,7 +71,8 @@ export default function RoutesPage() {
         name: r.name,
         endpoint: r.endpoint,
         remark: r.remark,
-        targets: r.targets.map((t) => ({ model_id: t.model_id, weight: t.weight })),
+        targets: r.targets?.map((t) => ({ model_id: t.model_id, weight: t.weight })) || [],
+        mcp_targets: r.mcp_targets?.map((t) => ({ mcp_backend_id: t.mcp_backend_id })) || [],
       })
     }
     setOpen(true)
@@ -64,12 +80,21 @@ export default function RoutesPage() {
 
   const submit = async () => {
     const values = await form.validateFields()
-    const payload = {
-      ...values,
-      targets: (values.targets ?? []).map((t: any) => ({
+    const endpoint = values.endpoint || 'completions'
+    const payload: any = {
+      name: values.name,
+      endpoint: values.endpoint,
+      remark: values.remark,
+    }
+    if (endpoint === 'mcp') {
+      payload.mcp_targets = (values.mcp_targets ?? []).map((t: any) => ({
+        mcp_backend_id: Number(t.mcp_backend_id),
+      }))
+    } else {
+      payload.targets = (values.targets ?? []).map((t: any) => ({
         model_id: Number(t.model_id),
         weight: Number(t.weight),
-      })),
+      }))
     }
     try {
       if (editing) {
@@ -101,19 +126,33 @@ export default function RoutesPage() {
     <div>
       <Button type="primary" onClick={() => openForm()} style={{ marginBottom: 16 }}>新增路由</Button>
       <Table<Route> rowKey="id" dataSource={rows} expandable={{
-        expandedRowRender: (r) => (
-          <Table<Target> rowKey="id" dataSource={r.targets} pagination={false} size="small">
-            <Table.Column title="目标模型" render={(_, t: Target) => `${t.provider_name} / ${t.model_name}`} />
-            <Table.Column title="权重" dataIndex="weight" width={80} />
-            <Table.Column title="流量占比" width={200} render={(_, t: Target) => (
-              <Progress percent={targetPercent(t, r.targets)} size="small" />
-            )} />
-          </Table>
-        ),
+        expandedRowRender: (r) => {
+          if (r.endpoint === 'mcp') {
+            return (
+              <Table<McpTarget> rowKey="id" dataSource={r.mcp_targets} pagination={false} size="small">
+                <Table.Column title="MCP" dataIndex="backend_name" />
+                <Table.Column title="目标 URL" dataIndex="target_url" ellipsis />
+                <Table.Column title="状态" dataIndex="status" width={80} render={(v) => (
+                  <span style={{ color: v === 'active' ? '#52c41a' : '#999' }}>{v === 'active' ? '启用' : '禁用'}</span>
+                )} />
+              </Table>
+            )
+          }
+          return (
+            <Table<Target> rowKey="id" dataSource={r.targets} pagination={false} size="small">
+              <Table.Column title="目标模型" render={(_, t: Target) => `${t.provider_name} / ${t.model_name}`} />
+              <Table.Column title="权重" dataIndex="weight" width={80} />
+              <Table.Column title="流量占比" width={200} render={(_, t: Target) => (
+                <Progress percent={targetPercent(t, r.targets)} size="small" />
+              )} />
+            </Table>
+          )
+        },
       }}>
         <Table.Column title="ID" dataIndex="id" width={60} />
         <Table.Column title="逻辑 modelId" dataIndex="name" render={(v) => <code>{v}</code>} />
-        <Table.Column title="目标数" render={(_, r: Route) => r.targets.length} width={80} />
+        <Table.Column title="端点类型" dataIndex="endpoint" width={120} />
+        <Table.Column title="目标数" render={(_, r: Route) => r.endpoint === 'mcp' ? r.mcp_targets?.length || 0 : r.targets?.length || 0} width={80} />
         <Table.Column title="备注" dataIndex="remark" ellipsis />
         <Table.Column title="操作" width={230} render={(_, r: Route) => (
           <Space>
@@ -132,7 +171,7 @@ export default function RoutesPage() {
 
       <RequestExample route={exampleRoute} onClose={() => setExampleRoute(null)} />
 
-      <Modal title={editing ? '编辑路由' : '新增路由'} open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose width={640}>
+      <Modal title={editing ? '编辑路由' : '新增路由'} open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnHidden width={640}>
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="逻辑 modelId（客户端请求时填写）" rules={[{ required: true }]}>
             <Input placeholder="如 glm" />
@@ -142,69 +181,115 @@ export default function RoutesPage() {
             label="端点类型" 
             initialValue="completions" 
             rules={[{ required: true }]}
-            extra="决定代理路径与协议：completions 使用 OpenAI Completions 格式，messages 使用 Anthropic 格式，responses 使用 OpenAI Responses 格式"
+            extra="决定代理路径与协议：completions/messages/responses 用于 LLM，mcp 用于 MCP 工具聚合"
           >
             <Select
               options={[
                 { value: 'completions', label: 'completions — /v1/chat/completions（OpenAI）' },
                 { value: 'messages', label: 'messages — /v1/messages（Anthropic）' },
                 { value: 'responses', label: 'responses — /v1/responses（OpenAI）' },
+                { value: 'mcp', label: 'mcp — /v1/mcp/{route_name}（MCP 工具聚合）' },
               ]}
             />
           </Form.Item>
           <Form.Item name="remark" label="备注"><Input /></Form.Item>
-          <Form.Item label="目标模型与权重">
-            <Form.List name="targets">
-              {(fields, { add, remove }) => (
-                <Form.Item noStyle shouldUpdate={(prev, cur) => prev.endpoint !== cur.endpoint || prev.targets !== cur.targets}>
-                  {({ getFieldValue }) => {
-                    const endpoint = getFieldValue('endpoint') || 'completions'
-                    const requiredProtocol = endpoint === 'messages' ? 'messages' : endpoint === 'responses' ? 'responses' : 'completions'
-                    const targets = getFieldValue('targets') || []
-                    const selectedModelIds = new Set(targets.map((t: any) => t?.model_id).filter(Boolean))
-                    const filteredModels = models.filter((m) => m.protocol === requiredProtocol)
-                    
-                    return (
-                      <>
-                        {fields.map((field) => {
-                          const currentModelId = getFieldValue(['targets', field.name, 'model_id'])
-                          const availableForThisField = filteredModels.filter(
-                            (m) => m.id === currentModelId || !selectedModelIds.has(m.id)
-                          )
-                          
-                          return (
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.endpoint !== cur.endpoint}>
+            {({ getFieldValue }) => {
+              const endpoint = getFieldValue('endpoint') || 'completions'
+              if (endpoint === 'mcp') {
+                return (
+                  <Form.Item label="MCP">
+                    <Form.List name="mcp_targets">
+                      {(fields, { add, remove }) => (
+                        <>
+                          {fields.map((field) => (
                             <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
-                              <Form.Item name={[field.name, 'model_id']} rules={[{ required: true, message: '选择模型' }]} noStyle>
+                              <Form.Item name={[field.name, 'mcp_backend_id']} rules={[{ required: true, message: '选择后端' }]} noStyle>
                                 <Select
-                                  placeholder="选择目标模型"
-                                  style={{ width: 320 }}
-                                  options={availableForThisField.map((m) => ({ value: m.id, label: modelName(m.id) }))}
+                                  placeholder="选择 MCP"
+                                  style={{ width: 450 }}
+                                  options={mcpBackends.filter((b) => b.status === 'active').map((b) => ({ 
+                                    value: b.id, 
+                                    label: `${b.name} — ${b.target_url}` 
+                                  }))}
                                   showSearch
                                   optionFilterProp="label"
                                 />
                               </Form.Item>
-                              <Form.Item name={[field.name, 'weight']} initialValue={1} noStyle>
-                                <InputNumber min={1} placeholder="权重" style={{ width: 110 }} />
-                              </Form.Item>
                               <DeleteOutlined onClick={() => remove(field.name)} />
                             </Space>
+                          ))}
+                          <Button 
+                            type="dashed" 
+                            block 
+                            icon={<PlusOutlined />} 
+                            onClick={() => add()}
+                            disabled={mcpBackends.filter((b) => b.status === 'active').length === 0}
+                          >
+                            添加 MCP{mcpBackends.filter((b) => b.status === 'active').length === 0 ? '（无可用后端，请先在 MCP 页面创建）' : ''}
+                          </Button>
+                        </>
+                      )}
+                    </Form.List>
+                  </Form.Item>
+                )
+              }
+              return (
+                <Form.Item label="目标模型与权重">
+                  <Form.List name="targets">
+                    {(fields, { add, remove }) => (
+                      <Form.Item noStyle shouldUpdate={(prev, cur) => prev.endpoint !== cur.endpoint || prev.targets !== cur.targets}>
+                        {({ getFieldValue }) => {
+                          const endpoint = getFieldValue('endpoint') || 'completions'
+                          const requiredProtocol = endpoint === 'messages' ? 'messages' : endpoint === 'responses' ? 'responses' : 'completions'
+                          const targets = getFieldValue('targets') || []
+                          const selectedModelIds = new Set(targets.map((t: any) => t?.model_id).filter(Boolean))
+                          const filteredModels = models.filter((m) => m.protocol === requiredProtocol)
+                          
+                          return (
+                            <>
+                              {fields.map((field) => {
+                                const currentModelId = getFieldValue(['targets', field.name, 'model_id'])
+                                const availableForThisField = filteredModels.filter(
+                                  (m) => m.id === currentModelId || !selectedModelIds.has(m.id)
+                                )
+                                
+                                return (
+                                  <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
+                                    <Form.Item name={[field.name, 'model_id']} rules={[{ required: true, message: '选择模型' }]} noStyle>
+                                      <Select
+                                        placeholder="选择目标模型"
+                                        style={{ width: 320 }}
+                                        options={availableForThisField.map((m) => ({ value: m.id, label: modelName(m.id) }))}
+                                        showSearch
+                                        optionFilterProp="label"
+                                      />
+                                    </Form.Item>
+                                    <Form.Item name={[field.name, 'weight']} initialValue={1} noStyle>
+                                      <InputNumber min={1} placeholder="权重" style={{ width: 110 }} />
+                                    </Form.Item>
+                                    <DeleteOutlined onClick={() => remove(field.name)} />
+                                  </Space>
+                                )
+                              })}
+                              <Button 
+                                type="dashed" 
+                                block 
+                                icon={<PlusOutlined />} 
+                                onClick={() => add({ weight: 1 })}
+                                disabled={filteredModels.length === 0 || selectedModelIds.size >= filteredModels.length}
+                              >
+                                添加目标模型{filteredModels.length === 0 ? `（无可用的 ${requiredProtocol} 协议模型）` : selectedModelIds.size >= filteredModels.length ? '（所有模型已选择）' : ''}
+                              </Button>
+                            </>
                           )
-                        })}
-                        <Button 
-                          type="dashed" 
-                          block 
-                          icon={<PlusOutlined />} 
-                          onClick={() => add({ weight: 1 })}
-                          disabled={filteredModels.length === 0 || selectedModelIds.size >= filteredModels.length}
-                        >
-                          添加目标模型{filteredModels.length === 0 ? `（无可用的 ${requiredProtocol} 协议模型）` : selectedModelIds.size >= filteredModels.length ? '（所有模型已选择）' : ''}
-                        </Button>
-                      </>
-                    )
-                  }}
+                        }}
+                      </Form.Item>
+                    )}
+                  </Form.List>
                 </Form.Item>
-              )}
-            </Form.List>
+              )
+            }}
           </Form.Item>
         </Form>
       </Modal>
@@ -381,7 +466,7 @@ function RequestExample({ route, onClose }: { route: Route | null; onClose: () =
       onCancel={onClose}
       footer={null}
       width={640}
-      destroyOnClose
+      destroyOnHidden
     >
       <div style={{ marginBottom: 16 }}>
         <div className="eyebrow" style={{ marginBottom: 4 }}>endpoint</div>
