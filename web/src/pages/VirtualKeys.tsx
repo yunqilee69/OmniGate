@@ -15,7 +15,7 @@ interface VirtualKey {
   total_budget: number
   used_usd: number
   allowed_routes: string[]
-  created_at: string
+  created_at: number
   updated_at: string
   total_requests: number
   last_used_at: number
@@ -208,7 +208,7 @@ export default function VirtualKeys() {
       title: '创建时间',
       dataIndex: 'created_at',
       width: 160,
-      render: (ts: string) => new Date(ts).toLocaleString('zh-CN', { 
+      render: (ts: number) => new Date(ts * 1000).toLocaleString('zh-CN', {
         year: 'numeric', 
         month: '2-digit', 
         day: '2-digit', 

@@ -19,6 +19,13 @@ interface Overview {
   cost: number
 }
 
+interface KeyStats {
+  total: number
+  active: number
+  cooldown: number
+  disabled: number
+}
+
 interface HealthModel {
   id: number
   name: string
@@ -27,6 +34,7 @@ interface HealthModel {
   cooldown_until: number
   disable_reason: string
   last_error: string
+  key_stats?: KeyStats
 }
 
 interface TopModelRow {
@@ -290,7 +298,25 @@ export default function Dashboard() {
           <Table<HealthModel> rowKey="id" dataSource={models} pagination={false} size="small" tableLayout="fixed">
             <Table.Column title="ID" dataIndex="id" width={60} />
             <Table.Column title="模型" dataIndex="name" width={160} />
-            <Table.Column title="状态" width={100} render={(_, m: HealthModel) => modelStatusTag(m)} />
+            <Table.Column 
+              title="密钥状态" 
+              width={140}
+              render={(_, m: HealthModel) => {
+                if (!m.key_stats || m.key_stats.total === 0) {
+                  return <span style={{ color: '#8f8f8f' }}>无密钥</span>
+                }
+                const { total, active, cooldown, disabled } = m.key_stats
+                return (
+                  <span style={{ fontSize: 12 }}>
+                    {active > 0 && <span style={{ color: '#52c41a', marginRight: 8 }}>正常 {active}</span>}
+                    {cooldown > 0 && <span style={{ color: '#faad14', marginRight: 8 }}>限流 {cooldown}</span>}
+                    {disabled > 0 && <span style={{ color: '#cf1322', marginRight: 8 }}>禁用 {disabled}</span>}
+                    <span style={{ color: '#8f8f8f' }}>共 {total}</span>
+                  </span>
+                )
+              }}
+            />
+            <Table.Column title="模型状态" width={100} render={(_, m: HealthModel) => modelStatusTag(m)} />
             <Table.Column title="连续失败" dataIndex="fail_count" width={90} />
             <Table.Column
               title="冷却/禁用详情"
