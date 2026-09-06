@@ -6,6 +6,8 @@ import (
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	openai "github.com/sashabaranov/go-openai"
+
+	"github.com/cloudomni/omnigate/internal/store"
 )
 
 // 协议适配层：客户端始终说 OpenAI chat/completions；adapter 负责出站请求构造与
@@ -13,7 +15,7 @@ import (
 // sashabaranov/go-openai Apache-2.0），此处只保留映射表（参考 one-api MIT 的
 // relay/adaptor/anthropic 转换语义）。
 type ProtocolAdapter interface {
-	endpoint(baseURL string) string
+	endpoint(baseURL string, model *store.Model) string
 	setHeaders(h map[string]string, apiKey string)
 	buildBody(req map[string]any) (map[string]any, error)
 	convertBuffered(body []byte) ([]byte, usageInfo, error)
@@ -28,7 +30,10 @@ type ProtocolAdapter interface {
 
 type openaiAdapter struct{}
 
-func (openaiAdapter) endpoint(baseURL string) string {
+func (openaiAdapter) endpoint(baseURL string, model *store.Model) string {
+	if model != nil && model.ApiPath != "" {
+		return model.ApiPath
+	}
 	return strings.TrimRight(baseURL, "/") + "/chat/completions"
 }
 func (openaiAdapter) setHeaders(h map[string]string, apiKey string) {
@@ -131,7 +136,10 @@ type anthropicAdapter struct {
 
 func newAnthropicAdapter() *anthropicAdapter { return &anthropicAdapter{} }
 
-func (*anthropicAdapter) endpoint(baseURL string) string {
+func (*anthropicAdapter) endpoint(baseURL string, model *store.Model) string {
+	if model != nil && model.ApiPath != "" {
+		return model.ApiPath
+	}
 	return strings.TrimRight(baseURL, "/") + "/v1/messages"
 }
 func (*anthropicAdapter) setHeaders(h map[string]string, apiKey string) {
@@ -374,7 +382,10 @@ type responsesAdapter struct {
 
 func newResponsesAdapter() *responsesAdapter { return &responsesAdapter{} }
 
-func (*responsesAdapter) endpoint(baseURL string) string {
+func (*responsesAdapter) endpoint(baseURL string, model *store.Model) string {
+	if model != nil && model.ApiPath != "" {
+		return model.ApiPath
+	}
 	return strings.TrimRight(baseURL, "/") + "/responses"
 }
 func (*responsesAdapter) setHeaders(h map[string]string, apiKey string) {
@@ -596,11 +607,14 @@ func (r *responsesAdapter) streamUsage() *usageInfo {
 
 func AdapterFor(protocol string) ProtocolAdapter {
 	switch protocol {
-	case "anthropic":
+	case "messages":
 		return newAnthropicAdapter()
 	case "responses":
 		return newResponsesAdapter()
+	case "completions":
+		return openaiAdapter{}
 	default:
+		// 兼容旧数据：未识别的协议回退到 completions
 		return openaiAdapter{}
 	}
 }

@@ -232,13 +232,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	isStream, _ := req["stream"].(bool)
 
-	// 检查虚拟 key 模型访问权限
+	// 检查虚拟 key 路由访问权限（在 LoadSnapshot 之后，因为需要路由 ID）
+	snap, found, err := h.sel.LoadSnapshot(routeName)
+	if err != nil {
+		slog.Error("load snapshot failed", "err", err, "route", routeName)
+		openAIError(w, 500, "internal_error", "failed to load routing config", nil)
+		return
+	}
+	if !found {
+		openAIError(w, http.StatusNotFound, "model_not_found",
+			fmt.Sprintf("the model '%s' does not exist", routeName), nil)
+		return
+	}
+
+	var vkID int64
 	if vk, ok := getVKFromContext(r.Context()); ok {
-		if err := checkVKModelAccess(h.db, vk, routeName); err != nil {
-			if err == errVKModelDenied {
-				openAIError(w, 403, "model_denied", fmt.Sprintf("model '%s' not allowed by virtual key", routeName), nil)
+		vkID = vk.ID
+		if err := checkVKRouteAccess(h.db, vk, snap.Route.ID); err != nil {
+			if err == store.ErrVKAccessDenied {
+				openAIError(w, 403, "route_denied", fmt.Sprintf("route '%s' not allowed by virtual key", routeName), nil)
 			} else {
-				openAIError(w, 500, "model_check_error", err.Error(), nil)
+				openAIError(w, 500, "route_check_error", err.Error(), nil)
 			}
 			return
 		}
@@ -263,19 +277,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	snap, found, err := h.sel.LoadSnapshot(routeName)
-	if err != nil {
-		slog.Error("load snapshot failed", "err", err, "route", routeName)
-		openAIError(w, 500, "internal_error", "failed to load routing config", nil)
-		h.maybeCapture(requestID, routeName, reqSnap, cw)
-		return
-	}
-	if !found {
-		openAIError(w, http.StatusNotFound, "model_not_found",
-			fmt.Sprintf("the model '%s' does not exist", routeName), nil)
-		h.maybeCapture(requestID, routeName, reqSnap, cw)
-		return
-	}
 
 	tried := map[int64]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
@@ -296,7 +297,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						res.latencyMs = time.Since(attemptStart).Milliseconds()
 						h.record(res, rt)
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
-							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true)
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID)
 						h.maybeCapture(requestID, routeName, reqSnap, cw)
 						return
 					}
@@ -305,7 +306,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false)
+					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
 				h.maybeCapture(requestID, routeName, reqSnap, cw)
@@ -320,10 +321,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.record(res, rt)
 		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
 		last = res
-		// 只在最后一次记录 request_log（committed 或不可重试时）
+		
+		// 记录每次尝试到 request_log
+		h.writeLog(start, requestID, routeName, att, isStream,
+			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID)
+		
+		// 如果已提交响应或不可重试，停止
 		if res.committed || !res.retryable {
-			h.writeLog(start, requestID, routeName, att, isStream,
-				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false)
 			break
 		}
 		priorFails++
@@ -332,10 +336,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"model", att.Model.Name, "key_id", att.Key.ID, "code", res.errCode)
 	}
 
-	// 如果循环结束但没有记录日志（所有尝试都失败且可重试），记录最后一次的结果
+	// 所有重试都失败且可重试（没有提交响应），返回 502 Bad Gateway
 	if last.att.Model.ID != 0 && !last.committed && last.retryable {
-		h.writeLog(start, requestID, routeName, last.att, isStream,
-			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails, last.errorBody, false)
+		openAIError(w, http.StatusBadGateway, "all_retries_failed",
+			fmt.Sprintf("route '%s': all backend attempts failed", routeName), nil)
 	}
 
 	// 亲和只在最终成功后回写：失败转移到别的模型成功时，记住的是缓存真正生效的落点。
@@ -386,7 +390,16 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 		res.errCode, res.status = "protocol_convert_error", "error"
 		return res
 	}
-	if isStream && att.Model.Protocol == "openai" && rt.StreamInjectUsage {
+	// 应用 body_override：合并覆盖字段到转换后的请求体
+	if att.Model.BodyOverride != "" {
+		var override map[string]any
+		if err := json.Unmarshal([]byte(att.Model.BodyOverride), &override); err == nil {
+			for k, v := range override {
+				converted[k] = v
+			}
+		}
+	}
+	if isStream && (att.Model.Protocol == "completions" || att.Model.Protocol == "") && rt.StreamInjectUsage {
 		so, _ := converted["stream_options"].(map[string]any)
 		if so == nil {
 			so = map[string]any{}
@@ -407,13 +420,13 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 			"model", att.Model.Name,
 			"key_id", att.Key.ID,
 			"protocol", att.Model.Protocol,
-			"endpoint", adapter.endpoint(att.Provider.BaseURL),
+			"endpoint", adapter.endpoint(att.Provider.BaseURL, &att.Model),
 			"timeout_ms", att.Provider.TimeoutMs,
 			"is_stream", isStream,
 			"request_body", string(outBody))
 	}
 
-	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, adapter.endpoint(att.Provider.BaseURL), bytes.NewReader(outBody))
+	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, adapter.endpoint(att.Provider.BaseURL, &att.Model), bytes.NewReader(outBody))
 	if err != nil {
 		res.errCode, res.status = "bad_upstream_url", "error"
 		return res
@@ -607,7 +620,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 
 	idle := newIdleReader(resp.Body, time.Duration(rt.StreamIdleTimeoutS)*time.Second, cancel)
 	defer idle.Close()
-	passthrough := att.Model.Protocol == "openai"
+	passthrough := att.Model.Protocol == "completions" || att.Model.Protocol == ""
 	scan := newSSEScan()
 	splitter := &sseSplitter{}
 	var textAcc strings.Builder
@@ -768,7 +781,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 
 func (h *Handler) writeLog(start time.Time, requestID, routeName string, att router.Attempt,
 	isStream bool, status, errCode string, u usageInfo, ttft, total time.Duration,
-	retries int, errorBody string, isFallback bool) {
+	retries int, errorBody string, isFallback bool, vkID int64) {
 
 	entry := store.RequestLog{
 		RequestID: requestID, Route: routeName,
@@ -777,6 +790,7 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 		PromptTokens: u.prompt, CompletionTokens: u.completion, CachedTokens: u.cached, TokensEstimated: u.estimated,
 		TTFTMs: ttft.Milliseconds(), TotalMs: total.Milliseconds(),
 		Cost: cost(att.Model, u, h.rt.Snapshot().USDCNY), Retries: retries,
+		VKID: vkID,
 	}
 	if att.Model.ID != 0 {
 		entry.Model = att.Model.Name
@@ -994,6 +1008,10 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 		return
 	}
 
+	var vkID int64
+	if vk, ok := getVKFromContext(r.Context()); ok {
+		vkID = vk.ID
+	}
 	tried := map[int64]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult
@@ -1013,7 +1031,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 						res.latencyMs = time.Since(attemptStart).Milliseconds()
 						h.record(res, rt)
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
-							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true)
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID)
 						h.maybeCapture(requestID, routeName, reqSnap, cw)
 						return
 					}
@@ -1022,7 +1040,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false)
+					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
 				h.maybeCapture(requestID, routeName, reqSnap, cw)
@@ -1039,7 +1057,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
 		last = res
 		h.writeLog(start, requestID, routeName, att, isStream,
-			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false)
+			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID)
 		if res.committed || !res.retryable {
 			break
 		}
@@ -1076,7 +1094,7 @@ func (h *Handler) nativeAttempt(w http.ResponseWriter, r *http.Request, reqBody 
 	defer deadline.Stop()
 	stopDeadline := func() { deadline.Stop() }
 
-	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, adapter.endpoint(att.Provider.BaseURL), bytes.NewReader(reqBody))
+	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, adapter.endpoint(att.Provider.BaseURL, &att.Model), bytes.NewReader(reqBody))
 	if err != nil {
 		res.errCode, res.status = "bad_upstream_url", "error"
 		return res

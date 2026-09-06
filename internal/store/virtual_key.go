@@ -10,11 +10,11 @@ import (
 )
 
 var (
-	ErrVKNotFound      = errors.New("virtual key not found")
-	ErrVKDisabled      = errors.New("virtual key disabled")
-	ErrVKRateLimited   = errors.New("rate limit exceeded")
-	ErrVKBudgetExceeded = errors.New("budget exceeded")
-	ErrVKModelDenied   = errors.New("model not allowed")
+	ErrVKNotFound           = errors.New("virtual key not found")
+	ErrVKDisabled           = errors.New("virtual key disabled")
+	ErrVKRateLimitExceeded  = errors.New("rate limit exceeded")
+	ErrVKBudgetExceeded     = errors.New("budget exceeded")
+	ErrVKAccessDenied       = errors.New("route not allowed")
 )
 
 // GenerateVKToken 生成 vk- 前缀的随机 token。
@@ -81,55 +81,37 @@ func (s *Store) CheckVKAuth(keyValue string) (*VirtualKey, error) {
 	return vk, nil
 }
 
-// CheckVKModelAccess 检查虚拟 key 是否允许访问指定模型。
-func (s *Store) CheckVKModelAccess(vk *VirtualKey, model string) error {
-	if vk.AllowedModels == "" || vk.AllowedModels == "[]" {
+// CheckVKRouteAccess 检查虚拟 key 是否允许访问指定路由。
+func (s *Store) CheckVKRouteAccess(vk *VirtualKey, routeID int64) error {
+	if vk.AllowedRoutes == "" {
 		return nil // 空=全部允许
 	}
-	var allowed []string
-	if err := json.Unmarshal([]byte(vk.AllowedModels), &allowed); err != nil {
-		return fmt.Errorf("parse allowed_models: %w", err)
+	var allowed []int64
+	if err := json.Unmarshal([]byte(vk.AllowedRoutes), &allowed); err != nil {
+		return fmt.Errorf("invalid allowed_routes: %w", err)
 	}
-	for _, m := range allowed {
-		if m == model {
+	if len(allowed) == 0 {
+		return nil // 空数组=全部允许
+	}
+	for _, id := range allowed {
+		if id == routeID {
 			return nil
 		}
 	}
-	return ErrVKModelDenied
+	return ErrVKAccessDenied
 }
 
 // CheckVKBudget 检查虚拟 key 配额是否足够（预检查，不扣费）。
 func (s *Store) CheckVKBudget(vk *VirtualKey) error {
-	if vk.BudgetUSD <= 0 {
+	if vk.TotalBudgetUSD == 0 {
 		return nil // 0=不限制
 	}
-	// 检查是否需要重置
-	now := time.Now().Unix()
-	if vk.ResetAt > 0 && now >= vk.ResetAt {
-		if err := s.resetVKBudget(vk); err != nil {
-			return err
-		}
-	}
-	if vk.UsedUSD >= vk.BudgetUSD {
+	if vk.UsedUSD >= vk.TotalBudgetUSD {
 		return ErrVKBudgetExceeded
 	}
 	return nil
 }
 
-// resetVKBudget 重置虚拟 key 配额（内部调用）。
-func (s *Store) resetVKBudget(vk *VirtualKey) error {
-	vk.UsedUSD = 0
-	now := time.Now()
-	switch vk.BudgetReset {
-	case "daily":
-		vk.ResetAt = now.AddDate(0, 0, 1).Unix()
-	case "monthly":
-		vk.ResetAt = now.AddDate(0, 1, 0).Unix()
-	default:
-		vk.ResetAt = 0
-	}
-	return s.DB.Save(vk).Error
-}
 
 // RecordVKUsage 记录虚拟 key 使用量（请求成功后调用，扣除费用）。
 func (s *Store) RecordVKUsage(vkID int64, costUSD float64) error {
@@ -141,53 +123,39 @@ func (s *Store) RecordVKUsage(vkID int64, costUSD float64) error {
 }
 
 // CheckVKRateLimit 检查虚拟 key 是否超过限流（滑动窗口，过去 1 分钟）。
-func (s *Store) CheckVKRateLimit(vkID int64, rpmLimit, tpmLimit int64) error {
-	if rpmLimit <= 0 && tpmLimit <= 0 {
-		return nil // 都不限制
+func (s *Store) CheckVKRateLimit(vkID int64, rpmLimit int64) error {
+	if rpmLimit == 0 {
+		return nil // 0=不限制
 	}
-
 	now := time.Now().Unix()
-	windowStart := now - 60 // 过去 60 秒
-
-	// 查询过去 1 分钟的累计
-	var result struct {
-		Requests int64
-		Tokens   int64
+	windowStart := now - 60
+	var count int64
+	err := s.DB.Model(&VKRateLimit{}).
+		Where("vk_id = ? AND minute_ts >= ?", vkID, windowStart).
+		Select("COALESCE(SUM(request_count), 0)").
+		Scan(&count).Error
+	if err != nil {
+		return fmt.Errorf("query rate limit: %w", err)
 	}
-	if err := s.DB.Model(&VKRateLimit{}).
-		Select("COALESCE(SUM(requests), 0) as requests, COALESCE(SUM(tokens), 0) as tokens").
-		Where("vk_id = ? AND window_start >= ?", vkID, windowStart).
-		Scan(&result).Error; err != nil {
-		return err
-	}
-
-	if rpmLimit > 0 && result.Requests >= rpmLimit {
-		return ErrVKRateLimited
-	}
-	if tpmLimit > 0 && result.Tokens >= tpmLimit {
-		return ErrVKRateLimited
+	if count >= rpmLimit {
+		return ErrVKRateLimitExceeded
 	}
 	return nil
 }
 
 // RecordVKRateLimitHit 记录虚拟 key 限流命中（请求发出前调用）。
-func (s *Store) RecordVKRateLimitHit(vkID int64, tokens int64) error {
-	now := time.Now().Unix()
-	// 按分钟聚合，窗口对齐到分钟起点
-	windowStart := now - (now % 60)
-
-	// UPSERT: 存在则累加，不存在则插入
+func (s *Store) RecordVKRateLimitHit(vkID int64) error {
+	now := time.Now()
+	minuteTs := now.Unix() / 60 * 60
 	return s.DB.Exec(`
-		INSERT INTO vk_rate_limit (vk_id, window_start, requests, tokens)
-		VALUES (?, ?, 1, ?)
-		ON CONFLICT(vk_id, window_start) DO UPDATE SET
-			requests = requests + 1,
-			tokens = tokens + ?
-	`, vkID, windowStart, tokens, tokens).Error
+		INSERT INTO vk_rate_limits (vk_id, minute_ts, request_count)
+		VALUES (?, ?, 1)
+		ON CONFLICT(vk_id, minute_ts) DO UPDATE SET request_count = request_count + 1
+	`, vkID, minuteTs).Error
 }
 
 // CleanupVKRateLimit 清理过期的限流窗口（建议定期调用，如每小时）。
 func (s *Store) CleanupVKRateLimit() error {
 	cutoff := time.Now().Unix() - 3600 // 保留 1 小时
-	return s.DB.Where("window_start < ?", cutoff).Delete(&VKRateLimit{}).Error
+	return s.DB.Where("minute_ts < ?", cutoff).Delete(&VKRateLimit{}).Error
 }

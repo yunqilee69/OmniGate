@@ -17,11 +17,12 @@ interface Target {
 interface Route {
   id: number
   name: string
+  endpoint: string
   remark: string
   targets: Target[]
 }
 
-interface Model { id: number; name: string; provider_id: number }
+interface Model { id: number; name: string; provider_id: number; protocol: string; type: string }
 interface Provider { id: number; name: string }
 
 export default function RoutesPage() {
@@ -53,6 +54,7 @@ export default function RoutesPage() {
     if (r) {
       form.setFieldsValue({
         name: r.name,
+        endpoint: r.endpoint,
         remark: r.remark,
         targets: r.targets.map((t) => ({ model_id: t.model_id, weight: t.weight })),
       })
@@ -135,32 +137,72 @@ export default function RoutesPage() {
           <Form.Item name="name" label="逻辑 modelId（客户端请求时填写）" rules={[{ required: true }]}>
             <Input placeholder="如 glm" />
           </Form.Item>
+          <Form.Item 
+            name="endpoint" 
+            label="端点类型" 
+            initialValue="completions" 
+            rules={[{ required: true }]}
+            extra="决定代理路径与协议：completions 使用 OpenAI 格式，messages 使用 Anthropic 格式，responses 使用 Responses 格式"
+          >
+            <Select
+              options={[
+                { value: 'completions', label: 'completions — /v1/chat/completions（OpenAI）' },
+                { value: 'messages', label: 'messages — /v1/messages（Anthropic）' },
+                { value: 'responses', label: 'responses — /v1/responses（Responses）' },
+              ]}
+            />
+          </Form.Item>
           <Form.Item name="remark" label="备注"><Input /></Form.Item>
           <Form.Item label="目标模型与权重">
             <Form.List name="targets">
               {(fields, { add, remove }) => (
-                <>
-                  {fields.map((field) => (
-                    <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
-                      <Form.Item name={[field.name, 'model_id']} rules={[{ required: true, message: '选择模型' }]} noStyle>
-                        <Select
-                          placeholder="选择目标模型"
-                          style={{ width: 320 }}
-                          options={models.map((m) => ({ value: m.id, label: modelName(m.id) }))}
-                          showSearch
-                          optionFilterProp="label"
-                        />
-                      </Form.Item>
-                      <Form.Item name={[field.name, 'weight']} initialValue={1} noStyle>
-                        <InputNumber min={1} placeholder="权重" style={{ width: 110 }} />
-                      </Form.Item>
-                      <DeleteOutlined onClick={() => remove(field.name)} />
-                    </Space>
-                  ))}
-                  <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add({ weight: 1 })}>
-                    添加目标模型
-                  </Button>
-                </>
+                <Form.Item noStyle shouldUpdate={(prev, cur) => prev.endpoint !== cur.endpoint || prev.targets !== cur.targets}>
+                  {({ getFieldValue }) => {
+                    const endpoint = getFieldValue('endpoint') || 'completions'
+                    const requiredProtocol = endpoint === 'messages' ? 'messages' : endpoint === 'responses' ? 'responses' : 'completions'
+                    const targets = getFieldValue('targets') || []
+                    const selectedModelIds = new Set(targets.map((t: any) => t?.model_id).filter(Boolean))
+                    const filteredModels = models.filter((m) => m.protocol === requiredProtocol)
+                    
+                    return (
+                      <>
+                        {fields.map((field) => {
+                          const currentModelId = getFieldValue(['targets', field.name, 'model_id'])
+                          const availableForThisField = filteredModels.filter(
+                            (m) => m.id === currentModelId || !selectedModelIds.has(m.id)
+                          )
+                          
+                          return (
+                            <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
+                              <Form.Item name={[field.name, 'model_id']} rules={[{ required: true, message: '选择模型' }]} noStyle>
+                                <Select
+                                  placeholder="选择目标模型"
+                                  style={{ width: 320 }}
+                                  options={availableForThisField.map((m) => ({ value: m.id, label: modelName(m.id) }))}
+                                  showSearch
+                                  optionFilterProp="label"
+                                />
+                              </Form.Item>
+                              <Form.Item name={[field.name, 'weight']} initialValue={1} noStyle>
+                                <InputNumber min={1} placeholder="权重" style={{ width: 110 }} />
+                              </Form.Item>
+                              <DeleteOutlined onClick={() => remove(field.name)} />
+                            </Space>
+                          )
+                        })}
+                        <Button 
+                          type="dashed" 
+                          block 
+                          icon={<PlusOutlined />} 
+                          onClick={() => add({ weight: 1 })}
+                          disabled={filteredModels.length === 0 || selectedModelIds.size >= filteredModels.length}
+                        >
+                          添加目标模型{filteredModels.length === 0 ? `（无可用的 ${requiredProtocol} 协议模型）` : selectedModelIds.size >= filteredModels.length ? '（所有模型已选择）' : ''}
+                        </Button>
+                      </>
+                    )
+                  }}
+                </Form.Item>
               )}
             </Form.List>
           </Form.Item>

@@ -42,10 +42,10 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Protocol == "" {
-		req.Protocol = "openai"
+		req.Protocol = "completions"
 	}
-	if req.Protocol != "openai" && req.Protocol != "anthropic" {
-		writeErr(w, http.StatusBadRequest, "bad_request", "protocol must be openai or anthropic")
+	if req.Protocol != "completions" && req.Protocol != "messages" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "protocol must be completions or messages")
 		return
 	}
 	if req.TimeoutMs <= 0 {
@@ -113,8 +113,8 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
 		updates["base_url"] = v
 	}
 	if req.Protocol != nil {
-		if *req.Protocol != "openai" && *req.Protocol != "anthropic" {
-			writeErr(w, http.StatusBadRequest, "bad_request", "protocol must be openai or anthropic")
+		if *req.Protocol != "completions" && *req.Protocol != "messages" {
+			writeErr(w, http.StatusBadRequest, "bad_request", "protocol must be completions or messages")
 			return
 		}
 		updates["protocol"] = *req.Protocol

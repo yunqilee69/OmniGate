@@ -63,7 +63,7 @@ func GetVKFromContext(ctx context.Context) (*store.VirtualKey, bool) {
 }
 
 // VKRateLimitMiddleware 虚拟 key 限流中间件。
-// 检查 RPM/TPM 限制，在请求前记录命中。
+// 检查 RPM 限制，在请求前记录命中。
 func VKRateLimitMiddleware(db *store.Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -75,10 +75,9 @@ func VKRateLimitMiddleware(db *store.Store) func(http.Handler) http.Handler {
 			}
 
 			// 检查限流
-			if err := db.CheckVKRateLimit(vk.ID, vk.RPMLimit, vk.TPMLimit); err != nil {
-				if err == store.ErrVKRateLimited {
+			if err := db.CheckVKRateLimit(vk.ID, vk.RPMLimit); err != nil {
+				if err == store.ErrVKRateLimitExceeded {
 					w.Header().Set("X-RateLimit-Limit-Requests", formatInt64(vk.RPMLimit))
-					w.Header().Set("X-RateLimit-Limit-Tokens", formatInt64(vk.TPMLimit))
 					writeErr(w, 429, "rate_limit_exceeded", "rate limit exceeded")
 				} else {
 					writeErr(w, 500, "rate_limit_error", err.Error())
@@ -86,8 +85,8 @@ func VKRateLimitMiddleware(db *store.Store) func(http.Handler) http.Handler {
 				return
 			}
 
-			// 记录命中（先记录 0 token，实际 token 数在响应后更新）
-			if err := db.RecordVKRateLimitHit(vk.ID, 0); err != nil {
+			// 记录命中
+			if err := db.RecordVKRateLimitHit(vk.ID); err != nil {
 				slog.Warn("failed to record rate limit hit", "vk_id", vk.ID, "err", err)
 			}
 
@@ -109,7 +108,7 @@ func VKBudgetMiddleware(db *store.Store) func(http.Handler) http.Handler {
 			// 检查配额
 			if err := db.CheckVKBudget(vk); err != nil {
 				if err == store.ErrVKBudgetExceeded {
-					w.Header().Set("X-Budget-Limit", formatFloat64(vk.BudgetUSD))
+					w.Header().Set("X-Budget-Limit", formatFloat64(vk.TotalBudgetUSD))
 					w.Header().Set("X-Budget-Used", formatFloat64(vk.UsedUSD))
 					writeErr(w, 402, "budget_exceeded", "budget exceeded")
 				} else {
@@ -123,10 +122,6 @@ func VKBudgetMiddleware(db *store.Store) func(http.Handler) http.Handler {
 	}
 }
 
-// CheckVKModelAccess 虚拟 key 模型访问控制检查（在 proxy handler 内部调用）。
-func CheckVKModelAccess(db *store.Store, vk *store.VirtualKey, model string) error {
-	return db.CheckVKModelAccess(vk, model)
-}
 
 func formatInt64(v int64) string {
 	if v == 0 {

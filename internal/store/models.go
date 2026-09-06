@@ -33,15 +33,17 @@ type ApiKey struct {
 }
 
 // Model 真实模型。阶梯熔断状态机挂在这一层（跨路由共享的物理事实）。
-// Protocol 决定上游调用格式：openai(chat/completions) | responses(OpenAI Responses) | anthropic(messages)。
+// Protocol 决定上游调用格式：completions(/chat/completions) | responses(/responses) | messages(/messages)。
 // Type 决定端点家族：chat(/v1/chat/completions) | embedding(/v1/embeddings) | rerank(/v1/rerank)；
-// embedding/rerank 仅支持 protocol=openai（业界无可归一标准，按各自事实骨架直通）。
+// embedding/rerank 仅支持 protocol=completions（业界无可归一标准，按各自事实骨架直通）。
 type Model struct {
 	ID            int64   `json:"id" gorm:"primaryKey;autoIncrement"`
 	ProviderID    int64   `json:"provider_id" gorm:"not null;uniqueIndex:idx_model_provider_name"`
 	Name          string  `json:"name" gorm:"size:191;not null;uniqueIndex:idx_model_provider_name"`
 	Type          string  `json:"type" gorm:"size:32;not null;default:'chat'"` // chat | embedding | rerank
-	Protocol      string  `json:"protocol" gorm:"size:32;not null;default:openai"`
+	Protocol      string  `json:"protocol" gorm:"size:32;not null;default:completions"` // completions | responses | messages
+	ApiPath       string  `json:"api_path" gorm:"size:512;not null;default:''"`         // 自定义 API 路径覆盖
+	BodyOverride  string  `json:"body_override" gorm:"type:text;not null;default:''"`   // 请求体覆盖 JSON
 	InputPrice    float64 `json:"input_price" gorm:"not null;default:0"`               // 每 1M prompt token 价格
 	OutputPrice   float64 `json:"output_price" gorm:"not null;default:0"`              // 每 1M completion token 价格
 	PriceCurrency string  `json:"price_currency" gorm:"size:8;not null;default:'USD'"` // 价格币种：USD | CNY；计费时统一折算为 USD 入库
@@ -76,15 +78,16 @@ type ModelKeyBan struct {
 }
 
 // Route 逻辑路由（客户端请求的 modelId）。
-// Endpoint 决定协议族：chat(/v1/chat/completions) | messages(/v1/messages) | responses(/v1/responses)。
+// Endpoint 决定协议族：completions(/v1/chat/completions) | messages(/v1/messages) | responses(/v1/responses)。
 type Route struct {
-	ID        int64         `json:"id" gorm:"primaryKey;autoIncrement"`
-	Name      string        `json:"name" gorm:"size:191;not null;uniqueIndex"`
-	Endpoint  string        `json:"endpoint" gorm:"size:32;not null;default:chat"` // chat | messages | responses
-	Remark    string        `json:"remark" gorm:"size:1024;not null;default:''"`
-	Targets   []RouteTarget `json:"targets" gorm:"foreignKey:RouteID"`
-	CreatedAt int64         `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt int64         `json:"updated_at" gorm:"autoUpdateTime"`
+	ID           int64         `json:"id" gorm:"primaryKey;autoIncrement"`
+	Name         string        `json:"name" gorm:"size:191;not null;uniqueIndex"`
+	Endpoint     string        `json:"endpoint" gorm:"size:32;not null;default:completions"` // completions | messages | responses
+	BodyOverride string        `json:"body_override" gorm:"type:text;not null;default:''"`   // 请求体覆盖 JSON
+	Remark       string        `json:"remark" gorm:"size:1024;not null;default:''"`
+	Targets      []RouteTarget `json:"targets" gorm:"foreignKey:RouteID"`
+	CreatedAt    int64         `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt    int64         `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 // RouteTarget 路由目标：路由 → 真实模型（带权重）。
@@ -103,23 +106,20 @@ type AppConfig struct {
 
 // VirtualKey 虚拟密钥（消费者凭证）。客户端使用虚拟 key 访问网关，网关负责限流、配额控制和转发。
 type VirtualKey struct {
-	ID     int64  `gorm:"primaryKey;autoIncrement"`
+	ID       int64  `gorm:"primaryKey;autoIncrement"`
 	KeyValue string `gorm:"uniqueIndex;not null" json:"-"` // vk-xxx 格式
-	Name   string `gorm:"not null"`
-	Status string `gorm:"not null;default:active"` // active | disabled
+	Name     string `gorm:"not null"`
+	Status   string `gorm:"not null;default:active"` // active | disabled
 
 	// 限流
-	RPMLimit int64 `gorm:"not null;default:0"` // 0=不限制
-	TPMLimit int64 `gorm:"not null;default:0"` // 0=不限制
+	RPMLimit int64 `gorm:"not null;default:0"` // 每分钟请求数限制，0=不限制
 
 	// 配额
-	BudgetUSD   float64 `gorm:"not null;default:0"`    // 0=不限制
-	UsedUSD     float64 `gorm:"not null;default:0"`
-	BudgetReset string  `gorm:"not null;default:''"` // daily | monthly | never
-	ResetAt     int64   `gorm:"not null;default:0"`  // 下次重置时间戳
+	TotalBudgetUSD float64 `gorm:"not null;default:0"` // 总限额（美元），0=不限制
+	UsedUSD        float64 `gorm:"not null;default:0"` // 已使用金额
 
 	// 访问控制
-	AllowedModels string `gorm:"not null;default:''"` // JSON 数组,空=全部
+	AllowedRoutes string `gorm:"not null;default:''"` // JSON 数组，允许的路由 ID 列表，空=全部
 
 	// 统计
 	TotalRequests int64 `gorm:"not null;default:0"`
@@ -131,12 +131,12 @@ type VirtualKey struct {
 
 // VKRateLimit 虚拟 key 限流窗口（滑动窗口计数，按分钟聚合）。
 type VKRateLimit struct {
-	VKId        int64 `gorm:"primaryKey;not null"`
-	WindowStart int64 `gorm:"primaryKey;not null"` // 窗口起始时间戳(秒)
-	Requests    int64 `gorm:"not null;default:0"`
-	Tokens      int64 `gorm:"not null;default:0"`
+	VKID         int64 `gorm:"column:vk_id;primaryKey;not null"`
+	MinuteTs     int64 `gorm:"column:minute_ts;primaryKey;not null"` // 分钟时间戳(秒)
+	RequestCount int64 `gorm:"column:request_count;not null;default:0"`
 }
 
+func (VKRateLimit) TableName() string { return "vk_rate_limits" }
 func (AppConfig) TableName() string { return "app_config" }
 
 // RequestLog 请求日志（统计事实表，只增不改；表结构上不存在任何请求内容字段）。
@@ -148,6 +148,7 @@ type RequestLog struct {
 	Provider         string  `json:"provider" gorm:"size:191;not null;index:idx_rl_provider;index:idx_rl_time_provider,priority:2"`
 	Model            string  `json:"model" gorm:"size:191;not null"`
 	KeyID            int64   `json:"key_id" gorm:"not null;default:0;index:idx_rl_key"`
+	VKID             int64   `json:"vk_id" gorm:"column:vk_id;not null;default:0;index:idx_rl_vk"`
 	RequestID        string  `json:"request_id" gorm:"size:64;not null"`
 	ErrorCode        string  `json:"error_code" gorm:"size:64;not null;default:''"`
 	IsStream         bool    `json:"is_stream" gorm:"not null;default:false"`

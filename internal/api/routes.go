@@ -120,11 +120,11 @@ func (s *Server) validateTargets(endpoint string, targets []routeTargetReq) (boo
 func endpointToProtocol(endpoint string) string {
 	switch endpoint {
 	case "messages":
-		return "anthropic"
+		return "messages"
 	case "responses":
 		return "responses"
 	default:
-		return "openai"
+		return "completions"
 	}
 }
 

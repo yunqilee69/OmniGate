@@ -87,6 +87,7 @@ export default function Dashboard() {
   const [ov, setOv] = useState<Overview | null>(null)
   const [series, setSeries] = useState<any[]>([])
   const [models, setModels] = useState<HealthModel[]>([])
+  const [vkStats, setVkStats] = useState<any[]>([])
   const [topModels, setTopModels] = useState<TopModelRow[]>([])
   const [now, setNow] = useState(Math.floor(Date.now() / 1000))
   const [currency, setCurrency] = useCurrency()
@@ -98,11 +99,12 @@ export default function Dashboard() {
     const endOfDay = dayjs().endOf('day').unix()
     const cur = `&currency=${currencyRef.current}`
     try {
-      const [o, ts, h, top] = await Promise.all([
+      const [o, ts, h, top, vk] = await Promise.all([
         api('GET', `/api/stats/overview?from=${startOfDay}&to=${endOfDay}${cur}`),
         api('GET', `/api/stats/timeseries?from=${startOfDay}&to=${endOfDay}&bucket=1h${cur}`),
         api('GET', '/api/health'),
         api('GET', `/api/stats/breakdown?dim=model&from=${startOfDay}&to=${endOfDay}${cur}`),
+        api('GET', '/api/stats/vk'),
       ])
       setOv(o)
       setSeries(ts.points ?? [])
@@ -112,6 +114,7 @@ export default function Dashboard() {
         (a, b) => (b.prompt_tokens + b.completion_tokens) - (a.prompt_tokens + a.completion_tokens),
       ).slice(0, 10)
       setTopModels(sorted)
+      setVkStats(vk ?? [])
     } catch (e: any) {
       message.error(e.message)
     }
@@ -220,6 +223,33 @@ export default function Dashboard() {
       </Row>
       <Card title="今日流量" style={{ marginTop: 16 }}>
         <Chart option={chartOption} height={280} />
+      </Card>
+      <Card title="虚拟密钥调用分布" style={{ marginTop: 16 }}>
+        {vkStats.length === 0 ? (
+          <Empty description="今日暂无虚拟密钥调用" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        ) : (
+          <Chart
+            option={{
+              tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+              grid: { left: 120, right: 50, bottom: 30 },
+              xAxis: { type: 'value', name: '调用次数' },
+              yAxis: { 
+                type: 'category', 
+                data: vkStats.map(v => v.vk_name || `VK-${v.vk_id}`),
+                axisLabel: { interval: 0 }
+              },
+              series: [
+                {
+                  type: 'bar',
+                  data: vkStats.map(v => v.requests),
+                  itemStyle: { color: '#4FD1C5' },
+                  label: { show: true, position: 'right', formatter: '{c}' }
+                }
+              ]
+            }}
+            height={Math.max(200, vkStats.length * 40)}
+          />
+        )}
       </Card>
       <Card title="模型调用详情" style={{ marginTop: 16 }}>
         {topModels.length === 0 ? (

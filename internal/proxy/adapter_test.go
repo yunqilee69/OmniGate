@@ -63,7 +63,7 @@ func TestAnthropicBufferedConversion(t *testing.T) {
 	var gotAuth string
 	up := anthropicUpstream(t, &gotReq, &gotAuth)
 	defer up.Close()
-	seedProtocolModel(t, st, up.URL, "claude-sonnet-4", "anthropic")
+	seedProtocolModel(t, st, up.URL, "claude-sonnet-4", "messages")
 
 	resp := postWithAuth(t, h, map[string]any{
 		"model": "claude-sonnet-4-route",
@@ -108,7 +108,7 @@ func TestAnthropicStreamConversion(t *testing.T) {
 	var gotAuth string
 	up := anthropicUpstream(t, &gotReq, &gotAuth)
 	defer up.Close()
-	seedProtocolModel(t, st, up.URL, "claude-sonnet-4", "anthropic")
+	seedProtocolModel(t, st, up.URL, "claude-sonnet-4", "messages")
 
 	resp := postWithAuth(t, h, map[string]any{
 		"model": "claude-sonnet-4-route", "stream": true,

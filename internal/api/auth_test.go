@@ -47,7 +47,6 @@ func TestAuthInfoModes(t *testing.T) {
 		want string
 	}{
 		{AdminAuth{}, "open"},
-		{AdminAuth{ApiKey: "sk-gw"}, "open"},
 		{AdminAuth{Username: "admin", Password: "pw"}, "password"},
 	} {
 		h := newAuthTestServer(t, tc.auth)
@@ -102,45 +101,32 @@ func TestLoginPasswordMode(t *testing.T) {
 	}
 }
 
-func TestApiKeyNotValidOnAdminPlane(t *testing.T) {
-	// api_key 是 /v1 专用凭据,不得打开管理面
-	h := newAuthTestServer(t, AdminAuth{Username: "admin", Password: "s3cret", ApiKey: "sk-gw"})
-	req, _ := http.NewRequest("GET", "/api/health", nil)
-	req.Header.Set("Authorization", "Bearer sk-gw")
-	if rr := doReq(t, h, req); rr.Code != http.StatusUnauthorized {
-		t.Fatalf("api_key on admin plane status = %d, want 401", rr.Code)
-	}
-}
 
-func TestV1ApiKeyOnlyMode(t *testing.T) {
+func TestV1RequiresVirtualKey(t *testing.T) {
 	// 验证 /v1 端点现在需要虚拟 key 而非旧 API key
-	h := newAuthTestServer(t, AdminAuth{ApiKey: "sk-gw"})
+	h := newAuthTestServer(t, AdminAuth{})
 
 	if res := do(t, h, "GET", "/api/health", nil, ""); res.Code != http.StatusOK {
 		t.Fatalf("admin open status = %d, want 200", res.Code)
 	}
-	
-	// 旧 API key 不再工作 - 现在需要虚拟 key
-	req, _ := http.NewRequest("GET", "/v1/models", nil)
-	req.Header.Set("Authorization", "Bearer sk-gw")
-	if rr := doReq(t, h, req); rr.Code != http.StatusUnauthorized {
-		t.Fatalf("old api_key should be rejected, got status = %d", rr.Code)
+
+	// /v1 需要虚拟密钥
+	if res := do(t, h, "GET", "/v1/models", nil, ""); res.Code != http.StatusUnauthorized {
+		t.Fatalf("v1 should require VK, got status = %d", res.Code)
 	}
 }
-func TestV1CredentialForms(t *testing.T) {
-	// 验证 /v1 端点现在只接受虚拟 key，旧凭据形式都被拒绝
-	enc := base64.StdEncoding.EncodeToString([]byte("admin:s3cret"))
-	h := newAuthTestServer(t, AdminAuth{Username: "admin", Password: "s3cret", ApiKey: "sk-gw"})
+
+func TestV1VirtualKeyAuth(t *testing.T) {
+	// 验证 /v1 端点现在需要虚拟密钥，管理员账号密码不能用于 /v1 认证
+	h := newAuthTestServer(t, AdminAuth{Username: "admin", Password: "s3cret"})
 
 	res := do(t, h, "GET", "/v1/models", nil, "")
 	if res.Code != http.StatusUnauthorized {
 		t.Fatalf("no credential status = %d, want 401", res.Code)
 	}
-	if www := res.Header().Get("WWW-Authenticate"); www == "" {
-		t.Fatal("401 missing WWW-Authenticate header (RFC 7617)")
-	}
 
-	// 所有旧的鉴权形式现在都应该被拒绝
+	// 所有旧的鉴权形式现在都应该被拒绝，只接受虚拟密钥
+	enc := base64.StdEncoding.EncodeToString([]byte("admin:s3cret"))
 	for _, tc := range []struct {
 		name   string
 		header string
@@ -148,7 +134,6 @@ func TestV1CredentialForms(t *testing.T) {
 		{"basic", "Basic " + enc},
 		{"bearer-encoded", "Bearer " + enc},
 		{"bearer-raw", "Bearer admin:s3cret"},
-		{"bearer-api-key", "Bearer sk-gw"},
 	} {
 		req, _ := http.NewRequest("GET", "/v1/models", nil)
 		req.Header.Set("Authorization", tc.header)

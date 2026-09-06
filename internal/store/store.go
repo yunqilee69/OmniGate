@@ -40,6 +40,9 @@ func Open(path string) (*Store, error) {
 	if err := migrateEndpointColumn(db); err != nil {
 		return nil, fmt.Errorf("migrate endpoint column: %w", err)
 	}
+	if err := migrateProtocolRenameAndFields(db); err != nil {
+		return nil, fmt.Errorf("migrate protocol rename and fields: %w", err)
+	}
 	return &Store{DB: db}, nil
 }
 
@@ -61,6 +64,43 @@ func migrateEndpointColumn(db *gorm.DB) error {
 		return err
 	}
 	return db.Exec(`UPDATE route SET endpoint = 'chat' WHERE endpoint = ''`).Error
+}
+
+// migrateProtocolRenameAndFields 添加 api_path 和 body_override 字段，并重命名协议和端点值
+func migrateProtocolRenameAndFields(db *gorm.DB) error {
+	// 添加 api_path 到 model 表
+	if !db.Migrator().HasColumn(&Model{}, "api_path") {
+		if err := db.Exec(`ALTER TABLE model ADD COLUMN api_path VARCHAR(512) NOT NULL DEFAULT ''`).Error; err != nil {
+			return err
+		}
+	}
+	// 添加 body_override 到 model 表
+	if !db.Migrator().HasColumn(&Model{}, "body_override") {
+		if err := db.Exec(`ALTER TABLE model ADD COLUMN body_override TEXT NOT NULL DEFAULT ''`).Error; err != nil {
+			return err
+		}
+	}
+	// 添加 body_override 到 route 表
+	if !db.Migrator().HasColumn(&Route{}, "body_override") {
+		if err := db.Exec(`ALTER TABLE route ADD COLUMN body_override TEXT NOT NULL DEFAULT ''`).Error; err != nil {
+			return err
+		}
+	}
+	
+	// 重命名 model 表的协议值: openai → completions, anthropic → messages
+	if err := db.Exec(`UPDATE model SET protocol = 'completions' WHERE protocol = 'openai'`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`UPDATE model SET protocol = 'messages' WHERE protocol = 'anthropic'`).Error; err != nil {
+		return err
+	}
+	
+	// 重命名 route 表的端点值: chat → completions
+	if err := db.Exec(`UPDATE route SET endpoint = 'completions' WHERE endpoint = 'chat'`).Error; err != nil {
+		return err
+	}
+	
+	return nil
 }
 
 // migratePoolsAway 把旧版“密钥池”结构迁移为模型直绑密钥：

@@ -393,7 +393,7 @@ func startCommand() {
 		os.Exit(1)
 	}
 
-	listen := boot.Server.Listen
+	listen := boot.Listen()
 	if listenOverride != "" {
 		listen = listenOverride
 	}
@@ -428,7 +428,6 @@ func startCommand() {
 	auth := api.AdminAuth{
 		Username: boot.Admin.Username,
 		Password: boot.Admin.Password,
-		ApiKey:   boot.Admin.ApiKey,
 	}
 	plane := proxy.New(st, rt)
 	srv := api.New(st, rt, auth, plane, plane)

@@ -19,8 +19,22 @@ import (
 )
 
 func newTestStack(t *testing.T) (*store.Store, http.Handler) {
-	st, h, _ := newTestStackWithVK(t)
-	return st, h
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "proxy.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	rt, err := config.NewRuntimeManager(st)
+	if err != nil {
+		t.Fatalf("init runtime: %v", err)
+	}
+	
+	// Return handler without VK middleware for tests that don't use VK
+	ph := proxy.New(st, rt)
+	mux := http.NewServeMux()
+	mux.Handle("/v1/", ph)
+	return st, mux
 }
 
 func newTestStackWithVK(t *testing.T) (*store.Store, http.Handler, string) {
@@ -37,13 +51,11 @@ func newTestStackWithVK(t *testing.T) (*store.Store, http.Handler, string) {
 	
 	// 为测试创建一个无限制的虚拟 key
 	vk := &store.VirtualKey{
-		Name:          "test-key",
-		Status:        "active",
-		RPMLimit:      0, // 无限制
-		TPMLimit:      0,
-		BudgetUSD:     0,
-		BudgetReset:   "never",
-		AllowedModels: "[]", // 允许所有模型
+		Name:           "test-key",
+		Status:         "active",
+		RPMLimit:       0, // 无限制
+		TotalBudgetUSD: 0, // 无限制
+		AllowedRoutes:  "[]", // 允许所有路由
 	}
 	if err := st.CreateVirtualKey(vk); err != nil {
 		t.Fatalf("create test virtual key: %v", err)
@@ -215,7 +227,8 @@ func TestStreamPassthroughAndUsage(t *testing.T) {
 
 	resp := postWithAuth(t, h, chatBody(true), vkToken)
 	if resp.StatusCode != 200 {
-		t.Fatalf("status %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d: %s", resp.StatusCode, string(body))
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
 		t.Fatalf("content-type %q", ct)

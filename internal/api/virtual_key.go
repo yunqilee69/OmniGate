@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/cloudomni/omnigate/internal/store"
@@ -23,10 +22,8 @@ func NewVirtualKeyHandler(db *store.Store) *VirtualKeyHandler {
 type CreateVirtualKeyRequest struct {
 	Name          string   `json:"name"`
 	RPMLimit      int64    `json:"rpm_limit"`
-	TPMLimit      int64    `json:"tpm_limit"`
-	BudgetUSD     float64  `json:"budget_usd"`
-	BudgetReset   string   `json:"budget_reset"` // daily | monthly | never
-	AllowedModels []string `json:"allowed_models"`
+	TotalBudget   float64  `json:"total_budget"`
+	AllowedRoutes []string `json:"allowed_routes"`
 }
 
 // VirtualKeyResponse 虚拟 key 响应体（包含明文 key_value）。
@@ -36,12 +33,9 @@ type VirtualKeyResponse struct {
 	Name          string   `json:"name"`
 	Status        string   `json:"status"`
 	RPMLimit      int64    `json:"rpm_limit"`
-	TPMLimit      int64    `json:"tpm_limit"`
-	BudgetUSD     float64  `json:"budget_usd"`
+	TotalBudget   float64  `json:"total_budget"`
 	UsedUSD       float64  `json:"used_usd"`
-	BudgetReset   string   `json:"budget_reset"`
-	ResetAt       int64    `json:"reset_at"`
-	AllowedModels []string `json:"allowed_models"`
+	AllowedRoutes []string `json:"allowed_routes"`
 	TotalRequests int64    `json:"total_requests"`
 	LastUsedAt    int64    `json:"last_used_at"`
 	CreatedAt     int64    `json:"created_at"`
@@ -51,8 +45,8 @@ type VirtualKeyResponse struct {
 // toResponse 转换为响应体。
 func toVKResponse(vk *store.VirtualKey, includeFullKey bool) VirtualKeyResponse {
 	var allowed []string
-	if vk.AllowedModels != "" && vk.AllowedModels != "[]" {
-		json.Unmarshal([]byte(vk.AllowedModels), &allowed)
+	if vk.AllowedRoutes != "" && vk.AllowedRoutes != "[]" {
+		json.Unmarshal([]byte(vk.AllowedRoutes), &allowed)
 	}
 
 	keyValue := vk.KeyValue
@@ -66,12 +60,9 @@ func toVKResponse(vk *store.VirtualKey, includeFullKey bool) VirtualKeyResponse 
 		Name:          vk.Name,
 		Status:        vk.Status,
 		RPMLimit:      vk.RPMLimit,
-		TPMLimit:      vk.TPMLimit,
-		BudgetUSD:     vk.BudgetUSD,
+		TotalBudget:   vk.TotalBudgetUSD,
 		UsedUSD:       vk.UsedUSD,
-		BudgetReset:   vk.BudgetReset,
-		ResetAt:       vk.ResetAt,
-		AllowedModels: allowed,
+		AllowedRoutes: allowed,
 		TotalRequests: vk.TotalRequests,
 		LastUsedAt:    vk.LastUsedAt,
 		CreatedAt:     vk.CreatedAt,
@@ -92,27 +83,18 @@ func (h *VirtualKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowedModelsJSON := "[]"
-	if len(req.AllowedModels) > 0 {
-		b, _ := json.Marshal(req.AllowedModels)
-		allowedModelsJSON = string(b)
+	allowedRoutesJSON := "[]"
+	if len(req.AllowedRoutes) > 0 {
+		b, _ := json.Marshal(req.AllowedRoutes)
+		allowedRoutesJSON = string(b)
 	}
 
 	vk := &store.VirtualKey{
-		Name:          req.Name,
-		Status:        "active",
-		RPMLimit:      req.RPMLimit,
-		TPMLimit:      req.TPMLimit,
-		BudgetUSD:     req.BudgetUSD,
-		BudgetReset:   req.BudgetReset,
-		AllowedModels: allowedModelsJSON,
-	}
-
-	// 设置重置时间
-	if req.BudgetReset == "daily" {
-		vk.ResetAt = time.Now().Add(24 * time.Hour).Unix()
-	} else if req.BudgetReset == "monthly" {
-		vk.ResetAt = time.Now().AddDate(0, 1, 0).Unix()
+		Name:           req.Name,
+		Status:         "active",
+		RPMLimit:       req.RPMLimit,
+		TotalBudgetUSD: req.TotalBudget,
+		AllowedRoutes:  allowedRoutesJSON,
 	}
 
 	if err := h.db.CreateVirtualKey(vk); err != nil {
@@ -161,10 +143,8 @@ type UpdateVirtualKeyRequest struct {
 	Name          *string   `json:"name"`
 	Status        *string   `json:"status"`
 	RPMLimit      *int64    `json:"rpm_limit"`
-	TPMLimit      *int64    `json:"tpm_limit"`
-	BudgetUSD     *float64  `json:"budget_usd"`
-	BudgetReset   *string   `json:"budget_reset"`
-	AllowedModels *[]string `json:"allowed_models"`
+	TotalBudget   *float64  `json:"total_budget"`
+	AllowedRoutes *[]string `json:"allowed_routes"`
 }
 
 func (h *VirtualKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
@@ -195,26 +175,12 @@ func (h *VirtualKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.RPMLimit != nil {
 		vk.RPMLimit = *req.RPMLimit
 	}
-	if req.TPMLimit != nil {
-		vk.TPMLimit = *req.TPMLimit
+	if req.TotalBudget != nil {
+		vk.TotalBudgetUSD = *req.TotalBudget
 	}
-	if req.BudgetUSD != nil {
-		vk.BudgetUSD = *req.BudgetUSD
-	}
-	if req.BudgetReset != nil {
-		vk.BudgetReset = *req.BudgetReset
-		// 更新重置时间
-		if *req.BudgetReset == "daily" {
-			vk.ResetAt = time.Now().Add(24 * time.Hour).Unix()
-		} else if *req.BudgetReset == "monthly" {
-			vk.ResetAt = time.Now().AddDate(0, 1, 0).Unix()
-		} else {
-			vk.ResetAt = 0
-		}
-	}
-	if req.AllowedModels != nil {
-		b, _ := json.Marshal(*req.AllowedModels)
-		vk.AllowedModels = string(b)
+	if req.AllowedRoutes != nil {
+		b, _ := json.Marshal(*req.AllowedRoutes)
+		vk.AllowedRoutes = string(b)
 	}
 
 	if err := h.db.UpdateVirtualKey(vk); err != nil {
@@ -224,8 +190,6 @@ func (h *VirtualKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, 200, toVKResponse(vk, false))
 }
-
-// Delete 删除虚拟 key。
 func (h *VirtualKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil || id <= 0 {
@@ -256,11 +220,6 @@ func (h *VirtualKeyHandler) ResetBudget(w http.ResponseWriter, r *http.Request) 
 	}
 
 	vk.UsedUSD = 0
-	if vk.BudgetReset == "daily" {
-		vk.ResetAt = time.Now().Add(24 * time.Hour).Unix()
-	} else if vk.BudgetReset == "monthly" {
-		vk.ResetAt = time.Now().AddDate(0, 1, 0).Unix()
-	}
 
 	if err := h.db.UpdateVirtualKey(vk); err != nil {
 		writeErr(w, 500, "db_error", err.Error())

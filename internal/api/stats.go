@@ -622,3 +622,76 @@ func (s *Server) getLogAttempts(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, rows)
 }
+
+// VKStatsResponse 虚拟密钥统计响应
+type VKStatsResponse struct {
+	VKID         int64   `json:"vk_id"`
+	VKName       string  `json:"vk_name"`
+	Requests     int     `json:"requests"`
+	SuccessCount int     `json:"success_count"`
+	ErrorCount   int     `json:"error_count"`
+	TotalCost    float64 `json:"total_cost"`
+}
+
+// GetVKStats 获取虚拟密钥统计（当日）
+func (s *Server) GetVKStats(w http.ResponseWriter, r *http.Request) {
+	// 获取今日零点时间戳
+	now := time.Now()
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
+
+	// 查询今日所有请求日志
+	var logs []store.RequestLog
+	if err := s.store.DB.Where("created_at >= ?", startOfDay).Find(&logs).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "database_error", "failed to query logs")
+		return
+	}
+
+	// 按虚拟密钥分组统计
+	statsMap := make(map[int64]*VKStatsResponse)
+	for _, log := range logs {
+		if log.VKID == 0 {
+			continue // 跳过非虚拟密钥请求
+		}
+		
+		stat, exists := statsMap[log.VKID]
+		if !exists {
+			stat = &VKStatsResponse{
+				VKID: log.VKID,
+			}
+			statsMap[log.VKID] = stat
+		}
+		
+		stat.Requests++
+		stat.TotalCost += log.Cost
+		
+		if log.Status == "success" {
+			stat.SuccessCount++
+		} else if log.Status == "error" {
+			stat.ErrorCount++
+		}
+	}
+
+	// 填充虚拟密钥名称
+	var vks []store.VirtualKey
+	if err := s.store.DB.Find(&vks).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "database_error", "failed to query virtual keys")
+		return
+	}
+	
+	vkNameMap := make(map[int64]string)
+	for _, vk := range vks {
+		vkNameMap[vk.ID] = vk.Name
+	}
+	
+	// 转换为数组并填充名称
+	result := make([]VKStatsResponse, 0, len(statsMap))
+	for vkID, stat := range statsMap {
+		stat.VKName = vkNameMap[vkID]
+		if stat.VKName == "" {
+			stat.VKName = "Unknown"
+		}
+		result = append(result, *stat)
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}

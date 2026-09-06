@@ -13,7 +13,7 @@ import (
 // TestFailedAttemptRecorded 回归：第一次 500（被熔断为可转移）→第二次成功。
 // request_log 应记 retries=1；request_attempt 表应有 2 行：1 个 error + 1 个 success。
 func TestFailedAttemptRecorded(t *testing.T) {
-	st, _ := newTestStack(t)
+	st, h := newTestStack(t)
 
 	var hits int32
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -40,7 +40,7 @@ func TestFailedAttemptRecorded(t *testing.T) {
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
 
-	resp := post(t, h(st), map[string]any{
+	resp := post(t, h, map[string]any{
 		"model":    "r",
 		"messages": []map[string]any{{"role": "user", "content": "x"}},
 	})

@@ -43,6 +43,8 @@ interface Model {
   name: string
   type: string
   protocol: string
+  api_path: string
+  body_override: string
   input_price: number
   output_price: number
   price_currency: string
@@ -55,15 +57,15 @@ interface Model {
 }
 
 const protocolOptions = [
-  { value: 'openai', label: 'OpenAI（/chat/completions）' },
-  { value: 'responses', label: 'OpenAI Responses（/responses）' },
-  { value: 'anthropic', label: 'Anthropic（/messages）' },
+  { value: 'completions', label: 'OpenAI Chat Completions' },
+  { value: 'responses', label: 'OpenAI Responses' },
+  { value: 'messages', label: 'Anthropic Messages' },
 ]
 
 const modelTypeOptions = [
-  { value: 'chat', label: '对话（/v1/chat/completions）' },
-  { value: 'embedding', label: '向量（/v1/embeddings）' },
-  { value: 'rerank', label: '重排（/v1/rerank）' },
+  { value: 'chat', label: '语言模型' },
+  { value: 'embedding', label: '向量模型' },
+  { value: 'rerank', label: '重排模型' },
 ]
 
 const proxyURLLabel = (
@@ -492,6 +494,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
     if (m) {
       form.setFieldsValue({
         name: m.name, type: m.type || 'chat', protocol: m.protocol,
+        api_path: m.api_path, body_override: m.body_override,
         input_price: m.input_price, output_price: m.output_price,
         price_currency: m.price_currency || 'USD', key_ids: m.key_ids,
       })
@@ -566,44 +569,73 @@ function ModelsTab({ provider, keys, models, onSaved }: {
 
       <Modal title={editing ? '编辑模型' : `新增模型（提供商：${provider.name}）`} open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose width={560}>
         <Form form={form} layout="vertical">
-          <Form.Item name="name" label="真实模型名" rules={[{ required: true }]}>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-              <Input placeholder="如 glm-4.6 / claude-sonnet-4" style={{ flex: 1, minWidth: 200 }} />
-              <Tooltip title={keys.length === 0 ? '需要至少一个密钥' : `从 ${provider.base_url}/v1/models 获取可用模型列表`}>
-                <Button
-                  icon={fetchingModels ? undefined : <ApiOutlined />}
-                  loading={fetchingModels}
-                  onClick={handleFetchModels}
-                  disabled={keys.length === 0}
-                >
-                  {fetchingModels ? '获取中…' : '获取模型'}
-                </Button>
-              </Tooltip>
-            </div>
-          </Form.Item>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <Form.Item name="name" label="真实模型名" rules={[{ required: true }]} style={{ flex: 1, minWidth: 200, marginBottom: 0 }}>
+              <Input placeholder="如 glm-4.6 / claude-sonnet-4" />
+            </Form.Item>
+            <Tooltip title={keys.length === 0 ? '需要至少一个密钥' : `从 ${provider.base_url}/v1/models 获取可用模型列表`}>
+              <Button
+                icon={fetchingModels ? undefined : <ApiOutlined />}
+                loading={fetchingModels}
+                onClick={handleFetchModels}
+                disabled={keys.length === 0}
+                style={{ marginTop: 30 }}
+              >
+                {fetchingModels ? '获取中…' : '获取模型'}
+              </Button>
+            </Tooltip>
+          </div>
           {availableModels.length > 0 && (
-            <Form.Item label="可用模型">
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                {availableModels.map((m) => (
-                  <Button
-                    key={m}
-                    size="small"
-                    type="dashed"
-                    onClick={() => form.setFieldValue('name', m)}
-                    style={{ fontFamily: 'monospace', fontSize: 12 }}
-                  >
-                    {m}
-                  </Button>
-                ))}
-              </div>
+            <Form.Item noStyle shouldUpdate={(prev, cur) => prev.name !== cur.name}>
+              {({ getFieldValue }) => {
+                const currentName = getFieldValue('name')
+                return (
+                  <Form.Item label="可用模型（点击选择）">
+                    <div style={{ 
+                      display: 'flex', 
+                      flexWrap: 'wrap', 
+                      gap: 6,
+                      padding: 12,
+                      background: '#fafafa',
+                      border: '1px solid #e0e0e0',
+                      borderRadius: 4,
+                      maxHeight: 240,
+                      overflowY: 'auto'
+                    }}>
+                      {availableModels.map((m) => (
+                        <Button
+                          key={m}
+                          size="small"
+                          type={currentName === m ? 'primary' : 'default'}
+                          onClick={() => {
+                            form.setFieldsValue({ name: m })
+                            form.validateFields(['name'])
+                          }}
+                          style={{ 
+                            fontFamily: 'monospace', 
+                            fontSize: 12,
+                            transition: 'all 0.2s'
+                          }}
+                        >
+                          {m}
+                        </Button>
+                      ))}
+                    </div>
+                  </Form.Item>
+                )
+              }}
             </Form.Item>
           )}
-          <Form.Item name="type" label="端点类型" initialValue="chat" rules={[{ required: true }]}
-            extra="决定该模型挂在哪个代理端点下；路由会按类型过滤后端">
+          <Form.Item name="type" label="模型类型" initialValue="chat" rules={[{ required: true }]}
+            extra="模型的用途分类，决定挂载的代理端点">
             <Select
               options={modelTypeOptions}
               onChange={(v) => {
-                if (v !== 'chat') form.setFieldValue('protocol', 'openai')
+                if (v === 'chat') {
+                  form.setFieldValue('protocol', 'completions')
+                } else {
+                  form.setFieldValue('protocol', 'openai')
+                }
               }}
             />
           </Form.Item>
@@ -631,6 +663,14 @@ function ModelsTab({ provider, keys, models, onSaved }: {
                 </Form.Item>
               )
             }}
+          </Form.Item>
+          <Form.Item name="api_path" label="自定义 API 路径"
+            extra="完整 URL（如 https://api.example.com/v1/custom），留空则使用协议默认端点">
+            <Input placeholder="留空使用默认端点" />
+          </Form.Item>
+          <Form.Item name="body_override" label="请求体覆盖（JSON）"
+            extra="JSON 对象，合并到转换后的请求体；可覆盖 model、temperature 等字段">
+            <Input.TextArea rows={3} placeholder='{"temperature": 0.5, "max_tokens": 2000}' />
           </Form.Item>
           <Form.Item label="价格（每 1M token）">
             <Space>

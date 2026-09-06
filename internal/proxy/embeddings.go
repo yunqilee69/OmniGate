@@ -139,6 +139,10 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 		return
 	}
 
+	var vkID int64
+	if vk, ok := getVKFromContext(r.Context()); ok {
+		vkID = vk.ID
+	}
 	tried := map[int64]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult
@@ -158,7 +162,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 						res.latencyMs = time.Since(attemptStart).Milliseconds()
 						h.record(res, rt)
 						h.writeLog(start, requestID, routeName, fallbackAtt, false,
-							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true)
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID)
 						h.maybeCapture(requestID, routeName, reqSnap, cw)
 						return
 					}
@@ -167,7 +171,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, false,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false)
+					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					"route '"+routeName+"' has no available "+kind.modelType+" type backends", statuses)
 				h.maybeCapture(requestID, routeName, reqSnap, cw)
@@ -185,7 +189,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 		// 只在最后一次记录 request_log（committed 或不可重试时）
 		if res.committed || !res.retryable {
 			h.writeLog(start, requestID, routeName, att, false,
-				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false)
+				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID)
 			break
 		}
 		priorFails++
@@ -195,7 +199,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 	// 如果循环结束但没有记录日志（所有尝试都失败且可重试），记录最后一次的结果
 	if last.att.Model.ID != 0 && !last.committed && last.retryable {
 		h.writeLog(start, requestID, routeName, last.att, false,
-			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails, last.errorBody, false)
+			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails, last.errorBody, false, vkID)
 	}
 
 	if !last.committed {

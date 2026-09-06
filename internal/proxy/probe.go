@@ -162,12 +162,21 @@ func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) Pro
 			"max_tokens": float64(probeMaxTokens),
 			"messages":   []map[string]any{{"role": "user", "content": "ping"}},
 		}
-		endpoint = adapter.endpoint(provider.BaseURL)
+		endpoint = adapter.endpoint(provider.BaseURL, &m)
 	}
 	converted, err := adapter.buildBody(req)
 	if err != nil {
 		res.ErrCode, res.Message = "convert_error", err.Error()
 		return res
+	}
+	// 应用 body_override：合并覆盖字段到转换后的请求体
+	if m.BodyOverride != "" {
+		var override map[string]any
+		if err := json.Unmarshal([]byte(m.BodyOverride), &override); err == nil {
+			for k, v := range override {
+				converted[k] = v
+			}
+		}
 	}
 	body, err := marshalJSON(converted)
 	if err != nil {

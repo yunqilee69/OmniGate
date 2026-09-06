@@ -11,6 +11,14 @@ import (
 	"github.com/cloudomni/omnigate/internal/store"
 )
 
+
+// directProxyRouter wraps proxy handler directly without VK middleware (for tests that don't use VK)
+func directProxyRouter(ph *proxy.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/v1/", ph)
+	return mux
+}
+
 func apiTestRouter(st *store.Store, ph *proxy.Handler, rtm *config.RuntimeManager) http.Handler {
 	return api.New(st, rtm, api.AdminAuth{}, ph, ph).Router()
 }
@@ -28,10 +36,9 @@ func newStackWithRTM(t *testing.T) (*store.Store, *config.RuntimeManager) {
 	}
 	return st, rt
 }
-
 func hWithRTM(st *store.Store, rtm *config.RuntimeManager) http.Handler {
 	ph := proxy.New(st, rtm)
-	return apiTestRouter(st, ph, rtm)
+	return directProxyRouter(ph)
 }
 
 func newStackWithRTMAndVK(t *testing.T) (*store.Store, *config.RuntimeManager, string) {
@@ -48,13 +55,11 @@ func newStackWithRTMAndVK(t *testing.T) (*store.Store, *config.RuntimeManager, s
 	
 	// 创建测试虚拟 key
 	vk := &store.VirtualKey{
-		Name:          "test-key",
-		Status:        "active",
-		RPMLimit:      0,
-		TPMLimit:      0,
-		BudgetUSD:     0,
-		BudgetReset:   "never",
-		AllowedModels: "[]",
+		Name:           "test-key",
+		Status:         "active",
+		RPMLimit:       0,
+		TotalBudgetUSD: 0,
+		AllowedRoutes:  "[]",
 	}
 	if err := st.CreateVirtualKey(vk); err != nil {
 		t.Fatal(err)

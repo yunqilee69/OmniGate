@@ -2,43 +2,48 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Bootstrap 是启动层配置：启动时确定、运行期不变（监听地址、管理鉴权、网关调用密钥）。
+// Bootstrap 是启动层配置：启动时确定、运行期不变（监听地址、管理鉴权）。
 type Bootstrap struct {
 	Server struct {
-		Listen string `yaml:"listen"`
+		Host string `yaml:"host"`
+		Port int    `yaml:"port"`
 	} `yaml:"server"`
 	Admin struct {
 		Username string `yaml:"username"`
 		Password string `yaml:"password"`
-		ApiKey   string `yaml:"api_key"`
 	} `yaml:"admin"`
 }
 
-const defaultListen = "127.0.0.1:17777"
+const defaultHost = "127.0.0.1"
+const defaultPort = 17777
 
 const bootstrapTemplate = `# OmniGate 启动层配置（熔断/限流/内容捕获等运行层配置在 Web 管理界面中热生效）
 server:
-  # 监听地址（默认 127.0.0.1:17777，管理界面与代理共用）。仅本机访问保持 127.0.0.1；局域网访问改为 0.0.0.0
-  listen: %s
+  # 监听地址（默认 127.0.0.1）。仅本机访问保持 127.0.0.1；局域网访问改为 0.0.0.0
+  # 可通过环境变量覆盖：SERVER_HOST
+  host: %s
+  # 监听端口（默认 17777，管理界面与代理共用）
+  # 可通过环境变量覆盖：SERVER_PORT
+  port: %d
 
 admin:
-  # 账号密码（Web 管理台登录）：设置后进入管理台需登录；同时也可作为 /v1 调用凭据。
-  # 用户名不可包含冒号；API 调用遵循 HTTP Basic 规则（RFC 7617）：
-  #   Authorization: Basic base64(用户名:密码)
-  # OpenAI SDK 场景 api_key 可直接填 base64(用户名:密码) 或 "用户名:密码" 原文（Bearer 传递）。
+  # 账号密码（Web 管理台登录）：设置后进入管理台需登录。
+  # 用户名不可包含冒号；
+  # 可通过环境变量覆盖：ADMIN_USERNAME, ADMIN_PASSWORD
+  # 留空 = 本地免登录（适合单机使用）
   username: ""
   password: ""
-  # 网关 API 密钥（调用 /v1 专用，不用于 Web 登录）：设置后 /v1 需携带
-  #   Authorization: Bearer <api_key>
-  # 与账号密码凭据任选其一；账号密码留空而仅设此项 = 本地免登录 + 远程调用带密钥。
-  api_key: ""
+
+# /v1 网关调用：现已使用虚拟密钥鉴权，在 Web 管理界面的"虚拟密钥"页面创建和管理。
 `
 
 // LoadBootstrap 读取启动层配置；文件不存在时生成默认模板并返回默认值。
@@ -49,7 +54,7 @@ func LoadBootstrap(path string) (Bootstrap, error) {
 		if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
 			return boot, fmt.Errorf("create config dir: %w", mkErr)
 		}
-		tpl := fmt.Sprintf(bootstrapTemplate, defaultListen)
+		tpl := fmt.Sprintf(bootstrapTemplate, defaultHost, defaultPort)
 		if wErr := os.WriteFile(path, []byte(tpl), 0o600); wErr != nil {
 			return boot, fmt.Errorf("write default config: %w", wErr)
 		}
@@ -60,8 +65,26 @@ func LoadBootstrap(path string) (Bootstrap, error) {
 	if err := yaml.Unmarshal(data, &boot); err != nil {
 		return boot, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	if boot.Server.Listen == "" {
-		boot.Server.Listen = defaultListen
+	// 应用环境变量覆盖
+	if host := os.Getenv("SERVER_HOST"); host != "" {
+		boot.Server.Host = host
+	}
+	if portStr := os.Getenv("SERVER_PORT"); portStr != "" {
+		if port, err := strconv.Atoi(portStr); err == nil && port > 0 && port <= 65535 {
+			boot.Server.Port = port
+		}
+	}
+	if boot.Server.Host == "" {
+		boot.Server.Host = defaultHost
+	}
+	if boot.Server.Port == 0 {
+		boot.Server.Port = defaultPort
+	}
+	if username := os.Getenv("ADMIN_USERNAME"); username != "" {
+		boot.Admin.Username = username
+	}
+	if password := os.Getenv("ADMIN_PASSWORD"); password != "" {
+		boot.Admin.Password = password
 	}
 	if err := boot.validateAdmin(); err != nil {
 		return boot, fmt.Errorf("config %s: %w", path, err)
@@ -82,4 +105,9 @@ func (b Bootstrap) validateAdmin() error {
 		return fmt.Errorf("admin.username 已设置但 admin.password 为空")
 	}
 	return nil
+}
+
+// Listen 返回 host:port 格式的监听地址。
+func (b Bootstrap) Listen() string {
+	return net.JoinHostPort(b.Server.Host, strconv.Itoa(b.Server.Port))
 }

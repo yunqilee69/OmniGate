@@ -13,8 +13,8 @@ func TestLoadBootstrapDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load bootstrap: %v", err)
 	}
-	if boot.Server.Listen != defaultListen {
-		t.Fatalf("listen = %s, want %s", boot.Server.Listen, defaultListen)
+	if boot.Server.Host != defaultHost || boot.Server.Port != defaultPort {
+		t.Fatalf("server = %s:%d, want %s:%d", boot.Server.Host, boot.Server.Port, defaultHost, defaultPort)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("default config not written: %v", err)
@@ -23,7 +23,7 @@ func TestLoadBootstrapDefaults(t *testing.T) {
 
 func TestLoadBootstrapPasswordMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cfg.yaml")
-	yaml := "server:\n  listen: 0.0.0.0:8080\nadmin:\n  username: admin\n  password: s3cret\n"
+	yaml := "server:\n  host: 0.0.0.0\n  port: 8080\nadmin:\n  username: admin\n  password: s3cret\n"
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}

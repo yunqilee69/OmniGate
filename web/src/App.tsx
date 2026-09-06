@@ -8,12 +8,14 @@ import {
   FileTextOutlined,
   SettingOutlined,
   LogoutOutlined,
+  KeyOutlined,
 } from '@ant-design/icons'
 import { Routes, Route, Navigate, useLocation, Link } from 'react-router-dom'
 import { api, clearToken } from './api'
 import Dashboard from './pages/Dashboard'
 import ConfigCenter from './pages/ConfigCenter'
 import RoutesPage from './pages/Routes'
+import VirtualKeys from './pages/VirtualKeys'
 import Stats from './pages/Stats'
 import Logs from './pages/Logs'
 import LogDetail from './pages/LogDetail'
@@ -24,6 +26,7 @@ const items = [
   { key: '/dashboard', icon: <DashboardOutlined />, label: <Link to="/dashboard">仪表盘</Link> },
   { key: '/config', icon: <DatabaseOutlined />, label: <Link to="/config">配置中心</Link> },
   { key: '/routes', icon: <BranchesOutlined />, label: <Link to="/routes">路由</Link> },
+  { key: '/keys', icon: <KeyOutlined />, label: <Link to="/keys">虚拟密钥</Link> },
   { key: '/stats', icon: <BarChartOutlined />, label: <Link to="/stats">统计</Link> },
   { key: '/logs', icon: <FileTextOutlined />, label: <Link to="/logs">请求日志</Link> },
   { key: '/settings', icon: <SettingOutlined />, label: <Link to="/settings">设置</Link> },
@@ -99,6 +102,7 @@ export default function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/config" element={<ConfigCenter />} />
           <Route path="/routes" element={<RoutesPage />} />
+          <Route path="/keys" element={<VirtualKeys />} />
           <Route path="/stats" element={<Stats />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/logs/:request_id" element={<LogDetail />} />

@@ -45,10 +45,8 @@ func TestVirtualKeyCreate(t *testing.T) {
 	req := CreateVirtualKeyRequest{
 		Name:          "test-key",
 		RPMLimit:      100,
-		TPMLimit:      10000,
-		BudgetUSD:     50.0,
-		BudgetReset:   "daily",
-		AllowedModels: []string{"model1", "model2"},
+		TotalBudget:   50.0,
+		AllowedRoutes: []string{"route1", "route2"},
 	}
 	body, _ := json.Marshal(req)
 
@@ -78,8 +76,8 @@ func TestVirtualKeyCreate(t *testing.T) {
 	if resp.RPMLimit != 100 {
 		t.Errorf("rpm_limit mismatch: %d", resp.RPMLimit)
 	}
-	if len(resp.AllowedModels) != 2 {
-		t.Errorf("allowed_models mismatch: %v", resp.AllowedModels)
+	if len(resp.AllowedRoutes) != 2 {
+		t.Errorf("allowed_routes mismatch: %v", resp.AllowedRoutes)
 	}
 }
 
@@ -174,10 +172,10 @@ func TestVirtualKeyUpdate(t *testing.T) {
 	handler := NewVirtualKeyHandler(db)
 
 	vk := &store.VirtualKey{
-		Name:      "test",
-		Status:    "active",
-		RPMLimit:  100,
-		BudgetUSD: 50.0,
+		Name:           "test",
+		Status:         "active",
+		RPMLimit:       100,
+		TotalBudgetUSD: 50.0,
 	}
 	db.CreateVirtualKey(vk)
 
@@ -247,11 +245,10 @@ func TestVirtualKeyResetBudget(t *testing.T) {
 	handler := NewVirtualKeyHandler(db)
 
 	vk := &store.VirtualKey{
-		Name:        "test",
-		Status:      "active",
-		BudgetUSD:   100.0,
-		UsedUSD:     80.0,
-		BudgetReset: "daily",
+		Name:           "test",
+		Status:         "active",
+		TotalBudgetUSD: 100.0,
+		UsedUSD:        80.0,
 	}
 	db.CreateVirtualKey(vk)
 

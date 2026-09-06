@@ -63,5 +63,7 @@ func contains(s, sub string) bool {
 func h(st *store.Store) http.Handler {
 	rtm, _ := config.NewRuntimeManager(st)
 	ph := proxy.New(st, rtm)
-	return apiTestRouter(st, ph, rtm)
+	mux := http.NewServeMux()
+	mux.Handle("/v1/", ph)
+	return mux
 }

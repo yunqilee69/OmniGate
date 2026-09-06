@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -18,7 +19,7 @@ type modelResp struct {
 	KeyIDs []int64 `json:"key_ids"`
 }
 
-var validProtocols = map[string]bool{"openai": true, "responses": true, "anthropic": true}
+var validProtocols = map[string]bool{"completions": true, "responses": true, "messages": true}
 var validCurrencies = map[string]bool{"USD": true, "CNY": true}
 var validModelTypes = map[string]bool{"chat": true, "embedding": true, "rerank": true}
 
@@ -31,6 +32,8 @@ type modelCreateReq struct {
 	OutputPrice   float64 `json:"output_price"`
 	PriceCurrency string  `json:"price_currency"`
 	KeyIDs        []int64 `json:"key_ids"`
+	ApiPath       string  `json:"api_path"`
+	BodyOverride  string  `json:"body_override"`
 }
 
 func (s *Server) listModels(w http.ResponseWriter, _ *http.Request) {
@@ -103,10 +106,10 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Protocol == "" {
-		req.Protocol = "openai"
+		req.Protocol = "completions"
 	}
 	if !validProtocols[req.Protocol] {
-		writeErr(w, http.StatusBadRequest, "bad_request", "protocol must be openai, responses or anthropic")
+		writeErr(w, http.StatusBadRequest, "bad_request", "protocol must be completions, responses or messages")
 		return
 	}
 	if req.Type == "" {
@@ -116,9 +119,9 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding or rerank")
 		return
 	}
-	// embedding/rerank 出站固定 OpenAI 风格直通（业界无可归一标准），不支持协议转换
-	if req.Type != "chat" && req.Protocol != "openai" {
-		writeErr(w, http.StatusBadRequest, "bad_request", "embedding/rerank 模型仅支持 openai 协议")
+	// embedding/rerank 出站固定 completions 风格直通（业界无可归一标准），不支持协议转换
+	if req.Type != "chat" && req.Protocol != "completions" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "embedding/rerank 模型仅支持 completions 协议")
 		return
 	}
 	if req.PriceCurrency == "" {
@@ -131,6 +134,21 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 	if req.InputPrice < 0 || req.OutputPrice < 0 {
 		writeErr(w, http.StatusBadRequest, "bad_request", "prices must not be negative")
 		return
+	}
+	// 验证 ApiPath 格式
+	if req.ApiPath != "" {
+		if !strings.HasPrefix(req.ApiPath, "/") && !strings.HasPrefix(req.ApiPath, "http://") && !strings.HasPrefix(req.ApiPath, "https://") {
+			writeErr(w, http.StatusBadRequest, "bad_request", "api_path 必须以 / 或 http:// 或 https:// 开头")
+			return
+		}
+	}
+	// 验证 BodyOverride 格式
+	if req.BodyOverride != "" {
+		var tmp map[string]any
+		if err := json.Unmarshal([]byte(req.BodyOverride), &tmp); err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_request", "body_override 必须是有效的 JSON 对象")
+			return
+		}
 	}
 	var provider store.Provider
 	if err := s.store.DB.First(&provider, req.ProviderID).Error; err != nil {
@@ -151,6 +169,7 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 	}
 	m := store.Model{
 		ProviderID: req.ProviderID, Name: req.Name, Type: req.Type, Protocol: req.Protocol,
+		ApiPath: req.ApiPath, BodyOverride: req.BodyOverride,
 		InputPrice: req.InputPrice, OutputPrice: req.OutputPrice, PriceCurrency: req.PriceCurrency, Status: "active",
 	}
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
@@ -186,6 +205,8 @@ type modelUpdateReq struct {
 	Protocol      *string  `json:"protocol"`
 	InputPrice    *float64 `json:"input_price"`
 	OutputPrice   *float64 `json:"output_price"`
+	ApiPath       *string  `json:"api_path"`
+	BodyOverride  *string  `json:"body_override"`
 	PriceCurrency *string  `json:"price_currency"`
 	KeyIDs        []int64  `json:"key_ids"`
 }
@@ -225,7 +246,7 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Protocol != nil {
 		if !validProtocols[*req.Protocol] {
-			writeErr(w, http.StatusBadRequest, "bad_request", "protocol must be openai, responses or anthropic")
+			writeErr(w, http.StatusBadRequest, "bad_request", "protocol must be completions, responses or messages")
 			return
 		}
 		simple["protocol"] = *req.Protocol
@@ -245,8 +266,8 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 	if req.Protocol != nil {
 		effProto = *req.Protocol
 	}
-	if effType != "" && effType != "chat" && effProto != "openai" {
-		writeErr(w, http.StatusBadRequest, "bad_request", "embedding/rerank 模型仅支持 openai 协议")
+	if effType != "" && effType != "chat" && effProto != "completions" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "embedding/rerank 模型仅支持 completions 协议")
 		return
 	}
 	if req.InputPrice != nil {
@@ -269,6 +290,25 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		simple["price_currency"] = *req.PriceCurrency
+	}
+	if req.ApiPath != nil {
+		if *req.ApiPath != "" {
+			if !strings.HasPrefix(*req.ApiPath, "/") && !strings.HasPrefix(*req.ApiPath, "http://") && !strings.HasPrefix(*req.ApiPath, "https://") {
+				writeErr(w, http.StatusBadRequest, "bad_request", "api_path 必须以 / 或 http:// 或 https:// 开头")
+				return
+			}
+		}
+		simple["api_path"] = *req.ApiPath
+	}
+	if req.BodyOverride != nil {
+		if *req.BodyOverride != "" {
+			var tmp map[string]any
+			if err := json.Unmarshal([]byte(*req.BodyOverride), &tmp); err != nil {
+				writeErr(w, http.StatusBadRequest, "bad_request", "body_override 必须是有效的 JSON 对象")
+				return
+			}
+		}
+		simple["body_override"] = *req.BodyOverride
 	}
 	if len(simple) == 0 && req.KeyIDs == nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", "no fields to update")
