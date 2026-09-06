@@ -257,17 +257,18 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate flo
 var breakdownDims = map[string]string{
 	"route": "route", "model": "model", "provider": "provider",
 	"status": "status", "key": "CAST(key_id AS TEXT)", "error_code": "error_code",
+	"virtual_key": "CAST(vk_id AS TEXT)",
 }
 
 // key / error_code 维度不在 request_log_daily 预聚合表里，必须走原始表。
-var rollupUnsupported = map[string]bool{"key": true, "error_code": true}
+var rollupUnsupported = map[string]bool{"key": true, "error_code": true, "virtual_key": true}
 
 func (s *Server) getStatsBreakdown(w http.ResponseWriter, r *http.Request) {
 	dim := r.URL.Query().Get("dim")
 	col, ok := breakdownDims[dim]
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "bad_request",
-			"dim must be one of route|model|provider|status|key|error_code")
+			"dim must be one of route|model|provider|status|key|error_code|virtual_key")
 		return
 	}
 	from, to := parseTimeRange(r)
@@ -411,6 +412,32 @@ func (s *Server) breakdownFromRaw(w http.ResponseWriter, col string, from, to in
 			if n, err := strconv.ParseInt(items[i].Dim, 10, 64); err == nil {
 				items[i].KeyMasked = labels[n].masked
 				items[i].KeyName = labels[n].name
+			}
+		}
+	}
+	// dim=virtual_key 的 dim 是 vk_id，附名称让客户端识别虚拟密钥
+	if col == breakdownDims["virtual_key"] {
+		ids := make([]int64, 0, len(items))
+		for i := range items {
+			if n, err := strconv.ParseInt(items[i].Dim, 10, 64); err == nil && n > 0 {
+				ids = append(ids, n)
+			}
+		}
+		vkNames := map[int64]string{}
+		if len(ids) > 0 {
+			var vks []store.VirtualKey
+			if err := s.store.DB.Select("id", "name").Where("id IN ?", ids).Find(&vks).Error; err == nil {
+				for _, vk := range vks {
+					vkNames[vk.ID] = vk.Name
+				}
+			}
+		}
+		for i := range items {
+			if n, err := strconv.ParseInt(items[i].Dim, 10, 64); err == nil {
+				items[i].KeyName = vkNames[n]
+				if items[i].KeyName == "" {
+					items[i].KeyName = "Unknown VK"
+				}
 			}
 		}
 	}

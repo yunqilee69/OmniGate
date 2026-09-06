@@ -1,6 +1,6 @@
 import dayjs from 'dayjs'
 
-export type StatsDimension = 'route' | 'model' | 'provider' | 'key' | 'status' | 'error_code'
+export type StatsDimension = 'route' | 'model' | 'provider' | 'key' | 'virtual_key' | 'status' | 'error_code'
 export type BucketSize = '1h' | '1d' | '1w'
 
 export interface TimeseriesPoint {
@@ -74,6 +74,7 @@ const dimensionRows: Record<StatsDimension, readonly string[]> = {
   model: ['gpt-4o-mini', 'claude-3-7-sonnet', 'deepseek-v3', 'qwen-max'],
   provider: ['OpenAI', 'Anthropic', 'DeepSeek', '通义千问'],
   key: ['key-01', 'key-02', 'key-03', 'key-04'],
+  virtual_key: ['vk-prod-api', 'vk-dev-test', 'vk-mobile-app', 'vk-web-client'],
   status: ['success', 'error', 'client_error', 'cooldown'],
   error_code: ['429', '500', '502', 'timeout', 'context_length'],
 }

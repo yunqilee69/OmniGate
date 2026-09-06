@@ -19,6 +19,7 @@ const dimensions: { value: StatsDimension; label: string }[] = [
   { value: 'model', label: '模型' },
   { value: 'provider', label: '提供商' },
   { value: 'key', label: '密钥' },
+  { value: 'virtual_key', label: '虚拟密钥' },
   { value: 'status', label: '状态' },
   { value: 'error_code', label: '错误码' },
 ]
@@ -175,7 +176,7 @@ export default function Stats() {
 
       <Card title="维度明细">
         <Table<Item> rowKey="dim" dataSource={items} size="small" tableLayout="fixed" scroll={{ x: 1160 }} pagination={{ pageSize: 20 }}>
-          <Table.Column title="维度值" dataIndex="dim" render={(_, item: Item) => dim === 'key' ? <code style={{ fontSize: 12 }}>{item.key_name || item.key_masked || `key#${item.dim}`}</code> : item.dim} />
+          <Table.Column title="维度值" dataIndex="dim" render={(_, item: Item) => dim === 'key' ? <code style={{ fontSize: 12 }}>{item.key_name || item.key_masked || `key#${item.dim}`}</code> : dim === 'virtual_key' ? <code style={{ fontSize: 12 }}>{item.key_name || `vk#${item.dim}`}</code> : item.dim} />
           <Table.Column title="请求" dataIndex="total" sorter={(a: Item, b: Item) => a.total - b.total} render={(value) => formatNumber(Number(value))} />
           <Table.Column title="成功" dataIndex="success" render={(value) => formatNumber(Number(value))} />
           <Table.Column title="错误" dataIndex="errors" render={(value) => formatNumber(Number(value))} />
