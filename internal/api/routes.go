@@ -141,10 +141,10 @@ func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Endpoint = strings.TrimSpace(req.Endpoint)
 	if req.Endpoint == "" {
-		req.Endpoint = "chat"
+		req.Endpoint = "completions"
 	}
-	if req.Endpoint != "chat" && req.Endpoint != "messages" && req.Endpoint != "responses" {
-		writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: chat, messages, responses")
+	if req.Endpoint != "completions" && req.Endpoint != "messages" && req.Endpoint != "responses" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses")
 		return
 	}
 	if ok, msg := s.validateTargets(req.Endpoint, req.Targets); !ok {
@@ -214,8 +214,8 @@ func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Endpoint != nil {
 		v := strings.TrimSpace(*req.Endpoint)
-		if v != "chat" && v != "messages" && v != "responses" {
-			writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: chat, messages, responses")
+		if v != "completions" && v != "messages" && v != "responses" {
+			writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses")
 			return
 		}
 		simple["endpoint"] = v

@@ -301,6 +301,18 @@ func startCommand() {
 	}
 	fs.Parse(args)
 
+	// 检测 --db / --log 是否显式指定（决定 config.yaml / 环境变量能否回退覆盖）
+	dbExplicit := false
+	logExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "db":
+			dbExplicit = true
+		case "log":
+			logExplicit = true
+		}
+	})
+
 	if showVersion {
 		fmt.Printf("omnigate %s (commit %s, built %s)\n", version, commit, date)
 		return
@@ -369,15 +381,31 @@ func startCommand() {
 		// 确保退出时清理PID文件
 		defer removePidFile()
 	}
-
-	// 展开 ~ 到用户主目录(日志的流/关闭 token 不展开)
+	// 展开 ~ 到用户主目录（日志的流/关闭 token 不展开）
 	dbPath = expandHome(dbPath)
 	cfgPath = expandHome(cfgPath)
 	if !isLogToken(logPath) {
 		logPath = expandHome(logPath)
 	}
 
-	// 配置日志(失败时 fallback 到 stderr,不阻塞启动)
+	// 加载启动层配置（此时 logger 尚未初始化，错误直接写 stderr）
+	boot, err := config.LoadBootstrap(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load bootstrap config failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 四级优先级：CLI flag > 环境变量 > config.yaml > 代码默认值
+	// 环境变量已在 LoadBootstrap 内覆盖 config.yaml 对应字段
+	// 此处仅处理 CLI 未显式指定时，用 config/环境变量 的值回退
+	if !dbExplicit && boot.Database.Path != "" {
+		dbPath = expandHome(boot.Database.Path)
+	}
+	if !logExplicit && boot.Log.Path != "" {
+		logPath = expandHome(boot.Log.Path)
+	}
+
+	// 配置日志（失败时 fallback 到 stderr，不阻塞启动）
 	logFile, err := setupLogger(logPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v; falling back to stderr\n", err)
@@ -385,12 +413,6 @@ func startCommand() {
 	}
 	if logFile != nil {
 		defer logFile.Close()
-	}
-
-	boot, err := config.LoadBootstrap(cfgPath)
-	if err != nil {
-		slog.Error("load bootstrap config failed", "err", err, "path", cfgPath)
-		os.Exit(1)
 	}
 
 	listen := boot.Listen()

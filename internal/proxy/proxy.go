@@ -939,13 +939,13 @@ ON CONFLICT(request_id) DO UPDATE SET
 // Messages 实现 Anthropic 原生端点 /v1/messages（直通模式）。
 // 只路由到 protocol=anthropic 的模型，请求体不做转换直接透传。
 func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
-	h.nativeEndpoint(w, r, "anthropic", "/v1/messages")
+	h.nativeEndpoint(w, r, "anthropic", "messages")
 }
 
 // Responses 实现 OpenAI Responses 原生端点 /v1/responses（直通模式）。
 // 只路由到 protocol=responses 的模型，请求体不做转换直接透传。
 func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
-	h.nativeEndpoint(w, r, "responses", "/v1/responses")
+	h.nativeEndpoint(w, r, "responses", "responses")
 }
 
 // nativeEndpoint 原生协议端点的通用处理逻辑：解析请求 → 协议过滤 → 直通转发。

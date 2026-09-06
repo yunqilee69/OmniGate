@@ -142,13 +142,13 @@ export default function RoutesPage() {
             label="端点类型" 
             initialValue="completions" 
             rules={[{ required: true }]}
-            extra="决定代理路径与协议：completions 使用 OpenAI 格式，messages 使用 Anthropic 格式，responses 使用 Responses 格式"
+            extra="决定代理路径与协议：completions 使用 OpenAI Completions 格式，messages 使用 Anthropic 格式，responses 使用 OpenAI Responses 格式"
           >
             <Select
               options={[
                 { value: 'completions', label: 'completions — /v1/chat/completions（OpenAI）' },
                 { value: 'messages', label: 'messages — /v1/messages（Anthropic）' },
-                { value: 'responses', label: 'responses — /v1/responses（Responses）' },
+                { value: 'responses', label: 'responses — /v1/responses（OpenAI）' },
               ]}
             />
           </Form.Item>
@@ -212,9 +212,37 @@ export default function RoutesPage() {
   )
 }
 
-function buildCurl(base: string, model: string): string {
+function endpointPath(ep: string): string {
+  return ep === 'messages' ? '/v1/messages' : ep === 'responses' ? '/v1/responses' : '/v1/chat/completions'
+}
+
+function buildCurl(base: string, model: string, endpoint: string): string {
+  const path = endpointPath(endpoint)
+  if (endpoint === 'messages') {
+    return [
+      `curl ${base}${path} \\`,
+      `  -H 'Content-Type: application/json' \\`,
+      `  -H 'x-api-key: unused' \\`,
+      `  -H 'anthropic-version: 2023-06-01' \\`,
+      `  -d '{`,
+      `    "model": "${model}",`,
+      `    "max_tokens": 1024,`,
+      `    "messages": [{"role": "user", "content": "你好"}]`,
+      `  }'`,
+    ].join('\n')
+  }
+  if (endpoint === 'responses') {
+    return [
+      `curl ${base}${path} \\`,
+      `  -H 'Content-Type: application/json' \\`,
+      `  -d '{`,
+      `    "model": "${model}",`,
+      `    "input": "你好"`,
+      `  }'`,
+    ].join('\n')
+  }
   return [
-    `curl ${base}/v1/chat/completions \\`,
+    `curl ${base}${path} \\`,
     `  -H 'Content-Type: application/json' \\`,
     `  -d '{`,
     `    "model": "${model}",`,
@@ -223,9 +251,35 @@ function buildCurl(base: string, model: string): string {
   ].join('\n')
 }
 
-function buildCurlStream(base: string, model: string): string {
+function buildCurlStream(base: string, model: string, endpoint: string): string {
+  const path = endpointPath(endpoint)
+  if (endpoint === 'messages') {
+    return [
+      `curl -N ${base}${path} \\`,
+      `  -H 'Content-Type: application/json' \\`,
+      `  -H 'x-api-key: unused' \\`,
+      `  -H 'anthropic-version: 2023-06-01' \\`,
+      `  -d '{`,
+      `    "model": "${model}",`,
+      `    "max_tokens": 1024,`,
+      `    "stream": true,`,
+      `    "messages": [{"role": "user", "content": "你好"}]`,
+      `  }'`,
+    ].join('\n')
+  }
+  if (endpoint === 'responses') {
+    return [
+      `curl -N ${base}${path} \\`,
+      `  -H 'Content-Type: application/json' \\`,
+      `  -d '{`,
+      `    "model": "${model}",`,
+      `    "stream": true,`,
+      `    "input": "你好"`,
+      `  }'`,
+    ].join('\n')
+  }
   return [
-    `curl -N ${base}/v1/chat/completions \\`,
+    `curl -N ${base}${path} \\`,
     `  -H 'Content-Type: application/json' \\`,
     `  -d '{`,
     `    "model": "${model}",`,
@@ -235,7 +289,35 @@ function buildCurlStream(base: string, model: string): string {
   ].join('\n')
 }
 
-function buildPython(base: string, model: string): string {
+function buildPython(base: string, model: string, endpoint: string): string {
+  const path = endpointPath(endpoint)
+  if (endpoint === 'messages') {
+    return [
+      `from anthropic import Anthropic`,
+      ``,
+      `client = Anthropic(base_url="${base}/v1", api_key="unused")`,
+      ``,
+      `resp = client.messages.create(`,
+      `    model="${model}",`,
+      `    max_tokens=1024,`,
+      `    messages=[{"role": "user", "content": "你好"}],`,
+      `)`,
+      `print(resp.content[0].text)`,
+    ].join('\n')
+  }
+  if (endpoint === 'responses') {
+    return [
+      `from openai import OpenAI`,
+      ``,
+      `client = OpenAI(base_url="${base}/v1", api_key="unused")`,
+      ``,
+      `resp = client.responses.create(`,
+      `    model="${model}",`,
+      `    input="你好",`,
+      `)`,
+      `print(resp.output_text)`,
+    ].join('\n')
+  }
   return [
     `from openai import OpenAI`,
     ``,
@@ -290,6 +372,8 @@ function CodeBlock({ code }: { code: string }) {
 function RequestExample({ route, onClose }: { route: Route | null; onClose: () => void }) {
   if (!route) return null
   const base = window.location.origin
+  const ep = route.endpoint || 'completions'
+  const epPath = endpointPath(ep)
   return (
     <Modal
       title={`请求示例 — ${route.name}`}
@@ -301,8 +385,8 @@ function RequestExample({ route, onClose }: { route: Route | null; onClose: () =
     >
       <div style={{ marginBottom: 16 }}>
         <div className="eyebrow" style={{ marginBottom: 4 }}>endpoint</div>
-        <Typography.Paragraph copyable={{ text: `${base}/v1/chat/completions` }} style={{ marginBottom: 0 }}>
-          <code>{base}/v1/chat/completions</code>
+        <Typography.Paragraph copyable={{ text: `${base}${epPath}` }} style={{ marginBottom: 0 }}>
+          <code>{base}{epPath}</code>
         </Typography.Paragraph>
         <div className="meta-text" style={{ marginTop: 4 }}>
           代理面无需鉴权；把 model 换成任意逻辑 modelId 即可直接调用
@@ -310,9 +394,9 @@ function RequestExample({ route, onClose }: { route: Route | null; onClose: () =
       </div>
       <Tabs
         items={[
-          { key: 'curl', label: 'curl', children: <CodeBlock code={buildCurl(base, route.name)} /> },
-          { key: 'curl-stream', label: 'curl 流式', children: <CodeBlock code={buildCurlStream(base, route.name)} /> },
-          { key: 'python', label: 'Python SDK', children: <CodeBlock code={buildPython(base, route.name)} /> },
+          { key: 'curl', label: 'curl', children: <CodeBlock code={buildCurl(base, route.name, ep)} /> },
+          { key: 'curl-stream', label: 'curl 流式', children: <CodeBlock code={buildCurlStream(base, route.name, ep)} /> },
+          { key: 'python', label: 'Python SDK', children: <CodeBlock code={buildPython(base, route.name, ep)} /> },
         ]}
       />
     </Modal>

@@ -24,7 +24,7 @@ func TestErrorBodyRecordedOnUpstreamFailure(t *testing.T) {
 	st.DB.Create(&p)
 	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-eb", Status: "active"}
 	st.DB.Create(&k)
-	m := store.Model{ProviderID: p.ID, Name: "m", Protocol: "openai"}
+	m := store.Model{ProviderID: p.ID, Name: "m", Protocol: "completions"}
 	st.DB.Create(&m)
 	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
 	rt := store.Route{Name: "r"}

@@ -128,8 +128,8 @@ else
   build_backend
   # 开发模式:db / config 用仓库内本地路径(便于 rm -rf data/ 重置),
   # 日志走 stdout 由 shell 重定向到 backend.log(避免双重写文件)。
-  echo "[..] 启动后端 (db: $DATA_DIR/omnigate.db)"
-  run_bg "$BIN" --db "$DATA_DIR/omnigate.db" --config "$ROOT/config.yaml" --log stdout --foreground \
+  echo "[..] 启动后端 (config: $ROOT/config.yaml)"
+  run_bg "$BIN" --config "$ROOT/config.yaml" --log stdout --foreground \
     > "$LOG_DIR/backend.log" 2>&1
   wait_healthy "$BACKEND_PORT" "后端"
   # 启用 debug 模式

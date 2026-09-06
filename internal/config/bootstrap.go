@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Bootstrap 是启动层配置：启动时确定、运行期不变（监听地址、管理鉴权）。
+// Bootstrap 是启动层配置：启动时确定、运行期不变（监听地址、管理鉴权、数据库路径、日志路径）。
 type Bootstrap struct {
 	Server struct {
 		Host string `yaml:"host"`
@@ -21,6 +21,12 @@ type Bootstrap struct {
 		Username string `yaml:"username"`
 		Password string `yaml:"password"`
 	} `yaml:"admin"`
+	Database struct {
+		Path string `yaml:"path"`
+	} `yaml:"database"`
+	Log struct {
+		Path string `yaml:"path"`
+	} `yaml:"log"`
 }
 
 const defaultHost = "127.0.0.1"
@@ -42,6 +48,17 @@ admin:
   # 留空 = 本地免登录（适合单机使用）
   username: ""
   password: ""
+
+database:
+  # 数据库文件路径（默认 ~/.omnigate/omnigate.db）。
+  # 可通过环境变量覆盖：DATABASE_PATH
+  path: ""
+
+log:
+  # 日志输出路径（默认 ~/.omnigate/omnigate.log）。
+  # 支持特殊值：stdout | stderr | off
+  # 可通过环境变量覆盖：LOG_PATH
+  path: ""
 
 # /v1 网关调用：现已使用虚拟密钥鉴权，在 Web 管理界面的"虚拟密钥"页面创建和管理。
 `
@@ -85,6 +102,12 @@ func LoadBootstrap(path string) (Bootstrap, error) {
 	}
 	if password := os.Getenv("ADMIN_PASSWORD"); password != "" {
 		boot.Admin.Password = password
+	}
+	if dbPath := os.Getenv("DATABASE_PATH"); dbPath != "" {
+		boot.Database.Path = dbPath
+	}
+	if logPath := os.Getenv("LOG_PATH"); logPath != "" {
+		boot.Log.Path = logPath
 	}
 	if err := boot.validateAdmin(); err != nil {
 		return boot, fmt.Errorf("config %s: %w", path, err)

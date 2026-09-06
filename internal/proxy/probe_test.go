@@ -37,7 +37,7 @@ func TestProbeModelOK(t *testing.T) {
 	}))
 	defer up.Close()
 
-	for _, tc := range []struct{ proto string }{{"openai"}, {"anthropic"}} {
+	for _, tc := range []struct{ proto string }{{"completions"}, {"messages"}} {
 		id := seedProbeTarget(t, st, up.URL, tc.proto)
 		rtm, _ := config.NewRuntimeManager(st)
 		res := proxy.ProbeModel(st, rtm, id)
@@ -60,7 +60,7 @@ func TestProbeModelUpstreamError(t *testing.T) {
 		fmt.Fprint(w, `{"error":"boom"}`)
 	}))
 	defer up.Close()
-	id := seedProbeTarget(t, st, up.URL, "openai")
+	id := seedProbeTarget(t, st, up.URL, "completions")
 	rtm, _ := config.NewRuntimeManager(st)
 	res := proxy.ProbeModel(st, rtm, id)
 	if res.Ok || res.ErrCode != "500" || res.Message == "" {
@@ -70,7 +70,7 @@ func TestProbeModelUpstreamError(t *testing.T) {
 
 func TestProbeModelNoKey(t *testing.T) {
 	st, _ := newProbeStack(t)
-	id := seedProbeTarget(t, st, "http://127.0.0.1:1", "openai")
+	id := seedProbeTarget(t, st, "http://127.0.0.1:1", "completions")
 	st.DB.Model(&store.ApiKey{}).Where("1=1").Update("status", "disabled")
 	rtm, _ := config.NewRuntimeManager(st)
 	res := proxy.ProbeModel(st, rtm, id)
@@ -85,12 +85,12 @@ func TestProbeProvider(t *testing.T) {
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"pong"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
 	}))
 	defer up.Close()
-	seedProbeTarget(t, st, up.URL, "openai")
+	seedProbeTarget(t, st, up.URL, "completions")
 	var p store.Provider
-	st.DB.Where("name = ?", "probe-prov-openai").First(&p)
+	st.DB.Where("name = ?", "probe-prov-completions").First(&p)
 	var k store.ApiKey
 	st.DB.Where("provider_id = ?", p.ID).First(&k)
-	m2 := store.Model{ProviderID: p.ID, Name: "m-second", Protocol: "openai"}
+	m2 := store.Model{ProviderID: p.ID, Name: "m-second", Protocol: "completions"}
 	st.DB.Create(&m2)
 	st.DB.Create(&store.ModelKey{ModelID: m2.ID, KeyID: k.ID})
 	rtm, _ := config.NewRuntimeManager(st)
@@ -144,7 +144,7 @@ func TestProbeModelKeys(t *testing.T) {
 	if err := st.DB.Create(&kBad).Error; err != nil {
 		t.Fatal(err)
 	}
-	m := store.Model{ProviderID: p.ID, Name: "m-pk", Protocol: "openai"}
+	m := store.Model{ProviderID: p.ID, Name: "m-pk", Protocol: "completions"}
 	if err := st.DB.Create(&m).Error; err != nil {
 		t.Fatal(err)
 	}

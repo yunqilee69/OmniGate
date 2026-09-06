@@ -569,11 +569,11 @@ function ModelsTab({ provider, keys, models, onSaved }: {
 
       <Modal title={editing ? '编辑模型' : `新增模型（提供商：${provider.name}）`} open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose width={560}>
         <Form form={form} layout="vertical">
-          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 24 }}>
             <Form.Item name="name" label="真实模型名" rules={[{ required: true }]} style={{ flex: 1, minWidth: 200, marginBottom: 0 }}>
               <Input placeholder="如 glm-4.6 / claude-sonnet-4" />
             </Form.Item>
-            <Tooltip title={keys.length === 0 ? '需要至少一个密钥' : `从 ${provider.base_url}/v1/models 获取可用模型列表`}>
+            <Tooltip title={keys.length === 0 ? '需要至少一个密钥' : `从 ${provider.base_url.replace(/\/$/, '')}${provider.base_url.endsWith('/v1') ? '/models' : '/v1/models'} 获取可用模型列表`}>
               <Button
                 icon={fetchingModels ? undefined : <ApiOutlined />}
                 loading={fetchingModels}
@@ -630,13 +630,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
             extra="模型的用途分类，决定挂载的代理端点">
             <Select
               options={modelTypeOptions}
-              onChange={(v) => {
-                if (v === 'chat') {
-                  form.setFieldValue('protocol', 'completions')
-                } else {
-                  form.setFieldValue('protocol', 'openai')
-                }
-              }}
+              onChange={() => form.setFieldValue('protocol', 'completions')}
             />
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.type !== cur.type}>
@@ -647,17 +641,17 @@ function ModelsTab({ provider, keys, models, onSaved }: {
                 return (
                   <Form.Item name="protocol" label="出站格式（由端点类型决定）"
                     extra={isRerank
-                      ? '重排无官方标准，直通 Cohere /v1/rerank 骨架，不做跨厂商改写'
-                      : '向量走 OpenAI /v1/embeddings 标准格式直通'}>
+                      ? '重排无官方标准，以 completions 风格直通上游，不做跨厂商协议改写'
+                      : '向量以 completions 风格直通上游，不做跨厂商协议改写'}>
                     <Select disabled options={[{
-                      value: 'openai',
-                      label: isRerank ? 'Cohere rerank（/v1/rerank）' : 'OpenAI embeddings（/v1/embeddings）',
+                      value: 'completions',
+                      label: isRerank ? 'Completions 直通（rerank）' : 'Completions 直通（embedding）',
                     }]} />
                   </Form.Item>
                 )
               }
               return (
-                <Form.Item name="protocol" label="上游协议" initialValue="openai" rules={[{ required: true }]}
+                <Form.Item name="protocol" label="上游协议" initialValue="completions" rules={[{ required: true }]}
                   extra="决定出站请求格式与响应转换方式">
                   <Select options={protocolOptions} />
                 </Form.Item>

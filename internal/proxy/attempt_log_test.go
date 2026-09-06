@@ -32,7 +32,7 @@ func TestFailedAttemptRecorded(t *testing.T) {
 	k2 := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-2", Status: "active"}
 	st.DB.Create(&k1)
 	st.DB.Create(&k2)
-	m := store.Model{ProviderID: p.ID, Name: "m", Protocol: "openai"}
+	m := store.Model{ProviderID: p.ID, Name: "m", Protocol: "completions"}
 	st.DB.Create(&m)
 	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k1.ID})
 	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k2.ID})
