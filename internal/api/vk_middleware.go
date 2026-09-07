@@ -63,18 +63,16 @@ func GetVKFromContext(ctx context.Context) (*store.VirtualKey, bool) {
 }
 
 // VKRateLimitMiddleware 虚拟 key 限流中间件。
-// 检查 RPM 限制，在请求前记录命中。
+// 检查 RPM 限制；命中计数在 handler 返回后记录，避免失败请求消耗配额。
 func VKRateLimitMiddleware(db *store.Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			vk, ok := GetVKFromContext(r.Context())
 			if !ok {
-				// 中间件链断裂，不应该发生
 				writeErr(w, 500, "internal_error", "virtual key not found in context")
 				return
 			}
 
-			// 检查限流
 			if err := db.CheckVKRateLimit(vk.ID, vk.RPMLimit); err != nil {
 				if err == store.ErrVKRateLimitExceeded {
 					w.Header().Set("X-RateLimit-Limit-Requests", formatInt64(vk.RPMLimit))
@@ -85,12 +83,11 @@ func VKRateLimitMiddleware(db *store.Store) func(http.Handler) http.Handler {
 				return
 			}
 
-			// 记录命中
+			next.ServeHTTP(w, r)
+
 			if err := db.RecordVKRateLimitHit(vk.ID); err != nil {
 				slog.Warn("failed to record rate limit hit", "vk_id", vk.ID, "err", err)
 			}
-
-			next.ServeHTTP(w, r)
 		})
 	}
 }

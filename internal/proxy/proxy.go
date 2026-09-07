@@ -138,6 +138,23 @@ func newRequestID() string {
 	return hex.EncodeToString(b)
 }
 
+// createPendingLog 在请求进入后立即创建 pending 状态的日志行，返回其 ID。
+// 后续 writeLog 通过该 ID 做 UPDATE 补充最终字段。
+func (h *Handler) createPendingLog(requestID, routeName string, isStream bool, vkID int64) int64 {
+	entry := store.RequestLog{
+		RequestID: requestID,
+		Route:     routeName,
+		Status:    "pending",
+		IsStream:  isStream,
+		VKID:      vkID,
+	}
+	if err := h.db.DB.Create(&entry).Error; err != nil {
+		slog.Error("create pending request_log failed", "err", err, "request_id", requestID)
+		return 0
+	}
+	return entry.ID
+}
+
 func requestTextChars(req map[string]any) int {
 	msgs, ok := req["messages"].([]any)
 	if !ok {
@@ -152,6 +169,24 @@ func requestTextChars(req map[string]any) int {
 		}
 	}
 	return total
+}
+
+// nativeTextChars 从原生协议请求体中估算文本字符数（Anthropic/Responses 格式）。
+// 用于 fallback token 估算，精度低于真实 usage 但有总比无好。
+func nativeTextChars(body []byte) int {
+	var req map[string]any
+	if json.Unmarshal(body, &req) != nil {
+		return len(body) / 3 // JSON 结构开销大，比例调低
+	}
+	// Anthropic: messages[].content (string 或 [{type:"text",text:"..."}])
+	if msgs, ok := req["messages"].([]any); ok {
+		return requestTextChars(map[string]any{"messages": msgs})
+	}
+	// Responses: input[] (与 messages 结构相似)
+	if input, ok := req["input"].([]any); ok {
+		return requestTextChars(map[string]any{"messages": input})
+	}
+	return len(body) / 3
 }
 
 func estimateUsage(promptChars int, respText string) usageInfo {
@@ -277,6 +312,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	pendingID := h.createPendingLog(requestID, routeName, isStream, vkID)
+
 
 	tried := map[int64]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
@@ -297,7 +334,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						res.latencyMs = time.Since(attemptStart).Milliseconds()
 						h.record(res, rt)
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
-							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID)
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
 						h.maybeCapture(requestID, routeName, reqSnap, cw)
 						return
 					}
@@ -306,7 +343,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID)
+					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
 				h.maybeCapture(requestID, routeName, reqSnap, cw)
@@ -324,7 +361,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		
 		// 记录每次尝试到 request_log
 		h.writeLog(start, requestID, routeName, att, isStream,
-			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID)
+			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID)
 		
 		// 如果已提交响应或不可重试，停止
 		if res.committed || !res.retryable {
@@ -447,7 +484,8 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 		for k := range upReq.Header {
 			v := upReq.Header.Get(k)
 			// 脱敏敏感头
-			if strings.Contains(strings.ToLower(k), "auth") || strings.Contains(strings.ToLower(k), "key") {
+			kl := strings.ToLower(k)
+			if strings.Contains(kl, "auth") || strings.Contains(kl, "key") {
 				if len(v) > 10 {
 					v = v[:10] + "..."
 				}
@@ -781,7 +819,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 
 func (h *Handler) writeLog(start time.Time, requestID, routeName string, att router.Attempt,
 	isStream bool, status, errCode string, u usageInfo, ttft, total time.Duration,
-	retries int, errorBody string, isFallback bool, vkID int64) {
+	retries int, errorBody string, isFallback bool, vkID int64, pendingID int64) {
 
 	entry := store.RequestLog{
 		RequestID: requestID, Route: routeName,
@@ -797,9 +835,17 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 		entry.Provider = att.Provider.Name
 		entry.KeyID = att.Key.ID
 	}
-	if err := h.db.DB.Create(&entry).Error; err != nil {
-		slog.Error("write request_log failed", "err", err, "request_id", requestID)
-		return
+	if pendingID > 0 {
+		entry.ID = pendingID
+		if err := h.db.DB.Save(&entry).Error; err != nil {
+			slog.Error("update request_log failed", "err", err, "request_id", requestID)
+			return
+		}
+	} else {
+		if err := h.db.DB.Create(&entry).Error; err != nil {
+			slog.Error("write request_log failed", "err", err, "request_id", requestID)
+			return
+		}
 	}
 	store.UpsertDaily(h.db.DB, &entry)
 }
@@ -886,6 +932,7 @@ func containsStr(s []string, v string) bool {
 
 type captureWriter struct {
 	w        http.ResponseWriter
+	mu       sync.Mutex
 	buf      []byte
 	limit    int
 	overflow bool
@@ -900,6 +947,8 @@ func (cw *captureWriter) Header() http.Header { return cw.w.Header() }
 func (cw *captureWriter) WriteHeader(code int) { cw.w.WriteHeader(code) }
 
 func (cw *captureWriter) Write(b []byte) (int, error) {
+	cw.mu.Lock()
+	defer cw.mu.Unlock()
 	if cw.overflow {
 		return cw.w.Write(b)
 	}
@@ -913,6 +962,8 @@ func (cw *captureWriter) Write(b []byte) (int, error) {
 }
 
 func (cw *captureWriter) Body() string {
+	cw.mu.Lock()
+	defer cw.mu.Unlock()
 	return string(cw.buf)
 }
 
@@ -1011,7 +1062,18 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 	var vkID int64
 	if vk, ok := getVKFromContext(r.Context()); ok {
 		vkID = vk.ID
+		if err := checkVKRouteAccess(h.db, vk, snap.Route.ID); err != nil {
+			if err == store.ErrVKAccessDenied {
+				openAIError(w, 403, "route_denied", fmt.Sprintf("route '%s' not allowed by virtual key", routeName), nil)
+			} else {
+				openAIError(w, 500, "route_check_error", err.Error(), nil)
+			}
+			h.maybeCapture(requestID, routeName, reqSnap, cw)
+			return
+		}
 	}
+
+	pendingID := h.createPendingLog(requestID, routeName, isStream, vkID)
 	tried := map[int64]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult
@@ -1031,7 +1093,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 						res.latencyMs = time.Since(attemptStart).Milliseconds()
 						h.record(res, rt)
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
-							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID)
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
 						h.maybeCapture(requestID, routeName, reqSnap, cw)
 						return
 					}
@@ -1040,7 +1102,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID)
+					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
 				h.maybeCapture(requestID, routeName, reqSnap, cw)
@@ -1057,7 +1119,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
 		last = res
 		h.writeLog(start, requestID, routeName, att, isStream,
-			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID)
+			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID)
 		if res.committed || !res.retryable {
 			break
 		}
@@ -1081,7 +1143,7 @@ func (h *Handler) nativeAttempt(w http.ResponseWriter, r *http.Request, reqBody 
 	att router.Attempt, isStream bool, rt *config.Runtime, endpoint string) attemptResult {
 
 	attemptStart := time.Now()
-	res := attemptResult{att: att, promptChars: len(reqBody) / 4} // 粗略估算
+	res := attemptResult{att: att, promptChars: nativeTextChars(reqBody)}
 	adapter := AdapterFor(att.Model.Protocol)
 
 	ctx, cancel := context.WithCancel(r.Context())
@@ -1241,17 +1303,27 @@ func (h *Handler) nativeStreamResponse(w http.ResponseWriter, resp *http.Respons
 			}
 		}
 		if readErr != nil {
-			if readErr == io.EOF {
+			if errors.Is(readErr, io.EOF) {
 				res.status = "success"
 				return res
 			}
-			if timedOut.Load() {
-				res.errCode, res.status = "timeout", "error"
-			} else {
-				res.errCode, res.status = "stream_read_error", "error"
+			if !committed {
+				if timedOut.Load() {
+					res.errCode, res.status, res.retryable = "timeout", "error", true
+				} else {
+					res.errCode, res.status, res.retryable = "stream_setup_failed", "error", true
+				}
+				return res
 			}
-			res.streamBroke = committed
-			res.retryable = !committed
+			// 流已 committed 且遇到错误：尝试提取 usage，判断是否为成功后的断开
+			if u := adapter.streamUsage(); u != nil {
+				res.usage = *u
+			}
+			if res.usage.prompt > 0 || res.usage.completion > 0 {
+				res.status = "success"
+			} else {
+				res.status, res.errCode, res.streamBroke = "error", "stream_broken", true
+			}
 			return res
 		}
 	}

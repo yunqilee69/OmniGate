@@ -50,8 +50,11 @@ func PurgeRetentions(db *gorm.DB, logRetentionDays, captureRetentionDays int) (m
 			deleted["content_log"] = n
 		}
 	}
+	// 大删除后触发 WAL checkpoint，防止 WAL 文件无限增长
+	db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 	return deleted, nil
 }
+
 
 // ClearStats 清空全部统计数据（request_log / request_attempt / request_log_daily）。
 // content_log 属于内容捕获数据而非统计事实，不在清空范围。
@@ -64,8 +67,11 @@ func ClearStats(db *gorm.DB) (map[string]int64, error) {
 		}
 		cleared[table] = res.RowsAffected
 	}
+	// 清空后触发 WAL checkpoint
+	db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 	return cleared, nil
 }
+
 
 func purgeBefore(db *gorm.DB, table, col string, cutoff int64) (int64, error) {
 	res := db.Exec("DELETE FROM "+table+" WHERE "+col+" < ?", cutoff)

@@ -68,13 +68,12 @@ func TestKeyDisabledOn401ThroughProxy(t *testing.T) {
 		t.Fatalf("good key state wrong: %+v", good)
 	}
 	ls := logs(t, st)
-	last := ls[len(ls)-1]
-	if last.Status != "success" || last.Retries != 1 {
-		t.Fatalf("log wrong: %+v", last)
+	if len(ls) != 1 {
+		t.Fatalf("expect 1 log row (updated from pending), got %d", len(ls))
 	}
-	first := ls[0]
-	if first.Status != "error" || first.ErrorCode != "401" || first.Retries != 0 {
-		t.Fatalf("first failed attempt must be logged separately: %+v", first)
+	l := ls[0]
+	if l.Status != "success" || l.Retries != 1 {
+		t.Fatalf("log wrong: %+v", l)
 	}
 
 	// sk-bad 已禁用：下一个请求直接走 sk-good，不再消耗重试
@@ -83,8 +82,11 @@ func TestKeyDisabledOn401ThroughProxy(t *testing.T) {
 		t.Fatalf("second request failed: %d", resp.StatusCode)
 	}
 	ls = logs(t, st)
-	if ls[2].Retries != 0 {
-		t.Fatalf("disabled key must be skipped upfront: %+v", ls[2])
+	if len(ls) != 2 {
+		t.Fatalf("expect 2 total log rows, got %d", len(ls))
+	}
+	if ls[1].Retries != 0 {
+		t.Fatalf("disabled key must be skipped upfront: %+v", ls[1])
 	}
 }
 

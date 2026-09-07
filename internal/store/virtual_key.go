@@ -143,7 +143,7 @@ func (s *Store) CheckVKRateLimit(vkID int64, rpmLimit int64) error {
 	return nil
 }
 
-// RecordVKRateLimitHit 记录虚拟 key 限流命中（请求发出前调用）。
+// RecordVKRateLimitHit 记录虚拟 key 限流命中（handler 返回后调用）。
 func (s *Store) RecordVKRateLimitHit(vkID int64) error {
 	now := time.Now()
 	minuteTs := now.Unix() / 60 * 60

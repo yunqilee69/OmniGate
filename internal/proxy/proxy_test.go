@@ -327,18 +327,15 @@ func TestFailoverOn500(t *testing.T) {
 		t.Fatalf("failover should succeed, got %d", resp.StatusCode)
 	}
 	ls := logs(t, st)
-	if len(ls) != 2 {
-		t.Fatalf("expect 2 log rows (1 fail + 1 success), got %d", len(ls))
+	if len(ls) != 1 {
+		t.Fatalf("expect 1 log row (updated from pending), got %d", len(ls))
 	}
-	if ls[0].Status != "error" || ls[0].ErrorCode != "500" || ls[0].Retries != 0 {
-		t.Fatalf("first attempt must be the 500 failure: %+v", ls[0])
+	l := ls[0]
+	if l.Status != "success" || l.Retries != 1 {
+		t.Fatalf("final must be success with retries=1: %+v", l)
 	}
-	last := ls[len(ls)-1]
-	if last.Status != "success" || last.Retries != 1 {
-		t.Fatalf("last attempt must be success with retries=1: %+v", last)
-	}
-	if last.Model != "good" {
-		t.Fatalf("final attempt should land on good model: %+v", last)
+	if l.Model != "good" {
+		t.Fatalf("final attempt should land on good model: %+v", l)
 	}
 }
 
@@ -368,13 +365,12 @@ func TestAllAttemptsFail(t *testing.T) {
 		t.Fatalf("expect 502, got %d", resp.StatusCode)
 	}
 	ls := logs(t, st)
-	if len(ls) != 4 { // max_hops=3 → 4 attempts，每个失败都必须独立记一行
-		t.Fatalf("expect 4 log rows, got %d", len(ls))
+	if len(ls) != 1 { // pending row updated, no separate per-attempt rows
+		t.Fatalf("expect 1 log row, got %d", len(ls))
 	}
-	for i, l := range ls {
-		if l.Status != "error" || l.ErrorCode != "500" || l.Retries != i {
-			t.Fatalf("attempt #%d wrong: %+v", i, l)
-		}
+	l := ls[0]
+	if l.Status != "error" || l.ErrorCode != "500" || l.Retries != 3 {
+		t.Fatalf("final log wrong: %+v", l)
 	}
 }
 
@@ -416,15 +412,12 @@ func TestTimeoutTransfer(t *testing.T) {
 		t.Fatalf("timeout should transfer to fast, got %d", resp.StatusCode)
 	}
 	ls := logs(t, st)
-	if len(ls) != 2 {
-		t.Fatalf("expect 2 log rows (timeout + success), got %d", len(ls))
+	if len(ls) != 1 {
+		t.Fatalf("expect 1 log row (updated from pending), got %d", len(ls))
 	}
-	if ls[0].Status != "error" || ls[0].ErrorCode != "timeout" {
-		t.Fatalf("first attempt must be timeout failure: %+v", ls[0])
-	}
-	last := ls[len(ls)-1]
-	if last.Model != "fastm" || last.Status != "success" || last.Retries != 1 {
-		t.Fatalf("final attempt must succeed on fastm: %+v", last)
+	l := ls[0]
+	if l.Model != "fastm" || l.Status != "success" || l.Retries != 1 {
+		t.Fatalf("final must succeed on fastm: %+v", l)
 	}
 }
 

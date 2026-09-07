@@ -11,13 +11,27 @@ import (
 type idleReader struct {
 	r      io.Reader
 	idle   time.Duration
+	onIdle func()
 	timer  *time.Timer
 	mu     sync.Mutex
 	closed bool
 }
 
 func newIdleReader(r io.Reader, idle time.Duration, onIdle func()) *idleReader {
-	return &idleReader{r: r, idle: idle, timer: time.AfterFunc(idle, onIdle)}
+	i := &idleReader{r: r, idle: idle, onIdle: onIdle}
+	i.timer = time.AfterFunc(idle, i.fire)
+	return i
+}
+
+func (i *idleReader) fire() {
+	i.mu.Lock()
+	cb := i.onIdle
+	closed := i.closed
+	i.mu.Unlock()
+	if closed || cb == nil {
+		return
+	}
+	cb()
 }
 
 func (i *idleReader) Read(p []byte) (int, error) {
@@ -36,8 +50,9 @@ func (i *idleReader) Read(p []byte) (int, error) {
 func (i *idleReader) Close() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if !i.closed {
-		i.closed = true
-		i.timer.Stop()
+	if i.closed {
+		return
 	}
+	i.closed = true
+	i.timer.Stop()
 }

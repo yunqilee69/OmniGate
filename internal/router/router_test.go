@@ -200,7 +200,7 @@ func TestAffinityOverflowResets(t *testing.T) {
 	expectedMin := affinityCap/2 + 1
 	expectedMax := affinityCap/2 + 2
 	if size < expectedMin || size > expectedMax {
-		t.Fatalf("overflow must evict half (oldest), expected %d-%d, got size %d", expectedMin, expectedMax, size)
+		t.Fatalf("overflow must evict random half, expected %d-%d, got size %d", expectedMin, expectedMax, size)
 	}
 }
 

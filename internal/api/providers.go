@@ -145,9 +145,7 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.DB.First(&p, id).Error
-	if invalidator, ok := s.chat.(interface{ InvalidateProviderCache(int64) }); ok {
-		invalidator.InvalidateProviderCache(id)
-	}
+	s.invalidateProviderCache(id)
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -201,10 +199,17 @@ func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
+	s.invalidateProviderCache(id)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
+}
+
+func (s *Server) invalidateProviderCache(id int64) {
 	if invalidator, ok := s.chat.(interface{ InvalidateProviderCache(int64) }); ok {
 		invalidator.InvalidateProviderCache(id)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
+	if invalidator, ok := s.typed.(interface{ InvalidateProviderCache(int64) }); ok {
+		invalidator.InvalidateProviderCache(id)
+	}
 }
 
 // exportConfig 导出配置的数据结构

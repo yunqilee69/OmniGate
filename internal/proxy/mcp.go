@@ -18,31 +18,59 @@ import (
 
 // mcpSession MCP 会话：客户端会话 → 多个后端子会话。
 type mcpSession struct {
-	id        string
-	backends  map[int64]*MCPClient // backend_id → client
-	toolCache map[string]int64     // tool_name → backend_id (用于 tools/call 路由)
-	createdAt time.Time
-	mu        sync.RWMutex
+	id         string
+	backends   map[int64]*MCPClient // backend_id → client
+	toolCache  map[string]int64     // tool_name → backend_id (用于 tools/call 路由)
+	createdAt  time.Time
+	lastUsedAt time.Time
+	mu         sync.RWMutex
 }
 
-// mcpSessionStore 全局会话存储。
+const mcpSessionTTL = 30 * time.Minute
+
+// mcpSessionStore 全局会话存储。过期会话由后台协程按 TTL 清理。
 type mcpSessionStore struct {
 	sessions map[string]*mcpSession
 	mu       sync.RWMutex
+	once     sync.Once
 }
 
 var globalMcpSessions = &mcpSessionStore{
 	sessions: make(map[string]*mcpSession),
 }
 
+func (s *mcpSessionStore) startSweeper() {
+	s.once.Do(func() {
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				s.sweep(time.Now())
+			}
+		}()
+	})
+}
+
 func (s *mcpSessionStore) get(id string) (*mcpSession, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	sess, ok := s.sessions[id]
-	return sess, ok
+	if !ok {
+		return nil, false
+	}
+	if time.Since(sess.lastUsedAt) > mcpSessionTTL {
+		s.closeLocked(id, sess)
+		return nil, false
+	}
+	sess.lastUsedAt = time.Now()
+	return sess, true
 }
 
 func (s *mcpSessionStore) set(id string, sess *mcpSession) {
+	s.startSweeper()
+	now := time.Now()
+	sess.createdAt = now
+	sess.lastUsedAt = now
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[id] = sess
@@ -52,12 +80,26 @@ func (s *mcpSessionStore) delete(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sess, ok := s.sessions[id]; ok {
-		sess.mu.Lock()
-		for _, client := range sess.backends {
-			_ = client.Close()
+		s.closeLocked(id, sess)
+	}
+}
+
+func (s *mcpSessionStore) closeLocked(id string, sess *mcpSession) {
+	sess.mu.Lock()
+	for _, client := range sess.backends {
+		_ = client.Close()
+	}
+	sess.mu.Unlock()
+	delete(s.sessions, id)
+}
+
+func (s *mcpSessionStore) sweep(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, sess := range s.sessions {
+		if now.Sub(sess.lastUsedAt) > mcpSessionTTL {
+			s.closeLocked(id, sess)
 		}
-		sess.mu.Unlock()
-		delete(s.sessions, id)
 	}
 }
 
@@ -178,10 +220,11 @@ func (h *Handler) mcpInitialize(w http.ResponseWriter, r *http.Request, ctx cont
 	// 生成新会话 ID
 	sessionID := uuid.New().String()
 	sess := &mcpSession{
-		id:        sessionID,
-		backends:  make(map[int64]*MCPClient),
-		toolCache: make(map[string]int64),
-		createdAt: time.Now(),
+		id:         sessionID,
+		backends:   make(map[int64]*MCPClient),
+		toolCache:  make(map[string]int64),
+		createdAt:  time.Now(),
+		lastUsedAt: time.Now(),
 	}
 
 	// 为每个后端创建客户端并发送 initialize
@@ -431,6 +474,10 @@ func (h *Handler) mcpDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, ok := globalMcpSessions.get(sessionID); !ok {
+		openAIError(w, http.StatusNotFound, "session_not_found", "session not found", nil)
+		return
+	}
 	globalMcpSessions.delete(sessionID)
 	w.WriteHeader(http.StatusNoContent)
 }

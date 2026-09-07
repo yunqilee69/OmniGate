@@ -3,7 +3,6 @@ package router
 
 import (
 	"math/rand/v2"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -327,26 +326,37 @@ func (s *Selector) SetAffinity(key string, modelID int64, ttl time.Duration, now
 	defer s.affMu.Unlock()
 	if len(s.aff) >= affinityCap {
 		if !s.sweepExpiredLocked(now) {
-			s.evictHalfLRU(now)
+			s.evictHalf()
 		}
 	}
 	s.aff[key] = affinityEntry{modelID: modelID, expireAt: now.Add(ttl).Unix()}
 }
 
-func (s *Selector) evictHalfLRU(now time.Time) {
-	type item struct {
-		key string
-		exp int64
+func (s *Selector) evictHalf() {
+	// 亲和是尽力而为：满容时随机删一半，避免持锁做 O(n log n) 全量排序。
+	n := len(s.aff)
+	if n == 0 {
+		return
 	}
-	items := make([]item, 0, len(s.aff))
-	for k, e := range s.aff {
-		items = append(items, item{key: k, exp: e.expireAt})
+	evictCount := n / 2
+	keys := make([]string, 0, evictCount)
+	i := 0
+	for k := range s.aff {
+		if len(keys) < evictCount {
+			keys = append(keys, k)
+		} else {
+			j := rand.IntN(i + 1)
+			if j < evictCount {
+				keys[j] = k
+			}
+		}
+		i++
+		if i == n {
+			break
+		}
 	}
-	sort.Slice(items, func(i, j int) bool { return items[i].exp < items[j].exp })
-	
-	evictCount := len(items) / 2
-	for i := 0; i < evictCount; i++ {
-		delete(s.aff, items[i].key)
+	for _, k := range keys {
+		delete(s.aff, k)
 	}
 }
 
