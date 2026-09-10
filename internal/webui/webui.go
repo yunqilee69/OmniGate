@@ -11,6 +11,19 @@ import (
 //go:embed all:dist
 var distFS embed.FS
 
+// placeholderHTML 在尚未执行 `cd web && npm run build` 时返回，避免空 dist 导致启动 panic。
+const placeholderHTML = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>OmniGate 管理台</title>
+</head>
+<body>
+  <p>管理台前端尚未构建。请执行 <code>cd web &amp;&amp; npm ci &amp;&amp; npm run build</code> 后重新编译。</p>
+</body>
+</html>
+`
+
 func Handler() http.Handler {
 	sub, err := fs.Sub(distFS, "dist")
 	if err != nil {
@@ -19,7 +32,7 @@ func Handler() http.Handler {
 	server := http.FileServer(http.FS(sub))
 	index, err := fs.ReadFile(sub, "index.html")
 	if err != nil {
-		panic(err)
+		index = []byte(placeholderHTML)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := strings.TrimPrefix(r.URL.Path, "/")
