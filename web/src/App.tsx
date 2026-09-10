@@ -106,6 +106,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/config" element={<ConfigCenter />} />
+          <Route path="/keys" element={<VirtualKeys />} />
           <Route path="/routes" element={<RoutesPage />} />
           <Route path="/playground" element={<Playground />} />
           <Route path="/stats" element={<Stats />} />
