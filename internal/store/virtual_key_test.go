@@ -24,8 +24,8 @@ func setupTestDB(t *testing.T) *Store {
 
 func TestGenerateVKToken(t *testing.T) {
 	token := GenerateVKToken()
-	if len(token) < 10 {
-		t.Errorf("token too short: %s", token)
+	if len(token) != 35 {
+		t.Errorf("token length = %d, want 35 (vk- + 16-byte hex): %s", len(token), token)
 	}
 	if token[:3] != "vk-" {
 		t.Errorf("token should start with vk-: %s", token)

@@ -17,9 +17,9 @@ var (
 	ErrVKAccessDenied       = errors.New("route not allowed")
 )
 
-// GenerateVKToken 生成 vk- 前缀的随机 token。
+// GenerateVKToken 生成 vk- 前缀的随机 token（16 字节 hex，128 bit 熵，总长 35 字符）。
 func GenerateVKToken() string {
-	b := make([]byte, 32)
+	b := make([]byte, 16)
 	rand.Read(b)
 	return "vk-" + hex.EncodeToString(b)
 }
