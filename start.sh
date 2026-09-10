@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # OmniGate 一键启动脚本
-#   ./start.sh          开发模式：后端 127.0.0.1:17777 + 前端 vite 热更新 17778
-#   ./start.sh --prod   生产模式：仅后端（内嵌前端产物），浏览器访问 17778
+#   ./start.sh          开发模式：后端 127.0.0.1:17777 + 前端 vite 热更新 17778/manage
+#   ./start.sh --prod   生产模式：仅后端（内嵌前端产物），浏览器访问 17777/manage
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -107,7 +107,7 @@ run_bg() {
 wait_healthy() {
   local port=$1 name=$2 i=0
   while [ $i -lt 30 ]; do
-    if curl -sf -o /dev/null "http://127.0.0.1:$port/"; then
+    if curl -sf -o /dev/null "http://127.0.0.1:$port/manage/"; then
       echo "[OK] $name 就绪 (port $port)"; return 0
     fi
     sleep 0.5; i=$((i + 1))
@@ -144,7 +144,8 @@ fi
 if [ "${1:-}" = "--prod" ]; then
   echo ""
   echo "================ OmniGate（生产模式）================"
-  echo "  管理界面 + API : http://127.0.0.1:$BACKEND_PORT"
+  echo "  管理台         : http://127.0.0.1:$BACKEND_PORT/manage"
+  echo "  管理 API       : http://127.0.0.1:$BACKEND_PORT/api"
   echo "  代理入口       : http://127.0.0.1:$BACKEND_PORT/v1/chat/completions"
   echo "  后端日志       : $LOG_DIR/backend.log"
   echo "========================================================"
@@ -170,8 +171,9 @@ fi
 
 echo ""
 echo "================ OmniGate（开发模式）================"
-echo "  前端(热更新)    : http://localhost:$FRONTEND_PORT"
-echo "  后端 API/代理   : http://127.0.0.1:$BACKEND_PORT"
+  echo "  管理台(热更新)  : http://localhost:$FRONTEND_PORT/manage"
+  echo "  管理 API        : http://127.0.0.1:$BACKEND_PORT/api"
+  echo "  代理入口        : http://127.0.0.1:$BACKEND_PORT/v1"
 echo "  日志目录        : $LOG_DIR/"
 echo "========================================================"
 echo "Ctrl+C 一键停止全部"

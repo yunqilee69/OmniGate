@@ -28,7 +28,7 @@ func newTestServerWithStore(t *testing.T) (http.Handler, *store.Store, string) {
 	if err != nil {
 		t.Fatalf("init runtime config: %v", err)
 	}
-	
+
 	// 创建测试虚拟 key
 	vk := &store.VirtualKey{
 		Name:           "test-vk",
@@ -40,7 +40,7 @@ func newTestServerWithStore(t *testing.T) (http.Handler, *store.Store, string) {
 	if err := st.CreateVirtualKey(vk); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	return New(st, rt, AdminAuth{Username: "admin", Password: "test-token"}, nil, nil).Router(), st, vk.KeyValue
 }
 
@@ -864,4 +864,67 @@ func TestModelTestKeysEndpoint(t *testing.T) {
 	if rec = do(t, h, "POST", "/api/models/99999/test-keys", nil, "test-token"); rec.Code != http.StatusNotFound {
 		t.Fatalf("missing model should 404, got %d", rec.Code)
 	}
+}
+
+func TestFirstLevelNamespaces(t *testing.T) {
+	h, vk := newTestServer(t)
+
+	t.Run("root redirects to manage", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("GET / code = %d, want 302", rec.Code)
+		}
+		if loc := rec.Header().Get("Location"); loc != "/manage/" {
+			t.Fatalf("GET / Location = %q, want /manage/", loc)
+		}
+	})
+
+	t.Run("manage serves html", func(t *testing.T) {
+		rec := do(t, h, "GET", "/manage", nil, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /manage code = %d, want 200", rec.Code)
+		}
+		ct := rec.Header().Get("Content-Type")
+		if !strings.Contains(ct, "text/html") {
+			t.Fatalf("GET /manage Content-Type = %q, want text/html", ct)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "<html") && !strings.Contains(body, "<!DOCTYPE html>") {
+			t.Fatalf("GET /manage body is not HTML")
+		}
+	})
+
+	t.Run("manage spa fallback", func(t *testing.T) {
+		rec := do(t, h, "GET", "/manage/dashboard", nil, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /manage/dashboard code = %d, want 200", rec.Code)
+		}
+		ct := rec.Header().Get("Content-Type")
+		if !strings.Contains(ct, "text/html") {
+			t.Fatalf("GET /manage/dashboard Content-Type = %q, want text/html", ct)
+		}
+	})
+
+	t.Run("old spa path is not at root", func(t *testing.T) {
+		rec := do(t, h, "GET", "/dashboard", nil, "")
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET /dashboard code = %d, want 404", rec.Code)
+		}
+	})
+
+	t.Run("api stays at first level", func(t *testing.T) {
+		rec := do(t, h, "GET", "/api/health", nil, "test-token")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/health code = %d, want 200", rec.Code)
+		}
+	})
+
+	t.Run("v1 stays at first level", func(t *testing.T) {
+		rec := doV1(t, h, "GET", "/v1/models", nil, vk)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /v1/models code = %d, want 200", rec.Code)
+		}
+	})
 }

@@ -365,6 +365,14 @@ HTTP 503
 
 ## 7. API 设计
 
+第一级 HTTP 命名空间：
+
+| 前缀 | 用途 |
+|---|---|
+| `/v1/*` | 模型调用（OpenAI 兼容代理） |
+| `/api/*` | 管理台前端请求后端的 REST |
+| `/manage/*` | 管理台页面（React SPA）；`GET /` 302 到 `/manage/` |
+
 ### 7.1 代理面（OpenAI 兼容，无需鉴权或沿用透传）
 
 | 方法 | 路径 | 说明 |
@@ -503,7 +511,7 @@ POST /api/maintenance/clear-stats             # body {"confirm":true}；清空�
 
 ---
 
-## 10. Web UI 页面清单（React 18 + Ant Design 5 + ECharts，go:embed 内嵌）
+## 10. Web UI 页面清单（React 18 + Ant Design 5 + ECharts，go:embed 内嵌，挂在 `/manage`）
 
 | 页面 | 内容 |
 |---|---|

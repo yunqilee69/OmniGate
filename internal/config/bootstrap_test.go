@@ -115,6 +115,27 @@ func TestLoadBootstrapEnvOverrideDBPath(t *testing.T) {
 	}
 }
 
+func TestDisplayURL(t *testing.T) {
+	tests := []struct {
+		listen, want string
+	}{
+		{"127.0.0.1:17777", "http://127.0.0.1:17777"},
+		{"0.0.0.0:17777", "http://127.0.0.1:17777"},
+		{":17777", "http://127.0.0.1:17777"},
+		{"[::]:8080", "http://127.0.0.1:8080"},
+		{"192.168.1.8:9000", "http://192.168.1.8:9000"},
+		{"[::1]:17777", "http://[::1]:17777"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.listen, func(t *testing.T) {
+			got := DisplayURL(tt.listen)
+			if got != tt.want {
+				t.Fatalf("DisplayURL(%q)=%q, want %q", tt.listen, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadBootstrapEnvOverrideLogPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cfg.yaml")
 	yaml := "log:\n  path: /from/yaml.log\n"

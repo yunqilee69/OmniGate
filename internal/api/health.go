@@ -46,7 +46,7 @@ type healthResp struct {
 // 模型也无法响应，应明确标记 cooldown/disabled 给运维。
 func effectiveModelStatus(now int64, m store.Model, boundKeys []store.ApiKey) (status, reason string, stats keyStats) {
 	stats.Total = len(boundKeys)
-	
+
 	// 先统计所有密钥状态分布
 	avail, cooling, disabled := 0, 0, 0
 	for _, k := range boundKeys {
@@ -62,14 +62,14 @@ func effectiveModelStatus(now int64, m store.Model, boundKeys []store.ApiKey) (s
 			stats.Disabled++
 		}
 	}
-	
+
 	// 模型本身非活跃时直接返回模型状态
 	status = m.Status
 	reason = m.DisableReason
 	if status != "active" {
 		return
 	}
-	
+
 	// 模型活跃，但根据密钥可用性计算实际可达性
 	if len(boundKeys) == 0 {
 		return "no_key", "未绑定密钥", stats

@@ -134,3 +134,16 @@ func (b Bootstrap) validateAdmin() error {
 func (b Bootstrap) Listen() string {
 	return net.JoinHostPort(b.Server.Host, strconv.Itoa(b.Server.Port))
 }
+
+// DisplayURL 把监听地址转成浏览器可打开的 http URL。
+// 0.0.0.0 / :: / 空 host 表示绑定所有网卡，展示时换成 127.0.0.1。
+func DisplayURL(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "http://" + listen
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
+}

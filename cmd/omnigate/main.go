@@ -188,15 +188,17 @@ func removePidFile() error {
 	return os.Remove(pidFile)
 }
 
-func isProcessRunning(pid int) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
+// webAccessURL 根据启动层配置或 --listen 覆盖生成管理台 URL。
+// 配置读失败时回退默认 127.0.0.1:17777，避免启动横幅缺地址。
+func webAccessURL(cfgPath, listenOverride string) string {
+	if listenOverride != "" {
+		return config.DisplayURL(listenOverride) + "/manage"
 	}
-	// 在Unix上，发送信号0检查进程是否存在
-	// 在Windows上，FindProcess总是成功，需要尝试其他方法
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
+	boot, err := config.LoadBootstrap(expandHome(cfgPath))
+	if err != nil {
+		return config.DisplayURL("127.0.0.1:17777") + "/manage"
+	}
+	return config.DisplayURL(boot.Listen()) + "/manage"
 }
 
 func stopCommand() {
@@ -216,15 +218,9 @@ func stopCommand() {
 		os.Exit(1)
 	}
 
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		fmt.Printf("✗ 查找进程失败: %v\n", err)
-		os.Exit(1)
-	}
-
 	fmt.Printf("正在停止服务 (PID: %d)...\n", pid)
-	if err := process.Signal(syscall.SIGTERM); err != nil {
-		fmt.Printf("✗ 发送停止信号失败: %v\n", err)
+	if err := terminateProcess(pid); err != nil {
+		fmt.Printf("✗ 停止进程失败: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -237,6 +233,8 @@ func stopCommand() {
 			return
 		}
 	}
+	fmt.Printf("✗ 进程 %d 在 5s 内未退出\n", pid)
+	os.Exit(1)
 }
 
 func statusCommand() {
@@ -256,6 +254,7 @@ func statusCommand() {
 		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		fmt.Println("  状态: 运行中 ✓")
 		fmt.Printf("  PID: %d\n", pid)
+		fmt.Printf("  管理台: %s\n", webAccessURL(filepath.Join(appHomeDir(), "config.yaml"), ""))
 		fmt.Printf("  数据目录: %s\n", appHomeDir())
 		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	} else {
@@ -277,7 +276,7 @@ func startCommand() {
 		foreground     bool
 		isChild        bool
 	)
-	
+
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
 	fs.StringVar(&dbPath, "db", filepath.Join(appHome, "omnigate.db"),
 		"SQLite database file path (default: ~/.omnigate/omnigate.db)")
@@ -293,7 +292,7 @@ func startCommand() {
 		"run in foreground mode with verbose logging (default: false, background mode)")
 	fs.BoolVar(&isChild, "child", false,
 		"internal flag: marks this process as background child (do not use manually)")
-	
+
 	// 跳过 "start" 子命令解析标志
 	args := os.Args[1:]
 	if len(args) > 0 && args[0] == "start" {
@@ -322,6 +321,7 @@ func startCommand() {
 	if !isChild {
 		if pid, err := readPidFile(); err == nil && isProcessRunning(pid) {
 			fmt.Printf("✗ 服务已在运行 (PID: %d)\n", pid)
+			fmt.Printf("  管理台: %s\n", webAccessURL(cfgPath, listenOverride))
 			fmt.Println("  使用 'omnigate status' 查看状态")
 			fmt.Println("  使用 'omnigate stop' 停止服务")
 			os.Exit(1)
@@ -337,38 +337,39 @@ func startCommand() {
 			args = append(args[:1], args[2:]...)
 		}
 		args = append(args, "--child")
-		
+
 		cmd := exec.Command(os.Args[0], args...)
-		
+
 		// 分离标准输入输出
 		cmd.Stdin = nil
 		cmd.Stdout = nil
 		cmd.Stderr = nil
-		
+
 		// 设置进程组（Unix）或创建新进程（Windows）
 		cmd.SysProcAttr = daemonSysProcAttr()
-		
+
 		if err := cmd.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "✗ 启动后台进程失败: %v\n", err)
 			os.Exit(1)
 		}
-		
+
 		// 写入PID文件
 		if err := writePidFile(cmd.Process.Pid); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠ 写入PID文件失败: %v\n", err)
 		}
-		
+
 		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		fmt.Printf("  OmniGate %s\n", version)
 		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		fmt.Printf("✓ 服务已在后台启动 (PID: %d)\n", cmd.Process.Pid)
+		fmt.Printf("  管理台: %s\n", webAccessURL(cfgPath, listenOverride))
 		fmt.Printf("  数据目录: %s\n", appHome)
 		fmt.Printf("  查看日志: tail -f %s\n", expandHome(logPath))
 		fmt.Println()
 		fmt.Println("  命令:")
 		fmt.Println("    omnigate status  - 查看状态")
 		fmt.Println("    omnigate stop    - 停止服务")
-		
+
 		// 父进程退出
 		return
 	}
@@ -506,10 +507,7 @@ func startCommand() {
 	<-serverReady
 
 	// 输出启动信息到 stdout（即使在守护模式下也输出）
-	accessURL := fmt.Sprintf("http://%s", listen)
-	if listen == "0.0.0.0:17777" || listen == ":17777" {
-		accessURL = "http://127.0.0.1:17777"
-	}
+	accessURL := config.DisplayURL(listen) + "/manage"
 
 	shortCommit := commit
 	if len(commit) > 7 {
@@ -519,7 +517,7 @@ func startCommand() {
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Printf("  OmniGate %s (%s)\n", version, shortCommit)
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Printf("  访问地址:  %s\n", accessURL)
+	fmt.Printf("  管理台:    %s\n", accessURL)
 	fmt.Printf("  数据目录:  %s\n", appHome)
 	fmt.Printf("  数据库:    %s\n", dbPath)
 	fmt.Printf("  配置文件:  %s\n", cfgPath)

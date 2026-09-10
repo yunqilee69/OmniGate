@@ -9,8 +9,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/cloudomni/omnigate/internal/store"
+	"github.com/go-chi/chi/v5"
 )
 
 func setupTestDB(t *testing.T) *store.Store {
@@ -21,7 +21,7 @@ func setupTestDB(t *testing.T) *store.Store {
 	}
 	f.Close()
 	t.Cleanup(func() { os.Remove(f.Name()) })
-	
+
 	db, err := store.Open(f.Name())
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +34,6 @@ func withURLParam(r *http.Request, key, value string) *http.Request {
 	rctx.URLParams.Add(key, value)
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 }
-
 
 func TestVirtualKeyCreate(t *testing.T) {
 	db := setupTestDB(t)

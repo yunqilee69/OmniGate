@@ -13,7 +13,7 @@ dayjs.locale('zh-cn')
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename="/manage">
       <ConfigProvider locale={zhCN} theme={geistTheme}>
         <App />
       </ConfigProvider>

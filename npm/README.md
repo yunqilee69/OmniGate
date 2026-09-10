@@ -17,7 +17,7 @@ omnigate
 OMNIGATE_USE_CDN=1 npm install -g @cloudomni/omnigate
 ```
 
-首次运行会在 `~/.omnigate/` 下自动创建数据目录(SQLite、配置、日志),浏览器打开 <http://127.0.0.1:17777> 进入内嵌管理台。
+首次运行会在 `~/.omnigate/` 下自动创建数据目录(SQLite、配置、日志),浏览器打开 <http://127.0.0.1:17777/manage> 进入内嵌管理台。
 
 ## 安装时发生了什么
 
@@ -55,7 +55,7 @@ omnigate start --log stdout          # 仅输出到 stdout
 omnigate start --config ~/my.yaml    # 指定配置文件
 ```
 
-首次运行会在 `~/.omnigate/` 下自动创建数据目录（SQLite、配置、日志），浏览器打开 <http://127.0.0.1:17777> 进入内嵌管理台。
+首次运行会在 `~/.omnigate/` 下自动创建数据目录（SQLite、配置、日志），浏览器打开 <http://127.0.0.1:17777/manage> 进入内嵌管理台。
 
 ### 守护进程管理
 

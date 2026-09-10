@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/cloudomni/omnigate/internal/store"
+	"github.com/go-chi/chi/v5"
 )
 
 // VirtualKeyHandler 虚拟密钥管理接口。

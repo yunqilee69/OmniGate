@@ -169,7 +169,7 @@ func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64,
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": agg.Total, "success": agg.Success, "errors": agg.Errors, "success_rate": successRate,
 		"prompt_tokens": agg.PTok, "completion_tokens": agg.CTok, "cached_tokens": agg.CachedTok,
-		"total_tokens": agg.PTok + agg.CTok,
+		"total_tokens":   agg.PTok + agg.CTok,
 		"cache_hit_rate": cacheRate,
 		"cost":           agg.Cost * rate,
 		"avg_ttft_ms":    avgTTFT, "avg_total_ms": avgTotal,
@@ -185,15 +185,15 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate flo
 	args := []any{from, to}
 
 	var agg struct {
-		Total    int64
-		Success  int64
-		Errors   int64
-		PTokens  int64
-		CTokens  int64
+		Total        int64
+		Success      int64
+		Errors       int64
+		PTokens      int64
+		CTokens      int64
 		CachedTokens int64
-		Cost     float64
-		AvgTTFT  sql.NullFloat64
-		AvgTotal sql.NullFloat64
+		Cost         float64
+		AvgTTFT      sql.NullFloat64
+		AvgTotal     sql.NullFloat64
 	}
 	row := s.store.DB.Raw(`SELECT COUNT(*),
 		COALESCE(SUM(CASE WHEN status='success' THEN 1 ELSE 0 END),0),
@@ -244,7 +244,7 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate flo
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": agg.Total, "success": agg.Success, "errors": agg.Errors, "success_rate": successRate,
 		"prompt_tokens": agg.PTokens, "completion_tokens": agg.CTokens, "cached_tokens": agg.CachedTokens,
-		"total_tokens": agg.PTokens + agg.CTokens,
+		"total_tokens":   agg.PTokens + agg.CTokens,
 		"cache_hit_rate": cacheRate,
 		"cost":           agg.Cost * rate,
 		"avg_ttft_ms":    agg.AvgTTFT.Float64, "avg_total_ms": agg.AvgTotal.Float64,
@@ -679,7 +679,7 @@ func (s *Server) GetVKStats(w http.ResponseWriter, r *http.Request) {
 		if log.VKID == 0 {
 			continue // 跳过非虚拟密钥请求
 		}
-		
+
 		stat, exists := statsMap[log.VKID]
 		if !exists {
 			stat = &VKStatsResponse{
@@ -687,10 +687,10 @@ func (s *Server) GetVKStats(w http.ResponseWriter, r *http.Request) {
 			}
 			statsMap[log.VKID] = stat
 		}
-		
+
 		stat.Requests++
 		stat.TotalCost += log.Cost
-		
+
 		if log.Status == "success" {
 			stat.SuccessCount++
 		} else if log.Status == "error" {
@@ -704,12 +704,12 @@ func (s *Server) GetVKStats(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "database_error", "failed to query virtual keys")
 		return
 	}
-	
+
 	vkNameMap := make(map[int64]string)
 	for _, vk := range vks {
 		vkNameMap[vk.ID] = vk.Name
 	}
-	
+
 	// 转换为数组并填充名称
 	result := make([]VKStatsResponse, 0, len(statsMap))
 	for vkID, stat := range statsMap {

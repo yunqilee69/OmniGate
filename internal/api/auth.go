@@ -46,7 +46,6 @@ func (a AdminAuth) verifyCred(cred string) bool {
 	return a.Username != "" && subtle.ConstantTimeCompare([]byte(cred), []byte(a.credential())) == 1
 }
 
-
 // sessionStore 进程内会话表：登录签发随机令牌，重启即全部失效。
 // 不落盘是有意为之——凭据本身是启动层静态配置，会话生命周期与进程对齐。
 type sessionStore struct {
@@ -123,7 +122,6 @@ func (s *Server) authorizeAdmin(r *http.Request) bool {
 	return false
 }
 
-
 func (s *Server) authMW(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.auth.Mode() == "open" || s.authorizeAdmin(r) {
@@ -133,7 +131,6 @@ func (s *Server) authMW(next http.Handler) http.Handler {
 		writeErr(w, http.StatusUnauthorized, "unauthorized", "missing or invalid credentials")
 	})
 }
-
 
 // handleAuthInfo 公开端点：登录页据此渲染账号密码表单/令牌表单，或直接放行。
 func (s *Server) handleAuthInfo(w http.ResponseWriter, _ *http.Request) {

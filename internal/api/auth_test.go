@@ -101,7 +101,6 @@ func TestLoginPasswordMode(t *testing.T) {
 	}
 }
 
-
 func TestV1RequiresVirtualKey(t *testing.T) {
 	// 验证 /v1 端点现在需要虚拟 key 而非旧 API key
 	h := newAuthTestServer(t, AdminAuth{})

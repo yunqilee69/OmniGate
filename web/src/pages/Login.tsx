@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Button, Card, Input, message } from 'antd'
-import { api, setToken } from '../api'
+import { api, setToken, uiPath } from '../api'
 
 type Mode = 'checking' | 'password' | 'open'
 
@@ -14,7 +14,7 @@ export default function Login() {
     api<{ mode: Mode }>('GET', '/api/auth-info')
       .then((r) => {
         if (r.mode === 'open') {
-          window.location.href = '/dashboard'
+          window.location.href = uiPath('/dashboard')
           return
         }
         setMode(r.mode)
@@ -32,7 +32,7 @@ export default function Login() {
       setToken(res.token)
       message.success('登录成功')
       // 整页跳转让 App 认证门重新校验,不依赖组件内状态传递
-      window.location.href = '/dashboard'
+      window.location.href = uiPath('/dashboard')
     } catch (e: any) {
       message.error(`登录失败:${e.message}`)
     } finally {

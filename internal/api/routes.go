@@ -146,7 +146,7 @@ func (s *Server) validateTargets(endpoint string, targets []routeTargetReq) (boo
 	if len(models) != len(ids) {
 		return false, "部分目标模型不存在"
 	}
-	
+
 	expectedProtocol := endpointToProtocol(endpoint)
 	for _, m := range models {
 		if m.Protocol != expectedProtocol {
@@ -215,7 +215,7 @@ func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses, mcp")
 		return
 	}
-	
+
 	// MCP 路由使用 mcp_targets，其他端点使用 targets
 	if req.Endpoint == "mcp" {
 		if ok, msg := s.validateMcpTargets(req.McpTargets); !ok {
@@ -228,7 +228,7 @@ func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	
+
 	rt := store.Route{Name: req.Name, Endpoint: req.Endpoint, Remark: req.Remark}
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&rt).Error; err != nil {
@@ -257,7 +257,7 @@ func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	
+
 	if req.Endpoint == "mcp" {
 		var mcpTargets []store.RouteMcpTarget
 		_ = s.store.DB.Where("route_id = ?", rt.ID).Order("id").Find(&mcpTargets).Error
@@ -321,12 +321,12 @@ func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "no fields to update")
 		return
 	}
-	
+
 	effectiveEndpoint := rt.Endpoint
 	if req.Endpoint != nil {
 		effectiveEndpoint = strings.TrimSpace(*req.Endpoint)
 	}
-	
+
 	// 根据有效端点类型验证相应的目标
 	if effectiveEndpoint == "mcp" {
 		if req.McpTargets != nil {
@@ -343,14 +343,14 @@ func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	
+
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
 		if len(simple) > 0 {
 			if err := tx.Model(&rt).Updates(simple).Error; err != nil {
 				return err
 			}
 		}
-		
+
 		if effectiveEndpoint == "mcp" && req.McpTargets != nil {
 			if err := tx.Where("route_id = ?", id).Delete(&store.RouteMcpTarget{}).Error; err != nil {
 				return err

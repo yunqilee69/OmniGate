@@ -12,7 +12,7 @@ import {
   ApiOutlined,
 } from '@ant-design/icons'
 import { Routes, Route, Navigate, useLocation, Link } from 'react-router-dom'
-import { api, clearToken } from './api'
+import { api, clearToken, uiPath } from './api'
 import McpBackends from './pages/McpBackends'
 import Dashboard from './pages/Dashboard'
 import ConfigCenter from './pages/ConfigCenter'
@@ -64,7 +64,7 @@ export default function App() {
   const logout = () => {
     api('POST', '/api/logout').catch(() => {})
     clearToken()
-    window.location.href = '/login'
+    window.location.href = uiPath('/login')
   }
 
   return (

@@ -1,5 +1,13 @@
 let token = localStorage.getItem('admin_token') ?? ''
 
+/** 管理台页面路径（window.location 不含 React Router basename）。 */
+export function uiPath(path: string): string {
+  if (path.startsWith('/')) {
+    return '/manage' + path
+  }
+  return '/manage/' + path
+}
+
 export async function api<T = any>(method: string, path: string, body?: any): Promise<T> {
   const res = await fetch(path, {
     method,
@@ -10,11 +18,11 @@ export async function api<T = any>(method: string, path: string, body?: any): Pr
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (!res.ok) {
-    if (res.status === 401 && window.location.pathname !== '/login') {
+    if (res.status === 401 && window.location.pathname !== uiPath('/login')) {
       // 令牌缺失/失效:清掉本地令牌并整页跳登录,返回永不 settle 的 Promise
       // 挂起调用方,避免跳转瞬间各页面弹一串错误 toast
       clearToken()
-      window.location.href = '/login'
+      window.location.href = uiPath('/login')
       return new Promise<T>(() => {})
     }
     let msg = `${res.status} ${res.statusText}`

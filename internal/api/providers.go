@@ -219,8 +219,8 @@ type exportConfig struct {
 }
 
 type exportProviderData struct {
-	Provider store.Provider `json:"provider"`
-	Keys     []exportKeyData `json:"keys"`
+	Provider store.Provider    `json:"provider"`
+	Keys     []exportKeyData   `json:"keys"`
 	Models   []exportModelData `json:"models"`
 }
 

@@ -160,7 +160,17 @@ func (s *Server) Router() http.Handler {
 			writeErr(w, http.StatusNotFound, "not_found", "endpoint not found")
 		})
 	})
-	r.NotFound(webui.Handler().ServeHTTP)
+
+	// 三层第一级路由：/v1 模型代理、/api 管理 REST、/manage 管理台 SPA
+	r.Get("/", func(w http.ResponseWriter, req *http.Request) {
+		http.Redirect(w, req, "/manage/", http.StatusFound)
+	})
+	ui := http.StripPrefix("/manage", webui.Handler())
+	r.Handle("/manage", ui)
+	r.Handle("/manage/*", ui)
+	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
+		writeErr(w, http.StatusNotFound, "not_found", "not found")
+	})
 	return r
 }
 

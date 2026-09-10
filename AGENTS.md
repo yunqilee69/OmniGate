@@ -20,6 +20,11 @@
                          SQLite 存储 ← 管理 REST API ← React UI
 ```
 
+**第一级 HTTP 路由**：
+- `/v1/*` — 模型调用
+- `/api/*` — 管理台前端请求后端
+- `/manage/*` — 管理台页面（`GET /` 302 到 `/manage/`）
+
 **三级路由**：
 1. **逻辑路由**（如 `glm`）→ 加权选择物理模型
 2. **物理模型** → 模型内绑定密钥的轮询
@@ -113,7 +118,7 @@ cd web && npm ci && npm run build
 
 **`start.sh` 行为**：
 - 构建后端，启动在 `:17777`
-- 启动 Vite 开发服务器在 `:17778`，代理后端 `/api` 和 `/v1`
+- 启动 Vite 开发服务器在 `:17778`，管理台在 `/manage`，代理后端 `/api` 和 `/v1`
 - 两者日志输出到 `logs/backend.log` 和 `logs/frontend.log`
 - `Ctrl+C` 杀死整个进程树
 - 使用本地 `./data/omnigate.db` 和 `./config.yaml`
@@ -381,7 +386,7 @@ go test -race ./...
 2. ✅ **代码检查通过**：`go vet ./...` 无问题
 3. ✅ 构建成功：`go build -o omnigate ./cmd/omnigate`
 4. ✅ 前端构建成功：`cd web && npm run build`
-5. ✅ 冒烟测试：启动守护进程，访问 `/v1/models`，检查 UI 加载
+5. ✅ 冒烟测试：启动守护进程，访问 `/v1/models` 与 `/manage/`，检查 UI 加载
 
 **不要提交**：
 - `internal/webui/dist/*`（构建时重新生成）
