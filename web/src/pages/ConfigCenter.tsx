@@ -479,7 +479,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
       setAvailableModels(res.models.map((m) => m.id))
       if (res.models.length === 0) message.info('提供商返回了空模型列表')
     } catch (e: unknown) {
-      message.error(e.message || '获取模型列表失败')
+      message.error(e instanceof Error ? e.message : '获取模型列表失败')
     } finally {
       setFetchingModels(false)
     }
