@@ -208,6 +208,62 @@ func TestImagesProxy(t *testing.T) {
 	}
 }
 
+// 生图路径同样应用模型级 BodyOverride（与 chat 一致：覆盖优先于客户端同名字段，
+// 其余客户端字段如 quality/prompt 原样透传）。高清预设如 {"size":"4K"} 由此下发。
+func TestImagesBodyOverride(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	var gotSize, gotQuality, gotPrompt, gotModel any
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotSize, gotQuality, gotPrompt, gotModel = body["size"], body["quality"], body["prompt"], body["model"]
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"created":1,"data":[{"url":"https://cdn.example.com/i.png"}]}`)
+	}))
+	defer up.Close()
+	p := store.Provider{Name: "ovr-prov", BaseURL: up.URL + "/v1"}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	m := store.Model{ProviderID: p.ID, Name: "seedream-4", Type: "image", BodyOverride: `{"size":"4K"}`}
+	if err := st.DB.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-ovr", Status: "active"}
+	if err := st.DB.Create(&k).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	rt := store.Route{Name: "img-ovr"}
+	if err := st.DB.Create(&rt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	resp := typedPost(t, h, "/v1/images/generations", map[string]any{
+		"model": "img-ovr", "prompt": "a cat", "size": "1024x1024", "quality": "high",
+	}, vkToken)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if gotSize != "4K" {
+		t.Errorf("body_override size not applied: %v", gotSize)
+	}
+	if gotQuality != "high" {
+		t.Errorf("client quality not passed through: %v", gotQuality)
+	}
+	if gotPrompt != "a cat" {
+		t.Errorf("prompt lost: %v", gotPrompt)
+	}
+	if gotModel != "seedream-4" {
+		t.Errorf("upstream model = %v, want physical name", gotModel)
+	}
+}
+
 func TestTypedEndpointsFilterModelType(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	var embModels []string

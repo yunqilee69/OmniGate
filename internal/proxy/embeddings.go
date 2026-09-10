@@ -288,6 +288,16 @@ func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[s
 	res := attemptResult{att: att}
 
 	req["model"] = att.Model.Name
+	// 应用模型级 body_override：与 chat 路径同语义（覆盖优先于客户端字段），
+	// 生图 size/quality 等厂商参数预设由此下发
+	if att.Model.BodyOverride != "" {
+		var override map[string]any
+		if err := json.Unmarshal([]byte(att.Model.BodyOverride), &override); err == nil {
+			for k, v := range override {
+				req[k] = v
+			}
+		}
+	}
 	outBody, err := json.Marshal(req)
 	if err != nil {
 		res.errCode, res.status = "marshal_error", "error"

@@ -32,7 +32,7 @@ const items = [
   { key: '/routes', icon: <BranchesOutlined />, label: <Link to="/routes">路由</Link> },
   { key: '/keys', icon: <KeyOutlined />, label: <Link to="/keys">虚拟密钥</Link> },
   { key: '/mcp-backends', icon: <ApiOutlined />, label: <Link to="/mcp-backends">MCP</Link> },
-  { key: '/playground', icon: <MessageOutlined />, label: <Link to="/playground">对话测试</Link> },
+  { key: '/playground', icon: <MessageOutlined />, label: <Link to="/playground">模型测试</Link> },
   { key: '/logs', icon: <FileTextOutlined />, label: <Link to="/logs">请求日志</Link> },
   { key: '/settings', icon: <SettingOutlined />, label: <Link to="/settings">设置</Link> },
 ]

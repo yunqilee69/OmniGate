@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import {
-  Button, Card, Collapse, Input, InputNumber, Select, Space, Tabs, Tag, Tooltip, Typography, message,
+  AutoComplete, Button, Card, Collapse, Input, InputNumber, Select, Space, Tabs, Tag, Tooltip, Typography, message,
 } from 'antd'
 import { ClearOutlined, SendOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
@@ -1124,14 +1124,14 @@ export default function PlaygroundPage() {
           </div>
           <Space size="middle">
             <div>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>尺寸</Typography.Text>
-              <Select
-                allowClear
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>尺寸 / 清晰度</Typography.Text>
+              <AutoComplete
                 style={{ width: 140, marginTop: 4, display: 'block' }}
-                placeholder="默认"
+                placeholder="默认，可自定义"
                 value={imgSize}
-                onChange={(v) => setImgSize(v)}
-                options={['auto', '512x512', '1024x1024', '1024x1536', '1536x1024'].map((s) => ({ value: s, label: s }))}
+                onChange={(v) => setImgSize(v || undefined)}
+                options={['auto', '512x512', '1024x1024', '1024x1536', '1536x1024', '2048x2048（2K）', '4096x4096（4K）', '2K', '4K'].map((s) => ({ value: s.includes('（') ? s.slice(0, s.indexOf('（')) : s, label: s }))}
+                filterOption={(input, option) => (option?.value as string).toLowerCase().includes(input.toLowerCase())}
               />
             </div>
             <div>
