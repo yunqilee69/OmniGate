@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 var (
@@ -157,4 +160,59 @@ func (s *Store) RecordVKRateLimitHit(vkID int64) error {
 func (s *Store) CleanupVKRateLimit() error {
 	cutoff := time.Now().Unix() - 3600 // 保留 1 小时
 	return s.DB.Where("minute_ts < ?", cutoff).Delete(&VKRateLimit{}).Error
+}
+
+// normalizeVKAllowedRoutes 历史版本经 API 层把 allowed_routes 写成路由名数组，
+// 而校验层按 ID 数组解析，配置了限制的 VK 必然在请求时报 invalid allowed_routes。
+// 本迁移把名称统一改写为 ID 数组（数字字符串按 ID 保留，未知名剔除），
+// 非数组内容保持原样交由请求时校验报错。幂等：能解析为 []int64 的行直接跳过。
+func normalizeVKAllowedRoutes(db *gorm.DB) error {
+	var vks []VirtualKey
+	if err := db.Find(&vks).Error; err != nil {
+		return err
+	}
+	if len(vks) == 0 {
+		return nil
+	}
+	var routes []Route
+	if err := db.Find(&routes).Error; err != nil {
+		return err
+	}
+	byName := make(map[string]int64, len(routes))
+	for _, rt := range routes {
+		byName[rt.Name] = rt.ID
+	}
+	for i := range vks {
+		vk := &vks[i]
+		if vk.AllowedRoutes == "" || vk.AllowedRoutes == "[]" {
+			continue
+		}
+		var ids []int64
+		if json.Unmarshal([]byte(vk.AllowedRoutes), &ids) == nil {
+			continue
+		}
+		var names []string
+		if json.Unmarshal([]byte(vk.AllowedRoutes), &names) != nil {
+			continue
+		}
+		out := make([]int64, 0, len(names))
+		for _, n := range names {
+			if id, ok := byName[n]; ok {
+				out = append(out, id)
+				continue
+			}
+			// 旧数据可能以数字字符串形式存 ID
+			if id, err := strconv.ParseInt(n, 10, 64); err == nil {
+				out = append(out, id)
+			}
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return err
+		}
+		if err := db.Model(&VirtualKey{}).Where("id = ?", vk.ID).Update("allowed_routes", string(b)).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }

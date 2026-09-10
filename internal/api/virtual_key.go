@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -42,11 +43,21 @@ type VirtualKeyResponse struct {
 	UpdatedAt     int64    `json:"updated_at"`
 }
 
-// toResponse 转换为响应体。
-func toVKResponse(vk *store.VirtualKey, includeFullKey bool) VirtualKeyResponse {
+// toVKResponse 转换为响应体。API 契约为路由名：DB 存 ID 数组，响应还原为名称
+// （已删除的路由 ID 跳过）。
+func (h *VirtualKeyHandler) toVKResponse(vk *store.VirtualKey, includeFullKey bool) VirtualKeyResponse {
 	var allowed []string
 	if vk.AllowedRoutes != "" && vk.AllowedRoutes != "[]" {
-		json.Unmarshal([]byte(vk.AllowedRoutes), &allowed)
+		var ids []int64
+		if json.Unmarshal([]byte(vk.AllowedRoutes), &ids) == nil && len(ids) > 0 {
+			byID := h.routeNameMap()
+			allowed = make([]string, 0, len(ids))
+			for _, id := range ids {
+				if name, ok := byID[id]; ok {
+					allowed = append(allowed, name)
+				}
+			}
+		}
 	}
 
 	keyValue := vk.KeyValue
@@ -70,6 +81,40 @@ func toVKResponse(vk *store.VirtualKey, includeFullKey bool) VirtualKeyResponse 
 	}
 }
 
+// routeNameMap 路由 ID → 名称映射；读取失败返回空映射（allowed_routes 显示为空）。
+func (h *VirtualKeyHandler) routeNameMap() map[int64]string {
+	var routes []store.Route
+	if err := h.db.DB.Find(&routes).Error; err != nil {
+		return map[int64]string{}
+	}
+	m := make(map[int64]string, len(routes))
+	for _, rt := range routes {
+		m[rt.ID] = rt.Name
+	}
+	return m
+}
+
+// resolveRouteNames 把路由名解析为 ID；未知名报错。DB 中 allowed_routes 统一存 ID 数组。
+func (h *VirtualKeyHandler) resolveRouteNames(names []string) ([]int64, error) {
+	var routes []store.Route
+	if err := h.db.DB.Find(&routes).Error; err != nil {
+		return nil, err
+	}
+	byName := make(map[string]int64, len(routes))
+	for _, rt := range routes {
+		byName[rt.Name] = rt.ID
+	}
+	ids := make([]int64, 0, len(names))
+	for _, n := range names {
+		id, ok := byName[n]
+		if !ok {
+			return nil, fmt.Errorf("unknown route '%s'", n)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 // Create 创建虚拟 key。
 func (h *VirtualKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req CreateVirtualKeyRequest
@@ -85,7 +130,12 @@ func (h *VirtualKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	allowedRoutesJSON := "[]"
 	if len(req.AllowedRoutes) > 0 {
-		b, _ := json.Marshal(req.AllowedRoutes)
+		ids, err := h.resolveRouteNames(req.AllowedRoutes)
+		if err != nil {
+			writeErr(w, 400, "unknown_route", err.Error())
+			return
+		}
+		b, _ := json.Marshal(ids)
 		allowedRoutesJSON = string(b)
 	}
 
@@ -103,7 +153,7 @@ func (h *VirtualKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 创建时返回完整 key_value
-	writeJSON(w, 200, toVKResponse(vk, true))
+	writeJSON(w, 200, h.toVKResponse(vk, true))
 }
 
 // List 列出所有虚拟 key。
@@ -116,7 +166,7 @@ func (h *VirtualKeyHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]VirtualKeyResponse, len(vks))
 	for i, vk := range vks {
-		resp[i] = toVKResponse(&vk, false) // 列表不返回完整 key
+		resp[i] = h.toVKResponse(&vk, false) // 列表不返回完整 key
 	}
 	writeJSON(w, 200, resp)
 }
@@ -135,7 +185,7 @@ func (h *VirtualKeyHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, 200, toVKResponse(vk, false))
+	writeJSON(w, 200, h.toVKResponse(vk, false))
 }
 
 // UpdateVirtualKeyRequest 更新虚拟 key 请求体。
@@ -179,7 +229,12 @@ func (h *VirtualKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
 		vk.TotalBudgetUSD = *req.TotalBudget
 	}
 	if req.AllowedRoutes != nil {
-		b, _ := json.Marshal(*req.AllowedRoutes)
+		ids, err := h.resolveRouteNames(*req.AllowedRoutes)
+		if err != nil {
+			writeErr(w, 400, "unknown_route", err.Error())
+			return
+		}
+		b, _ := json.Marshal(ids)
 		vk.AllowedRoutes = string(b)
 	}
 
@@ -188,7 +243,7 @@ func (h *VirtualKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, 200, toVKResponse(vk, false))
+	writeJSON(w, 200, h.toVKResponse(vk, false))
 }
 func (h *VirtualKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
@@ -226,7 +281,7 @@ func (h *VirtualKeyHandler) ResetBudget(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	writeJSON(w, 200, toVKResponse(vk, false))
+	writeJSON(w, 200, h.toVKResponse(vk, false))
 }
 
 // RevealKey 查看完整密钥（仅用于需要时查看）。

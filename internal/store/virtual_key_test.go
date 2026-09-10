@@ -319,3 +319,56 @@ func TestCleanupVKRateLimit(t *testing.T) {
 		t.Error("recent records should be kept")
 	}
 }
+
+func TestNormalizeVKAllowedRoutes(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	db.DB.Create(&Route{Name: "alpha"})
+	db.DB.Create(&Route{Name: "beta"})
+
+	rows := []VirtualKey{
+		{Name: "legacy", AllowedRoutes: `["alpha","ghost"]`},
+		{Name: "numeric", AllowedRoutes: `["1","2"]`},
+		{Name: "idfmt", AllowedRoutes: `[1]`},
+		{Name: "junk", AllowedRoutes: `"weird"`},
+	}
+	for i := range rows {
+		if err := db.CreateVirtualKey(&rows[i]); err != nil {
+			t.Fatalf("seed %s: %v", rows[i].Name, err)
+		}
+	}
+
+	if err := normalizeVKAllowedRoutes(db.DB); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+
+	get := func(name string) string {
+		t.Helper()
+		var vk VirtualKey
+		if err := db.DB.Where("name = ?", name).First(&vk).Error; err != nil {
+			t.Fatalf("load %s: %v", name, err)
+		}
+		return vk.AllowedRoutes
+	}
+	if got := get("legacy"); got != `[1]` {
+		t.Errorf("legacy = %s, want [1] (未知名 ghost 剔除)", got)
+	}
+	if got := get("numeric"); got != `[1,2]` {
+		t.Errorf("numeric = %s, want [1,2]", got)
+	}
+	if got := get("idfmt"); got != `[1]` {
+		t.Errorf("idfmt = %s, want unchanged [1]", got)
+	}
+	if got := get("junk"); got != `"weird"` {
+		t.Errorf("junk = %s, want unchanged", got)
+	}
+
+	// 幂等：再跑一次结果不变
+	if err := normalizeVKAllowedRoutes(db.DB); err != nil {
+		t.Fatalf("normalize 2nd: %v", err)
+	}
+	if got := get("legacy"); got != `[1]` {
+		t.Errorf("legacy after 2nd pass = %s, want [1]", got)
+	}
+}

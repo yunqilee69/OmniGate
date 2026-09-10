@@ -38,6 +38,9 @@ func Open(path string) (*Store, error) {
 	); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	if err := normalizeVKAllowedRoutes(db); err != nil {
+		return nil, fmt.Errorf("normalize vk allowed_routes: %w", err)
+	}
 	if err := migrateEndpointColumn(db); err != nil {
 		return nil, fmt.Errorf("migrate endpoint column: %w", err)
 	}

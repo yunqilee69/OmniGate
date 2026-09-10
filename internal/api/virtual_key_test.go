@@ -40,6 +40,8 @@ func TestVirtualKeyCreate(t *testing.T) {
 	defer db.Close()
 
 	handler := NewVirtualKeyHandler(db)
+	db.DB.Create(&store.Route{Name: "route1"})
+	db.DB.Create(&store.Route{Name: "route2"})
 
 	req := CreateVirtualKeyRequest{
 		Name:          "test-key",
@@ -77,6 +79,62 @@ func TestVirtualKeyCreate(t *testing.T) {
 	}
 	if len(resp.AllowedRoutes) != 2 {
 		t.Errorf("allowed_routes mismatch: %v", resp.AllowedRoutes)
+	}
+}
+
+func TestVKAllowedRoutesNameResolution(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	handler := NewVirtualKeyHandler(db)
+
+	// 未知名 → 400
+	body, _ := json.Marshal(CreateVirtualKeyRequest{Name: "vk1", AllowedRoutes: []string{"ghost"}})
+	w := httptest.NewRecorder()
+	handler.Create(w, httptest.NewRequest("POST", "/api/virtual-keys", bytes.NewReader(body)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown route: %d — %s", w.Code, w.Body.String())
+	}
+
+	// 已知名 → DB 存 ID，响应回名称
+	db.DB.Create(&store.Route{Name: "alpha"})
+	db.DB.Create(&store.Route{Name: "beta"})
+	body, _ = json.Marshal(CreateVirtualKeyRequest{Name: "vk2", AllowedRoutes: []string{"alpha", "beta"}})
+	w = httptest.NewRecorder()
+	handler.Create(w, httptest.NewRequest("POST", "/api/virtual-keys", bytes.NewReader(body)))
+	if w.Code != 200 {
+		t.Fatalf("create: %d — %s", w.Code, w.Body.String())
+	}
+	var resp VirtualKeyResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.AllowedRoutes) != 2 || resp.AllowedRoutes[0] != "alpha" || resp.AllowedRoutes[1] != "beta" {
+		t.Fatalf("response allowed_routes = %v", resp.AllowedRoutes)
+	}
+	vk, err := db.GetVirtualKey(resp.ID)
+	if err != nil {
+		t.Fatalf("load vk: %v", err)
+	}
+	if vk.AllowedRoutes != "[1,2]" {
+		t.Fatalf("db allowed_routes = %s, want [1,2]", vk.AllowedRoutes)
+	}
+
+	// 更新为空数组 = 全部允许
+	empty := []string{}
+	ub, _ := json.Marshal(UpdateVirtualKeyRequest{AllowedRoutes: &empty})
+	req := httptest.NewRequest("PUT", "/api/virtual-keys/1", bytes.NewReader(ub))
+	w = httptest.NewRecorder()
+	handler.Update(w, withURLParam(req, "id", "1"))
+	if w.Code != 200 {
+		t.Fatalf("update: %d — %s", w.Code, w.Body.String())
+	}
+	vk2, err := db.GetVirtualKey(resp.ID)
+	if err != nil {
+		t.Fatalf("reload vk: %v", err)
+	}
+	if vk2.AllowedRoutes != "[]" {
+		t.Fatalf("db allowed_routes after update = %s, want []", vk2.AllowedRoutes)
 	}
 }
 
