@@ -10,11 +10,11 @@ import (
 )
 
 var (
-	ErrVKNotFound           = errors.New("virtual key not found")
-	ErrVKDisabled           = errors.New("virtual key disabled")
-	ErrVKRateLimitExceeded  = errors.New("rate limit exceeded")
-	ErrVKBudgetExceeded     = errors.New("budget exceeded")
-	ErrVKAccessDenied       = errors.New("route not allowed")
+	ErrVKNotFound          = errors.New("virtual key not found")
+	ErrVKDisabled          = errors.New("virtual key disabled")
+	ErrVKRateLimitExceeded = errors.New("rate limit exceeded")
+	ErrVKBudgetExceeded    = errors.New("budget exceeded")
+	ErrVKAccessDenied      = errors.New("route not allowed")
 )
 
 // GenerateVKToken 生成 vk- 前缀的随机 token（16 字节 hex，128 bit 熵，总长 35 字符）。
@@ -111,7 +111,6 @@ func (s *Store) CheckVKBudget(vk *VirtualKey) error {
 	}
 	return nil
 }
-
 
 // RecordVKUsage 记录虚拟 key 使用量（请求成功后调用，扣除费用）。
 func (s *Store) RecordVKUsage(vkID int64, costUSD float64) error {

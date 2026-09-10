@@ -10,7 +10,7 @@ import (
 // 直方桶边界（ms）。桶 i (i=0..8) 装 [bounds[i-1], bounds[i])（首桶从 0 起），
 // 桶 9 是开区间 [bounds[8], +∞)。p95 反查返回桶的上界（开区间桶返回 bounds[8]*2）。
 var (
-	TTFTBucketBounds = [9]int64{50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000}
+	TTFTBucketBounds  = [9]int64{50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000}
 	TotalBucketBounds = [9]int64{100, 300, 1000, 3000, 10000, 30000, 60000, 120000, 300000}
 )
 
@@ -137,10 +137,10 @@ GROUP BY day, route, model, provider, status`).Rows()
 		return err
 	}
 	type agg struct {
-		Day              int64
-		Route, Model, Provider, Status string
+		Day                                                       int64
+		Route, Model, Provider, Status                            string
 		Total, Success, Errors, PTok, CTok, CachedTok, RetriesSum int64
-		Cost             float64
+		Cost                                                      float64
 	}
 	defer rows.Close()
 	var aggs []agg
@@ -188,7 +188,10 @@ GROUP BY day, route, model, provider, status`).Rows()
 	if err != nil {
 		return err
 	}
-	type histKey struct{ Day int64; Route, Model, Provider, Status string }
+	type histKey struct {
+		Day                            int64
+		Route, Model, Provider, Status string
+	}
 	hists := map[histKey][20]int64{}
 	defer histRows.Close()
 	for histRows.Next() {

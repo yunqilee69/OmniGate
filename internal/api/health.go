@@ -43,13 +43,21 @@ type healthResp struct {
 
 // effectiveModelStatus 根据模型熔断状态 + 绑定密钥可用性计算的真实可达性。
 // 设计要点：仅显示“active”是不够的——所有 key 都处于 429 限流冷却中时，
-// 模型也无法响应，应明确标记 cooldown/disabled 给运维。
-func effectiveModelStatus(now int64, m store.Model, boundKeys []store.ApiKey) (status, reason string, stats keyStats) {
+// 模型也无法响应，应明确标记 cooldown/no_key 给运维。
+// 密钥级“disabled”已移除：密钥禁用粒度下沉为模型×密钥组合（bans: keyID → ban）。
+func effectiveModelStatus(now int64, m store.Model, boundKeys []store.ApiKey, bans map[int64]store.ModelKeyBan) (status, reason string, stats keyStats) {
 	stats.Total = len(boundKeys)
 
-	// 先统计所有密钥状态分布
-	avail, cooling, disabled := 0, 0, 0
+	// 先统计所有密钥状态分布（组合禁用 > 密钥自身状态）
+	avail, cooling, banned := 0, 0, 0
 	for _, k := range boundKeys {
+		if ban, ok := bans[k.ID]; ok {
+			if ban.Status == "perm_banned" || (ban.Status == "temp_banned" && ban.BannedUntil > now) {
+				banned++
+				stats.Disabled++
+				continue
+			}
+		}
 		switch {
 		case k.Status == "active" || (k.Status == "cooldown" && k.CooldownUntil <= now):
 			avail++
@@ -57,9 +65,6 @@ func effectiveModelStatus(now int64, m store.Model, boundKeys []store.ApiKey) (s
 		case k.Status == "cooldown":
 			cooling++
 			stats.Cooldown++
-		default:
-			disabled++
-			stats.Disabled++
 		}
 	}
 
@@ -78,8 +83,8 @@ func effectiveModelStatus(now int64, m store.Model, boundKeys []store.ApiKey) (s
 		return "active", "", stats
 	}
 	switch {
-	case disabled == len(boundKeys):
-		return "no_key", "全部密钥已禁用", stats
+	case banned == len(boundKeys):
+		return "no_key", "全部密钥已禁用（组合禁用）", stats
 	case cooling == len(boundKeys):
 		return "cooldown", "全部密钥限流冷却中", stats
 	default:
@@ -102,6 +107,20 @@ func (s *Server) getHealth(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
+	var bans []store.ModelKeyBan
+	if err := s.store.DB.Find(&bans).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	banByModel := map[int64]map[int64]store.ModelKeyBan{}
+	for _, b := range bans {
+		m := banByModel[b.ModelID]
+		if m == nil {
+			m = map[int64]store.ModelKeyBan{}
+			banByModel[b.ModelID] = m
+		}
+		m[b.KeyID] = b
+	}
 	var mks []store.ModelKey
 	if err := s.store.DB.Find(&mks).Error; err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
@@ -120,7 +139,7 @@ func (s *Server) getHealth(w http.ResponseWriter, _ *http.Request) {
 
 	resp := healthResp{Now: now, Models: []healthModel{}, Keys: []healthKey{}}
 	for _, m := range models {
-		status, reason, keyStats := effectiveModelStatus(now, m, keysByModel[m.ID])
+		status, reason, keyStats := effectiveModelStatus(now, m, keysByModel[m.ID], banByModel[m.ID])
 		resp.Models = append(resp.Models, healthModel{
 			ID: m.ID, ProviderID: m.ProviderID, Name: m.Name, Status: status,
 			FailCount: m.FailCount, CooldownUntil: m.CooldownUntil,

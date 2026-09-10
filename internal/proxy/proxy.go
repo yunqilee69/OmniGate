@@ -920,7 +920,8 @@ func captureErrBody(b []byte) string {
 }
 
 // record 按尝试结果做失败归因处置（§5.1）：
-// 成功→清零；401/403→禁 key；429→冷却 key（Retry-After 优先）；超时/5xx/连接/断流→模型阶梯熔断；
+// 成功→清零（含模型-密钥组合禁用）；401/403→禁该模型下的对应密钥组合（不影响其他模型/密钥）；
+// 429→密钥级短冷却（Retry-After 优先）；超时/5xx/连接/断流→模型阶梯熔断；
 // 客户端错误（400 等）与 client_disconnected 不属于上游故障，不记录。
 func (h *Handler) record(res attemptResult, rt *config.Runtime) {
 	if res.att.Model.ID == 0 || res.att.Key.ID == 0 {
@@ -930,8 +931,9 @@ func (h *Handler) record(res attemptResult, rt *config.Runtime) {
 	case res.status == "success":
 		h.rec.RecordModelSuccess(res.att.Model.ID)
 		h.rec.RecordKeySuccess(res.att.Key.ID)
+		h.rec.RecordModelKeySuccess(res.att.Model.ID, res.att.Key.ID)
 	case res.errCode == "401" || res.errCode == "403":
-		h.rec.RecordKeyAuthFailure(res.att.Key.ID, res.errCode)
+		h.rec.RecordModelKeyFailure(res.att.Model.ID, res.att.Key.ID, res.errCode, false, rt)
 	case res.errCode == "429":
 		h.rec.RecordKeyRateLimited(res.att.Key.ID, res.retryAfterS, rt.RetryCooldownS)
 	case res.retryable || res.streamBroke:

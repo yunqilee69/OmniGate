@@ -47,7 +47,7 @@ func seedTwoKeys(t *testing.T, st *store.Store, url string) {
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
 }
 
-func TestKeyDisabledOn401ThroughProxy(t *testing.T) {
+func TestKeyComboBannedOn401ThroughProxy(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	up := authKeyServer(t, map[string]int{"Bearer sk-bad": 401}, "")
 	defer up.Close()
@@ -59,13 +59,25 @@ func TestKeyDisabledOn401ThroughProxy(t *testing.T) {
 	}
 	var bad store.ApiKey
 	st.DB.Where("key_value = ?", "sk-bad").First(&bad)
-	if bad.Status != "disabled" || bad.DisableReason == "" {
-		t.Fatalf("401 key should be disabled: %+v", bad)
+	if bad.Status != "active" {
+		t.Fatalf("401 must NOT disable key globally: %+v", bad)
+	}
+	var m store.Model
+	st.DB.First(&m)
+	var ban store.ModelKeyBan
+	st.DB.Where("model_id = ? AND key_id = ?", m.ID, bad.ID).First(&ban)
+	if ban.Status != "perm_banned" || ban.BanReason == "" {
+		t.Fatalf("401 should perm-ban model-key combo: %+v", ban)
 	}
 	var good store.ApiKey
 	st.DB.Where("key_value = ?", "sk-good").First(&good)
 	if good.Status != "active" {
 		t.Fatalf("good key state wrong: %+v", good)
+	}
+	var goodBan int64
+	st.DB.Model(&store.ModelKeyBan{}).Where("model_id = ? AND key_id = ?", m.ID, good.ID).Count(&goodBan)
+	if goodBan != 0 {
+		t.Fatalf("good key combo must not be banned: %d", goodBan)
 	}
 	ls := logs(t, st)
 	if len(ls) != 1 {
@@ -76,7 +88,7 @@ func TestKeyDisabledOn401ThroughProxy(t *testing.T) {
 		t.Fatalf("log wrong: %+v", l)
 	}
 
-	// sk-bad 已禁用：下一个请求直接走 sk-good，不再消耗重试
+	// 组合已禁用：下一个请求直接走 sk-good，不再消耗重试
 	resp = postWithAuth(t, h, chatBody(false), vkToken)
 	if resp.StatusCode != 200 {
 		t.Fatalf("second request failed: %d", resp.StatusCode)
@@ -86,7 +98,7 @@ func TestKeyDisabledOn401ThroughProxy(t *testing.T) {
 		t.Fatalf("expect 2 total log rows, got %d", len(ls))
 	}
 	if ls[1].Retries != 0 {
-		t.Fatalf("disabled key must be skipped upfront: %+v", ls[1])
+		t.Fatalf("banned combo must be skipped upfront: %+v", ls[1])
 	}
 }
 

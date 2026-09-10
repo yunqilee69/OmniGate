@@ -54,6 +54,7 @@ interface Model {
   disable_reason: string
   last_error: string
   key_ids: number[]
+  banned_keys: Record<number, string>
 }
 
 const protocolOptions = [
@@ -409,8 +410,8 @@ function ProviderFormButton({ providers, onSaved }: { providers: Provider[]; onS
       form.resetFields()
       onSaved()
       void created
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : String(e))
     }
   }
   void providers
@@ -477,7 +478,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
       })
       setAvailableModels(res.models.map((m) => m.id))
       if (res.models.length === 0) message.info('提供商返回了空模型列表')
-    } catch (e: any) {
+    } catch (e: unknown) {
       message.error(e.message || '获取模型列表失败')
     } finally {
       setFetchingModels(false)
@@ -515,8 +516,8 @@ function ModelsTab({ provider, keys, models, onSaved }: {
       message.success('已保存（即时生效）')
       setOpen(false)
       onSaved()
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -524,8 +525,8 @@ function ModelsTab({ provider, keys, models, onSaved }: {
     try {
       await api('POST', `/api/models/${m.id}/${m.status === 'disabled' ? 'enable' : 'disable'}`)
       onSaved()
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -541,12 +542,18 @@ function ModelsTab({ provider, keys, models, onSaved }: {
         <Table.Column title="协议" dataIndex="protocol" width={200} render={(v) => (
           <span className="mono" style={{ fontSize: 12, color: '#4d4d4d' }}>{v}</span>
         )} />
-        <Table.Column title="绑定密钥" dataIndex="key_ids" render={(ids: number[]) =>
-          (ids ?? []).map((id) => {
-    const k = keys.find((x) => x.id === id)
-    return <Tag key={id}>{k ? (k.name || k.key_value) : `#${id}`}</Tag>
-  })
-        } />
+        <Table.Column title="绑定密钥" dataIndex="key_ids" render={(ids: number[], m: Model) => {
+          const banned = m.banned_keys ?? {}
+          return (ids ?? []).map((id) => {
+            const k = keys.find((x) => x.id === id)
+            const name = k ? (k.name || k.key_value) : `#${id}`
+            return banned[id] ? (
+              <Tooltip key={id} title={`已禁用: ${banned[id]}`}>
+                <Tag color="red">{name}</Tag>
+              </Tooltip>
+            ) : <Tag key={id}>{name}</Tag>
+          })
+        }} />
         <Table.Column title="输入/输出价(1M)" width={160} render={(_, m: Model) => {
           const sym = m.price_currency === 'CNY' ? '¥' : '$'
           return `${sym}${m.input_price} / ${sym}${m.output_price}`
@@ -559,7 +566,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
             <Button size="small" onClick={() => openForm(m)}>编辑</Button>
             <Button size="small" onClick={() => toggle(m)}>{m.status === 'disabled' ? '解禁' : '禁用'}</Button>
             <Popconfirm title="删除模型将清理路由目标与密钥绑定，确认？" onConfirm={async () => {
-              try { await api('DELETE', `/api/models/${m.id}`); onSaved() } catch (e: any) { message.error(e.message) }
+              try { await api('DELETE', `/api/models/${m.id}`); onSaved() } catch (e: unknown) { message.error(e instanceof Error ? e.message : String(e)) }
             }}>
               <Button size="small" danger>删除</Button>
             </Popconfirm>
@@ -731,17 +738,17 @@ function KeysTab({ provider, keys, onSaved }: { provider: Provider; keys: Key[];
       setOpen(false)
       form.resetFields()
       onSaved()
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : String(e))
     }
   }
 
-  const setKeyStatus = async (key: Key, status: 'active' | 'disabled') => {
+  const setKeyStatus = async (key: Key, status: 'active') => {
     try {
       await api('PUT', `/api/keys/${key.id}`, { status })
       onSaved()
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -752,8 +759,8 @@ function KeysTab({ provider, keys, onSaved }: { provider: Provider; keys: Key[];
       message.success('已保存')
       setEditingKey(null)
       onSaved()
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -776,8 +783,8 @@ function KeysTab({ provider, keys, onSaved }: { provider: Provider; keys: Key[];
         const revealedKeys = await api<Key[]>('GET', '/api/keys?reveal=1')
         values = new Map(revealedKeys.map((item) => [item.id, item.key_value_plain ?? item.key_value]))
         setPlainValues(values)
-      } catch (e: any) {
-        message.error(e.message)
+      } catch (e: unknown) {
+        message.error(e instanceof Error ? e.message : String(e))
         return
       } finally {
         setRevealLoadingId(null)
@@ -821,9 +828,8 @@ function KeysTab({ provider, keys, onSaved }: { provider: Provider; keys: Key[];
           <Space>
             <Button size="small" onClick={() => { editForm.setFieldsValue({ name: key.name, key_value: key.key_value }); setEditingKey(key) }}>编辑</Button>
             {key.status !== 'active' && <Button size="small" onClick={() => setKeyStatus(key, 'active')}>启用</Button>}
-            {key.status !== 'disabled' && <Button size="small" danger ghost onClick={() => setKeyStatus(key, 'disabled')}>禁用</Button>}
             <Popconfirm title="确认删除该密钥？" onConfirm={async () => {
-              try { await api('DELETE', `/api/keys/${key.id}`); onSaved() } catch (e: any) { message.error(e.message) }
+              try { await api('DELETE', `/api/keys/${key.id}`); onSaved() } catch (e: unknown) { message.error(e instanceof Error ? e.message : String(e)) }
             }}>
               <Button size="small" danger>删除</Button>
             </Popconfirm>

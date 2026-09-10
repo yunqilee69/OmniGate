@@ -31,8 +31,8 @@ type Snapshot struct {
 
 // Selector 加权选择器；轮询游标按模型全局共享，另维护会话亲和记忆（会话 → 上次成功模型）。
 type Selector struct {
-	db *store.Store
-	rr sync.Map
+	db    *store.Store
+	rr    sync.Map
 	affMu sync.Mutex
 	aff   map[string]affinityEntry
 }
@@ -157,24 +157,28 @@ func KeyAvailable(k store.ApiKey, now time.Time) bool {
 
 func (s *Selector) availableKeys(modelID int64, keys []store.ApiKey, tried map[int64]bool, now time.Time) []store.ApiKey {
 	out := make([]store.ApiKey, 0, len(keys))
+	// 批量加载本模型全部组合禁用，避免逐 key 查询；顺带清理过期的临时禁用
+	banByKey := map[int64]store.ModelKeyBan{}
+	var bans []store.ModelKeyBan
+	if err := s.db.DB.Where("model_id = ?", modelID).Find(&bans).Error; err == nil && len(bans) > 0 {
+		var expired []int64
+		for _, b := range bans {
+			banByKey[b.KeyID] = b
+			if b.Status == "temp_banned" && b.BannedUntil <= now.Unix() {
+				expired = append(expired, b.ID)
+			}
+		}
+		if len(expired) > 0 {
+			_ = s.db.DB.Delete(&store.ModelKeyBan{}, expired)
+		}
+	}
 	for _, k := range keys {
 		if tried[k.ID] || !KeyAvailable(k, now) {
 			continue
 		}
-		// 检查模型-密钥组合是否被禁用
-		var ban store.ModelKeyBan
-		err := s.db.DB.Where("model_id = ? AND key_id = ?", modelID, k.ID).First(&ban).Error
-		if err == nil {
-			// 找到禁用记录
-			if ban.Status == "perm_banned" {
-				continue // 永久禁用，跳过
-			}
-			if ban.Status == "temp_banned" && ban.BannedUntil > now.Unix() {
-				continue // 临时禁用且未过期，跳过
-			}
-			// 临时禁用已过期，删除记录并允许使用
-			if ban.Status == "temp_banned" && ban.BannedUntil <= now.Unix() {
-				s.db.DB.Delete(&ban)
+		if b, ok := banByKey[k.ID]; ok {
+			if b.Status == "perm_banned" || (b.Status == "temp_banned" && b.BannedUntil > now.Unix()) {
+				continue // 组合被禁用，跳过
 			}
 		}
 		out = append(out, k)
@@ -267,46 +271,46 @@ func (s *Selector) PickFallback(modelID int64, now time.Time) (Attempt, bool) {
 	if modelID == 0 {
 		return Attempt{}, false
 	}
-	
+
 	var model store.Model
 	if err := s.db.DB.Where("id = ?", modelID).First(&model).Error; err != nil {
 		return Attempt{}, false
 	}
-	
+
 	if !ModelAvailable(model, now) {
 		return Attempt{}, false
 	}
-	
+
 	var provider store.Provider
 	if err := s.db.DB.Where("id = ?", model.ProviderID).First(&provider).Error; err != nil {
 		return Attempt{}, false
 	}
-	
+
 	var mks []store.ModelKey
 	if err := s.db.DB.Where("model_id = ?", modelID).Find(&mks).Error; err != nil {
 		return Attempt{}, false
 	}
-	
+
 	keyIDs := make([]int64, 0, len(mks))
 	for _, mk := range mks {
 		keyIDs = append(keyIDs, mk.KeyID)
 	}
-	
+
 	if len(keyIDs) == 0 {
 		return Attempt{}, false
 	}
-	
+
 	var keys []store.ApiKey
 	if err := s.db.DB.Where("id IN ? AND provider_id = ?", keyIDs, model.ProviderID).Find(&keys).Error; err != nil {
 		return Attempt{}, false
 	}
-	
+
 	for _, k := range keys {
 		if KeyAvailable(k, now) {
 			return Attempt{Model: model, Provider: provider, Key: k}, true
 		}
 	}
-	
+
 	return Attempt{}, false
 }
 

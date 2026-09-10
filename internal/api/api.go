@@ -108,6 +108,7 @@ func (s *Server) Router() http.Handler {
 				ir.Post("/test", s.testModel)
 				ir.Post("/test-keys", s.testModelKeys)
 				ir.Delete("/bans/{key_id}", s.unbanModelKey)
+				ir.Post("/bans/{key_id}", s.banModelKey)
 			})
 		})
 		ar.Route("/routes", func(er chi.Router) {

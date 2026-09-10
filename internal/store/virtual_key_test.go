@@ -14,7 +14,7 @@ func setupTestDB(t *testing.T) *Store {
 	}
 	f.Close()
 	t.Cleanup(func() { os.Remove(f.Name()) })
-	
+
 	db, err := Open(f.Name())
 	if err != nil {
 		t.Fatal(err)
@@ -118,9 +118,9 @@ func TestCheckVKAuth(t *testing.T) {
 	db.CreateVirtualKey(vk)
 
 	tests := []struct {
-		name      string
-		keyValue  string
-		wantErr   error
+		name     string
+		keyValue string
+		wantErr  error
 	}{
 		{"valid", vk.KeyValue, nil},
 		{"not found", "vk-invalid", ErrVKNotFound},
@@ -278,7 +278,6 @@ func TestCheckVKRateLimit(t *testing.T) {
 		t.Errorf("expected rate limited, got %v", err)
 	}
 }
-
 
 func TestCleanupVKRateLimit(t *testing.T) {
 	db := setupTestDB(t)

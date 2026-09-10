@@ -38,12 +38,14 @@ type ProbeResult struct {
 	CompletionTokens int    `json:"completion_tokens"`
 }
 
-// KeyProbeResult 逐密钥探测结果：附密钥标识与当前状态，供管理台测试弹窗展示与操作。
+// KeyProbeResult 逐密钥探测结果：附密钥标识、当前状态与模型-密钥组合禁用状态，供管理台测试弹窗展示与操作。
 type KeyProbeResult struct {
 	ProbeResult
 	KeyName   string `json:"key_name"`
 	KeyMasked string `json:"key_masked"`
 	KeyStatus string `json:"key_status"`
+	Banned    bool   `json:"banned"`               // 该模型下的此密钥组合是否被禁用（手动或失败归因）
+	BanReason string `json:"ban_reason,omitempty"` // 组合禁用原因（banned=true 时）
 }
 
 // ModelKeysTestResult 单模型全量密钥探测结果。
@@ -114,6 +116,17 @@ func ProbeModelKeys(db *store.Store, rt *config.RuntimeManager, modelID int64) (
 		Order("api_key.id").Find(&keys).Error; err != nil {
 		return out, true
 	}
+
+	// 组合禁用状态：一次查询本模型全部 ban，避免逐 key 查询
+	banByKey := map[int64]store.ModelKeyBan{}
+	var bans []store.ModelKeyBan
+	if err := db.DB.Where("model_id = ?", modelID).Find(&bans).Error; err == nil {
+		for _, b := range bans {
+			banByKey[b.KeyID] = b
+		}
+	}
+	now := time.Now().Unix()
+
 	results := make([]KeyProbeResult, len(keys))
 	sem := make(chan struct{}, 8)
 	var wg sync.WaitGroup
@@ -124,12 +137,19 @@ func ProbeModelKeys(db *store.Store, rt *config.RuntimeManager, modelID int64) (
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			k := keys[idx]
-			results[idx] = KeyProbeResult{
+			r := KeyProbeResult{
 				ProbeResult: probeModelKey(m, provider, k),
 				KeyName:     k.Name,
 				KeyMasked:   maskKeyValue(k.KeyValue),
 				KeyStatus:   k.Status,
 			}
+			if b, ok := banByKey[k.ID]; ok {
+				if b.Status == "perm_banned" || (b.Status == "temp_banned" && b.BannedUntil > now) {
+					r.Banned = true
+					r.BanReason = b.BanReason
+				}
+			}
+			results[idx] = r
 		}(i)
 	}
 	wg.Wait()

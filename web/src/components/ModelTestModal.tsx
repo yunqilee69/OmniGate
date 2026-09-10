@@ -9,6 +9,8 @@ export interface KeyProbeResult {
   key_name: string
   key_masked: string
   key_status: string
+  banned: boolean
+  ban_reason?: string
   ok: boolean
   http_status: number
   latency_ms: number
@@ -35,9 +37,9 @@ function keyStatusTag(status: string) {
   return <StatusTag tone="error">已禁用</StatusTag>
 }
 
-function KeyResultTable({ result, onSetKeyStatus }: {
+function KeyResultTable({ result, onSetBan }: {
   result: ModelTestResult
-  onSetKeyStatus: (keyId: number, status: 'active' | 'disabled') => void
+  onSetBan: (keyId: number, banned: boolean) => void
 }) {
   if (result.error) {
     return <Alert type="error" showIcon message={`调用失败：${result.error}`} />
@@ -90,9 +92,9 @@ function KeyResultTable({ result, onSetKeyStatus }: {
       <Table.Column
         title="操作"
         width={90}
-        render={(_, k: KeyProbeResult) => (k.key_status === 'disabled'
-          ? <Button size="small" onClick={() => onSetKeyStatus(k.key_id, 'active')}>启用</Button>
-          : <Button size="small" danger ghost onClick={() => onSetKeyStatus(k.key_id, 'disabled')}>禁用</Button>)}
+        render={(_, k: KeyProbeResult) => (k.banned
+          ? <Button size="small" onClick={() => onSetBan(k.key_id, false)}>解禁</Button>
+          : <Button size="small" danger ghost onClick={() => onSetBan(k.key_id, true)}>禁用</Button>)}
       />
     </Table>
   )
@@ -148,20 +150,24 @@ export default function ModelTestModal({ open, targets, onClose, onKeysChanged }
     // targets 由调用方在打开前设置，这里仅响应开合
   }, [open])
 
-  const setKeyStatus = async (modelId: number, keyId: number, status: 'active' | 'disabled') => {
+  const setBan = async (modelId: number, keyId: number, banned: boolean) => {
     try {
-      await api('PUT', `/api/keys/${keyId}`, { status })
+      if (banned) {
+        await api('POST', `/api/models/${modelId}/bans/${keyId}`)
+      } else {
+        await api('DELETE', `/api/models/${modelId}/bans/${keyId}`)
+      }
       setResults((prev) => {
         const m = prev[modelId]
         if (!m) return prev
         return {
           ...prev,
-          [modelId]: { ...m, keys: m.keys.map((k) => (k.key_id === keyId ? { ...k, key_status: status } : k)) },
+          [modelId]: { ...m, keys: m.keys.map((k) => (k.key_id === keyId ? { ...k, banned } : k)) },
         }
       })
       onKeysChanged?.()
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -189,14 +195,14 @@ export default function ModelTestModal({ open, targets, onClose, onKeysChanged }
               key: String(t.id),
               label,
               children: res
-                ? <KeyResultTable result={res} onSetKeyStatus={(kid, st) => void setKeyStatus(t.id, kid, st)} />
+                ? <KeyResultTable result={res} onSetBan={(kid, banned) => void setBan(t.id, kid, banned)} />
                 : <Empty description="等待测试…" image={Empty.PRESENTED_IMAGE_SIMPLE} />,
             }
           })}
         />
       ) : (
         targets[0] && (results[targets[0].id]
-          ? <KeyResultTable result={results[targets[0].id]} onSetKeyStatus={(kid, st) => void setKeyStatus(targets[0].id, kid, st)} />
+          ? <KeyResultTable result={results[targets[0].id]} onSetBan={(kid, banned) => void setBan(targets[0].id, kid, banned)} />
           : <Empty description="测试中…" image={Empty.PRESENTED_IMAGE_SIMPLE} />)
       )}
     </Modal>

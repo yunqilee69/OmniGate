@@ -67,15 +67,6 @@ func (rec *Recorder) RecordModelSuccess(modelID int64) {
 		})
 }
 
-// RecordKeyAuthFailure 401/403：密钥失效，立即禁用并留痕供 UI 告警。
-func (rec *Recorder) RecordKeyAuthFailure(keyID int64, code string) {
-	rec.db.DB.Model(&store.ApiKey{}).Where("id = ?", keyID).Updates(map[string]any{
-		"status":         "disabled",
-		"disable_reason": clamp(fmt.Sprintf("上游返回 %s，密钥疑似失效", code)),
-		"last_error":     clamp(code),
-	})
-}
-
 // RecordKeyRateLimited 429：短冷却，优先 Retry-After；不计入熔断。
 func (rec *Recorder) RecordKeyRateLimited(keyID int64, retryAfterS, defaultS int) {
 	if retryAfterS <= 0 {
@@ -104,13 +95,13 @@ func (rec *Recorder) RecordModelKeyFailure(modelID, keyID int64, errCode string,
 	now := time.Now()
 	var ban store.ModelKeyBan
 	err := rec.db.DB.Where("model_id = ? AND key_id = ?", modelID, keyID).First(&ban).Error
-	
+
 	if err == gorm.ErrRecordNotFound {
 		// 创建新的禁用记录
 		status := "temp_banned"
 		bannedUntil := int64(0)
 		failCount := 1
-		
+
 		if retryable {
 			// 可重试错误：使用第一级冷却时间
 			if len(rt.BreakerCooldownLadder) > 0 {
@@ -120,13 +111,13 @@ func (rec *Recorder) RecordModelKeyFailure(modelID, keyID int64, errCode string,
 			// 不可重试错误：永久禁用
 			status = "perm_banned"
 		}
-		
+
 		ban = store.ModelKeyBan{
 			ModelID:     modelID,
 			KeyID:       keyID,
 			Status:      status,
 			BannedUntil: bannedUntil,
-			BanReason:   clamp(errCode),
+			BanReason:   permBanReason(errCode),
 			LastError:   clamp(errCode),
 			FailCount:   failCount,
 		}
@@ -135,7 +126,7 @@ func (rec *Recorder) RecordModelKeyFailure(modelID, keyID int64, errCode string,
 		// 更新现有记录
 		ban.FailCount++
 		ban.LastError = clamp(errCode)
-		
+
 		if retryable {
 			// 可重试错误：阶梯升级冷却时间
 			idx := ban.FailCount - 1
@@ -149,9 +140,9 @@ func (rec *Recorder) RecordModelKeyFailure(modelID, keyID int64, errCode string,
 			// 不可重试错误：永久禁用
 			ban.Status = "perm_banned"
 			ban.BannedUntil = 0
-			ban.BanReason = clamp(fmt.Sprintf("不可重试错误: %s", errCode))
+			ban.BanReason = permBanReason(errCode)
 		}
-		
+
 		rec.db.DB.Save(&ban)
 	}
 }
@@ -161,31 +152,15 @@ func (rec *Recorder) RecordModelKeySuccess(modelID, keyID int64) {
 	rec.db.DB.Where("model_id = ? AND key_id = ?", modelID, keyID).Delete(&store.ModelKeyBan{})
 }
 
-// IsModelKeyBanned 检查模型-密钥组合是否被禁用（临时禁用检查是否过期）。
-func (rec *Recorder) IsModelKeyBanned(modelID, keyID int64, now time.Time) bool {
-	var ban store.ModelKeyBan
-	err := rec.db.DB.Where("model_id = ? AND key_id = ?", modelID, keyID).First(&ban).Error
-	if err != nil {
-		return false // 未找到记录，说明未被禁用
-	}
-	
-	if ban.Status == "perm_banned" {
-		return true // 永久禁用
-	}
-	
-	if ban.Status == "temp_banned" && ban.BannedUntil > now.Unix() {
-		return true // 临时禁用且未过期
-	}
-	
-	// 临时禁用已过期，可以删除记录
-	if ban.Status == "temp_banned" && ban.BannedUntil <= now.Unix() {
-		rec.db.DB.Delete(&ban)
-	}
-	
-	return false
-}
-
 // UnbanModelKey 手动解禁模型-密钥组合。
 func (rec *Recorder) UnbanModelKey(modelID, keyID int64) error {
 	return rec.db.DB.Where("model_id = ? AND key_id = ?", modelID, keyID).Delete(&store.ModelKeyBan{}).Error
+}
+
+// permBanReason 不可重试失败的禁用原因：401/403 给密钥失效提示，其余保留错误码。
+func permBanReason(errCode string) string {
+	if errCode == "401" || errCode == "403" {
+		return fmt.Sprintf("上游返回 %s，密钥可能失效", errCode)
+	}
+	return fmt.Sprintf("不可重试错误: %s", errCode)
 }

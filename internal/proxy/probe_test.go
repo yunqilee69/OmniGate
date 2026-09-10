@@ -71,7 +71,13 @@ func TestProbeModelUpstreamError(t *testing.T) {
 func TestProbeModelNoKey(t *testing.T) {
 	st, _ := newProbeStack(t)
 	id := seedProbeTarget(t, st, "http://127.0.0.1:1", "completions")
-	st.DB.Model(&store.ApiKey{}).Where("1=1").Update("status", "disabled")
+	// 密钥级禁用已移除：全部可用密钥被组合禁用同样应 no_key
+	var mk store.ModelKey
+	st.DB.First(&mk)
+	st.DB.Create(&store.ModelKeyBan{
+		ModelID: mk.ModelID, KeyID: mk.KeyID,
+		Status: "perm_banned", BanReason: "test",
+	})
 	rtm, _ := config.NewRuntimeManager(st)
 	res := proxy.ProbeModel(st, rtm, id)
 	if res.Ok || res.ErrCode != "no_key" {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/cloudomni/omnigate/internal/breaker"
 	"github.com/cloudomni/omnigate/internal/store"
@@ -16,7 +17,8 @@ import (
 
 type modelResp struct {
 	store.Model
-	KeyIDs []int64 `json:"key_ids"`
+	KeyIDs     []int64          `json:"key_ids"`
+	BannedKeys map[int64]string `json:"banned_keys"` // 组合禁用 key_id → 原因（手动或失败归因）
 }
 
 var validProtocols = map[string]bool{"completions": true, "responses": true, "messages": true}
@@ -51,13 +53,29 @@ func (s *Server) listModels(w http.ResponseWriter, _ *http.Request) {
 	for _, mk := range mks {
 		byModel[mk.ModelID] = append(byModel[mk.ModelID], mk.KeyID)
 	}
+	bansByModel := map[int64]map[int64]string{}
+	var bans []store.ModelKeyBan
+	if err := s.store.DB.Find(&bans).Error; err == nil {
+		for _, b := range bans {
+			m := bansByModel[b.ModelID]
+			if m == nil {
+				m = map[int64]string{}
+				bansByModel[b.ModelID] = m
+			}
+			m[b.KeyID] = b.BanReason
+		}
+	}
 	out := make([]modelResp, 0, len(models))
 	for _, m := range models {
 		ids := byModel[m.ID]
 		if ids == nil {
 			ids = []int64{}
 		}
-		out = append(out, modelResp{Model: m, KeyIDs: ids})
+		banned := bansByModel[m.ID]
+		if banned == nil {
+			banned = map[int64]string{}
+		}
+		out = append(out, modelResp{Model: m, KeyIDs: ids, BannedKeys: banned})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -356,7 +374,14 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 	if keyIDs == nil {
 		keyIDs = []int64{}
 	}
-	writeJSON(w, http.StatusOK, modelResp{Model: m, KeyIDs: keyIDs})
+	banned := map[int64]string{}
+	var bans []store.ModelKeyBan
+	if err := s.store.DB.Where("model_id = ?", id).Find(&bans).Error; err == nil {
+		for _, b := range bans {
+			banned[b.KeyID] = b.BanReason
+		}
+	}
+	writeJSON(w, http.StatusOK, modelResp{Model: m, KeyIDs: keyIDs, BannedKeys: banned})
 }
 
 func (s *Server) deleteModel(w http.ResponseWriter, r *http.Request) {
@@ -379,6 +404,9 @@ func (s *Server) deleteModel(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if err := tx.Where("model_id = ?", id).Delete(&store.ModelKey{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("model_id = ?", id).Delete(&store.ModelKeyBan{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&store.Model{}, id).Error
@@ -441,47 +469,76 @@ func (s *Server) disableModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m)
 }
 
-// unbanModelKey 手动解禁模型-密钥组合。
-func (s *Server) unbanModelKey(w http.ResponseWriter, r *http.Request) {
+// modelKeyPair 解析并校验路径中的模型 id 与密钥 id（存在性），失败时已写入错误响应。
+func (s *Server) modelKeyPair(w http.ResponseWriter, r *http.Request) (store.Model, store.ApiKey, bool) {
 	modelID, ok := pathID(r)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "invalid_id", "invalid model id")
-		return
+		return store.Model{}, store.ApiKey{}, false
 	}
 	keyIDStr := chi.URLParam(r, "key_id")
 	keyID, err := strconv.ParseInt(keyIDStr, 10, 64)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid_id", "invalid key id")
-		return
+		return store.Model{}, store.ApiKey{}, false
 	}
-
-	// 验证模型和密钥存在
 	var m store.Model
 	if err := s.store.DB.First(&m, modelID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			writeErr(w, http.StatusNotFound, "not_found", "model not found")
-			return
+		} else {
+			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		}
-		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
-		return
+		return m, store.ApiKey{}, false
 	}
-
 	var k store.ApiKey
 	if err := s.store.DB.First(&k, keyID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			writeErr(w, http.StatusNotFound, "not_found", "key not found")
-			return
+		} else {
+			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		}
-		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return m, k, false
+	}
+	return m, k, true
+}
+
+// unbanModelKey 手动解禁模型-密钥组合。
+func (s *Server) unbanModelKey(w http.ResponseWriter, r *http.Request) {
+	m, k, ok := s.modelKeyPair(w, r)
+	if !ok {
 		return
 	}
-
-	// 解禁
 	rec := breaker.New(s.store)
-	if err := rec.UnbanModelKey(modelID, keyID); err != nil {
+	if err := rec.UnbanModelKey(m.ID, k.ID); err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-
 	writeJSON(w, http.StatusOK, map[string]string{"message": "model-key combination unbanned"})
+}
+
+// banModelKey 手动禁用模型-密钥组合（perm_banned，永不过期；解禁走 DELETE bans/{key_id}）。
+func (s *Server) banModelKey(w http.ResponseWriter, r *http.Request) {
+	m, k, ok := s.modelKeyPair(w, r)
+	if !ok {
+		return
+	}
+	ban := store.ModelKeyBan{
+		ModelID:   m.ID,
+		KeyID:     k.ID,
+		Status:    "perm_banned",
+		BanReason: "manually disabled via admin API",
+	}
+	err := s.store.DB.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "model_id"}, {Name: "key_id"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"status": "perm_banned", "banned_until": 0,
+			"ban_reason": "manually disabled via admin API", "last_error": "",
+		}),
+	}).Create(&ban).Error
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "model-key combination banned"})
 }

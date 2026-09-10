@@ -87,7 +87,7 @@ func migrateProtocolRenameAndFields(db *gorm.DB) error {
 			return err
 		}
 	}
-	
+
 	// 重命名 model 表的协议值: openai → completions, anthropic → messages
 	if err := db.Exec(`UPDATE model SET protocol = 'completions' WHERE protocol = 'openai'`).Error; err != nil {
 		return err
@@ -95,12 +95,12 @@ func migrateProtocolRenameAndFields(db *gorm.DB) error {
 	if err := db.Exec(`UPDATE model SET protocol = 'messages' WHERE protocol = 'anthropic'`).Error; err != nil {
 		return err
 	}
-	
+
 	// 重命名 route 表的端点值: chat → completions
 	if err := db.Exec(`UPDATE route SET endpoint = 'completions' WHERE endpoint = 'chat'`).Error; err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 

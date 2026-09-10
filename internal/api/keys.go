@@ -11,7 +11,7 @@ import (
 )
 
 // keyResp ApiKey 的对外展示：内嵌实体（KeyValue 带 json:"-"）+ 脱敏值；reveal=1 时附带明文
-//（本地单人场景，明文仅供配置页“显示密钥”按钮使用）。
+// （本地单人场景，明文仅供配置页“显示密钥”按钮使用）。
 type keyResp struct {
 	store.ApiKey
 	KeyValueMasked string  `json:"key_value"`
@@ -167,15 +167,15 @@ func (s *Server) updateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Status != nil {
 		switch *req.Status {
-		case "active": // 手动启用：清空冷却与禁用痕迹
+		case "active": // 手动启用：清空限流冷却（密钥级禁用已移除，禁用粒度下沉到模型×密钥组合）
 			updates["status"] = "active"
 			updates["cooldown_until"] = 0
 			updates["disable_reason"] = ""
 		case "disabled":
-			updates["status"] = "disabled"
-			updates["disable_reason"] = "manually disabled via admin API"
+			writeErr(w, http.StatusBadRequest, "bad_request", "key-level disable removed; disable the key on the model instead (see model-key bans)")
+			return
 		default:
-			writeErr(w, http.StatusBadRequest, "bad_request", "status must be active or disabled")
+			writeErr(w, http.StatusBadRequest, "bad_request", "status must be active")
 			return
 		}
 	}
@@ -198,6 +198,9 @@ func (s *Server) deleteKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("key_id = ?", id).Delete(&store.ModelKeyBan{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("key_id = ?", id).Delete(&store.ModelKey{}).Error; err != nil {
 			return err
 		}

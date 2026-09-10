@@ -81,16 +81,8 @@ func TestKeyDispositions(t *testing.T) {
 	_ = rt
 	p := store.Provider{Name: "zhipu", BaseURL: "https://x"}
 	st.DB.Create(&p)
-	bad := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-bad"}
 	limited := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-lim"}
-	st.DB.Create(&bad)
 	st.DB.Create(&limited)
-
-	rec.RecordKeyAuthFailure(bad.ID, "401")
-	st.DB.First(&bad, bad.ID)
-	if bad.Status != "disabled" || bad.DisableReason == "" {
-		t.Fatalf("401 should disable key: %+v", bad)
-	}
 
 	rec.RecordKeyRateLimited(limited.ID, 7, 60)
 	st.DB.First(&limited, limited.ID)
