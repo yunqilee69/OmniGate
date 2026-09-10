@@ -28,6 +28,7 @@ export default function VirtualKeys() {
   const [routes, setRoutes] = useState<Route[]>([])
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<VirtualKey | null>(null)
+  const [fullKeys, setFullKeys] = useState<Record<number, string>>({})
   const [form] = Form.useForm()
 
   const load = async () => {
@@ -75,7 +76,7 @@ export default function VirtualKeys() {
           title: '虚拟密钥已创建',
           content: (
             <div>
-              <p>请妥善保存以下密钥，它只会显示一次：</p>
+              <p>请复制以下密钥用于客户端调用，后续可随时在列表中复制或查看完整密钥：</p>
               <Typography.Paragraph
                 copyable
                 code
@@ -116,14 +117,22 @@ export default function VirtualKeys() {
   }
 
 
+  // 列表接口返回的是脱敏值（前 12 位 + ...），复制/查看时按需拉取并缓存明文
+  const fetchFullKey = async (id: number): Promise<string> => {
+    if (fullKeys[id]) return fullKeys[id]
+    const data = await api('GET', `/api/virtual-keys/${id}/reveal-key`)
+    setFullKeys(prev => ({ ...prev, [id]: data.key_value }))
+    return data.key_value
+  }
+
   const revealKey = async (id: number) => {
     try {
-      const data = await api('GET', `/api/virtual-keys/${id}/reveal-key`)
+      const kv = await fetchFullKey(id)
       Modal.info({
         title: '完整密钥',
         content: (
           <Typography.Paragraph copyable code>
-            {data.key_value}
+            {kv}
           </Typography.Paragraph>
         ),
       })
@@ -144,7 +153,20 @@ export default function VirtualKeys() {
       dataIndex: 'key_value',
       render: (key: string, rec: VirtualKey) => (
         <Space>
-          <Typography.Text code copyable={{ text: key }}>
+          <Typography.Text
+            code
+            copyable={{
+              text: async () => {
+                try {
+                  return await fetchFullKey(rec.id)
+                } catch (e: any) {
+                  message.error(e.message || '获取完整密钥失败')
+                  throw e
+                }
+              },
+              tooltips: ['复制完整密钥', '已复制完整密钥'],
+            }}
+          >
             {key}
           </Typography.Text>
           <Tooltip title="查看完整密钥">
