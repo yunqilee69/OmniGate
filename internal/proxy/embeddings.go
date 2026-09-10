@@ -173,7 +173,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 						res := h.typedAttempt(w, r, req, fallbackAtt, kind, rt)
 						res.latencyMs = time.Since(attemptStart).Milliseconds()
 						h.record(res, rt)
-					h.writeAttempt(requestID, routeName, 0, fallbackAtt, res, attemptStart)
+						h.writeAttempt(requestID, routeName, 0, fallbackAtt, res, attemptStart)
 						h.writeLog(start, requestID, routeName, fallbackAtt, false,
 							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
 						if cw != nil {
@@ -185,11 +185,11 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID, "type", kind.modelType)
 				}
 
-			// all_backends 错误：没有可用模型，仍需记录尝试
-			h.writeAttempt(requestID, routeName, 0, router.Attempt{}, attemptResult{
-				status:   "error",
-				errCode:  "all_backends",
-			}, start)
+				// all_backends 错误：没有可用模型，仍需记录尝试
+				h.writeAttempt(requestID, routeName, 0, router.Attempt{}, attemptResult{
+					status:  "error",
+					errCode: "all_backends",
+				}, start)
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, false,
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID)
