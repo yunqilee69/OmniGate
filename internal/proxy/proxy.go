@@ -335,6 +335,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						res := h.attempt(w, r, req, fallbackAtt, isStream, rt)
 						res.latencyMs = time.Since(attemptStart).Milliseconds()
 						h.record(res, rt)
+					h.writeAttempt(requestID, routeName, 0, fallbackAtt, res, attemptStart)
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
 							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
 						if cw != nil {
@@ -346,6 +347,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID)
 				}
 
+			// all_backends 错误：没有可用模型，仍需记录尝试
+			h.writeAttempt(requestID, routeName, 0, router.Attempt{}, attemptResult{
+				status:   "error",
+				errCode:  "all_backends",
+			}, start)
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID)
@@ -869,18 +875,17 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 }
 
 // writeAttempt 把每一次转发尝试的完整明细落库（含成功与失败），便于排查重试链路。
+// 对于 all_backends 错误（没有可用模型），model 和 provider 字段为空字符串。
 func (h *Handler) writeAttempt(requestID, routeName string, attempt int, att router.Attempt,
 	res attemptResult, start time.Time) {
-	if att.Model.ID == 0 {
-		return
-	}
+	// all_backends 场景：att.Model.ID == 0，但仍应记录尝试
 	row := store.RequestAttempt{
 		RequestID:        requestID,
 		Route:            routeName,
 		Attempt:          attempt,
-		Model:            att.Model.Name,
-		Provider:         att.Provider.Name,
-		KeyID:            att.Key.ID,
+		Model:            att.Model.Name,  // 空字符串 for all_backends
+		Provider:         att.Provider.Name,  // 空字符串 for all_backends
+		KeyID:            att.Key.ID,  // 0 for all_backends
 		Status:           res.status,
 		HTTPStatus:       res.httpStatus,
 		ErrorCode:        res.errCode,
@@ -1165,6 +1170,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 						res := h.nativeAttempt(w, r, body, fallbackAtt, isStream, rt, endpoint)
 						res.latencyMs = time.Since(attemptStart).Milliseconds()
 						h.record(res, rt)
+					h.writeAttempt(requestID, routeName, 0, fallbackAtt, res, attemptStart)
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
 							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
 						if cw != nil {
@@ -1184,6 +1190,11 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 				h.maybeCapture(requestID, routeName, reqSnap, cw)
 				return
 			}
+			// all_backends 错误：没有可用模型，仍需记录尝试
+			h.writeAttempt(requestID, routeName, 0, router.Attempt{}, attemptResult{
+				status:   "error",
+				errCode:  "all_backends",
+			}, start)
 			break
 		}
 
