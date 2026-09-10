@@ -13,6 +13,11 @@ type contextKey string
 // Key 是注入/读取 *store.VirtualKey 的唯一 context 键。
 const Key contextKey = "virtual_key"
 
+// With 将虚拟 key 注入 context。
+func With(ctx context.Context, vk *store.VirtualKey) context.Context {
+	return context.WithValue(ctx, Key, vk)
+}
+
 // From 从 context 取出虚拟 key。
 func From(ctx context.Context) (*store.VirtualKey, bool) {
 	vk, ok := ctx.Value(Key).(*store.VirtualKey)

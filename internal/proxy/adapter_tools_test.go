@@ -225,7 +225,7 @@ func TestResponsesBuildBodyTools(t *testing.T) {
 			}},
 			map[string]any{"role": "tool", "tool_call_id": "call_1", "content": "晴"},
 		},
-		"tools":      weatherTools(),
+		"tools":       weatherTools(),
 		"tool_choice": map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}},
 	}
 	out, err := ad.buildBody(req)

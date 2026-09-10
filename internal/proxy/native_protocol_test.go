@@ -25,7 +25,7 @@ func TestNativeMessagesFiltersProtocol(t *testing.T) {
 	messagesUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&messagesHits, 1)
 		if r.URL.Path != "/v1/messages" {
- mar			t.Errorf("messages upstream path = %s", r.URL.Path)
+			t.Errorf("messages upstream path = %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"claude"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)

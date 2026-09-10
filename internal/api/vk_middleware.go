@@ -8,12 +8,8 @@ import (
 	"strings"
 
 	"github.com/cloudomni/omnigate/internal/store"
+	"github.com/cloudomni/omnigate/internal/vkctx"
 )
-
-// contextKey 用于存储虚拟 key 到 context。
-type contextKey string
-
-const vkContextKey contextKey = "virtual_key"
 
 // VKAuthMiddleware 虚拟 key 鉴权中间件。
 // 从 Authorization 头提取 Bearer token，验证并加载虚拟 key，注入到 context。
@@ -49,8 +45,8 @@ func VKAuthMiddleware(db *store.Store) func(http.Handler) http.Handler {
 				return
 			}
 
-			// 将虚拟 key 注入 context
-			ctx := context.WithValue(r.Context(), vkContextKey, vk)
+			// 将虚拟 key 注入 context（vkctx 共享键，代理面同键读取）
+			ctx := vkctx.With(r.Context(), vk)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -58,8 +54,7 @@ func VKAuthMiddleware(db *store.Store) func(http.Handler) http.Handler {
 
 // GetVKFromContext 从 context 中获取虚拟 key。
 func GetVKFromContext(ctx context.Context) (*store.VirtualKey, bool) {
-	vk, ok := ctx.Value(vkContextKey).(*store.VirtualKey)
-	return vk, ok
+	return vkctx.From(ctx)
 }
 
 // VKRateLimitMiddleware 虚拟 key 限流中间件。
@@ -118,7 +113,6 @@ func VKBudgetMiddleware(db *store.Store) func(http.Handler) http.Handler {
 		})
 	}
 }
-
 
 func formatInt64(v int64) string {
 	if v == 0 {

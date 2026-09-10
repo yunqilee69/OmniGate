@@ -198,13 +198,19 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 		h.record(res, rt)
 		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
 		last = res
-		h.writeLog(start, requestID, routeName, att, false,
-			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID)
 		if res.committed || !res.retryable {
+			h.writeLog(start, requestID, routeName, att, false,
+				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID)
 			break
 		}
 		priorFails++
 		errCodes = append(errCodes, res.errCode)
+	}
+
+	// 重试耗尽 / 转移途中无后端可选：最终结果尚未落库时在此补写。
+	if last.att.Model.ID != 0 && !last.committed && last.retryable {
+		h.writeLog(start, requestID, routeName, last.att, false,
+			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails-1, last.errorBody, false, vkID, pendingID)
 	}
 
 	if !last.committed {

@@ -29,7 +29,7 @@ func newTestStack(t *testing.T) (*store.Store, http.Handler) {
 	if err != nil {
 		t.Fatalf("init runtime: %v", err)
 	}
-	
+
 	// Return handler without VK middleware for tests that don't use VK
 	ph := proxy.New(st, rt)
 	mux := http.NewServeMux()
@@ -48,19 +48,19 @@ func newTestStackWithVK(t *testing.T) (*store.Store, http.Handler, string) {
 	if err != nil {
 		t.Fatalf("init runtime: %v", err)
 	}
-	
+
 	// 为测试创建一个无限制的虚拟 key
 	vk := &store.VirtualKey{
 		Name:           "test-key",
 		Status:         "active",
-		RPMLimit:       0, // 无限制
-		TotalBudgetUSD: 0, // 无限制
+		RPMLimit:       0,    // 无限制
+		TotalBudgetUSD: 0,    // 无限制
 		AllowedRoutes:  "[]", // 允许所有路由
 	}
 	if err := st.CreateVirtualKey(vk); err != nil {
 		t.Fatalf("create test virtual key: %v", err)
 	}
-	
+
 	return st, api.New(st, rt, api.AdminAuth{}, proxy.New(st, rt), proxy.New(st, rt)).Router(), vk.KeyValue
 }
 

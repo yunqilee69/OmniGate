@@ -314,12 +314,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	pendingID := h.createPendingLog(requestID, routeName, isStream, vkID)
 
-
 	tried := map[int64]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult
 	var errCodes []string
 	priorFails := 0
+	finalLogged := false
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		att, ok := h.sel.Pick(snap, tried, time.Now(), affModel)
@@ -358,19 +358,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.record(res, rt)
 		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
 		last = res
-		
-		// 记录每次尝试到 request_log
-		h.writeLog(start, requestID, routeName, att, isStream,
-			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID)
-		
-		// 如果已提交响应或不可重试，停止
+
+		// request_log 只记最终结果（中间跳数由 request_attempt 表逐次落盘）。
+		// 逐次写入会把中间失败 UPSERT 进 request_log_daily，污染统计口径。
 		if res.committed || !res.retryable {
+			h.writeLog(start, requestID, routeName, att, isStream,
+				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID)
+			finalLogged = true
 			break
 		}
 		priorFails++
 		errCodes = append(errCodes, res.errCode)
 		slog.Warn("attempt failed, transferring", "route", routeName,
 			"model", att.Model.Name, "key_id", att.Key.ID, "code", res.errCode)
+	}
+
+	// 重试耗尽 / 转移途中无后端可选：最终结果尚未落库时在此写入。
+	if !finalLogged && last.att.Model.ID != 0 {
+		h.writeLog(start, requestID, routeName, last.att, isStream,
+			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails-1, last.errorBody, false, vkID, pendingID)
 	}
 
 	// 所有重试都失败且可重试（没有提交响应），返回 502 Bad Gateway
@@ -622,8 +628,8 @@ func (h *Handler) bufferedResponse(w http.ResponseWriter, resp *http.Response,
 				} `json:"message"`
 			} `json:"choices"`
 			Usage *struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
+				PromptTokens        int `json:"prompt_tokens"`
+				CompletionTokens    int `json:"completion_tokens"`
 				PromptTokensDetails *struct {
 					CachedTokens int `json:"cached_tokens"`
 				} `json:"prompt_tokens_details"`
@@ -756,63 +762,63 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 				}
 				res.status = "success"
 				return res
-		}
-		// 已 committed 但遇到非 EOF 错误（如 context canceled）
-		if !committed {
-			// deadline 在首字节前触发会 cancel 流：区分超时与上游建连失败
-			if timedOut.Load() {
-				res.status, res.errCode, res.retryable = "error", "timeout", true
+			}
+			// 已 committed 但遇到非 EOF 错误（如 context canceled）
+			if !committed {
+				// deadline 在首字节前触发会 cancel 流：区分超时与上游建连失败
+				if timedOut.Load() {
+					res.status, res.errCode, res.retryable = "error", "timeout", true
+				} else {
+					res.status, res.errCode, res.retryable = "error", "stream_setup_failed", true
+				}
+				return res
+			}
+
+			// 流已 committed 且遇到错误：尝试提取真实 usage，并判断是否为成功后的客户端断开
+			if passthrough {
+				scan.Finish() // 确保解析完所有已收到的数据
+			}
+
+			// 尝试获取真实 usage
+			if u := adapter.streamUsage(); u != nil {
+				res.usage = *u
+			} else if passthrough && scan.Usage() != nil {
+				// passthrough 模式下从 scan 中获取真实 token
+				cached := 0
+				if scan.Usage().PromptTokensDetails != nil {
+					cached = scan.Usage().PromptTokensDetails.CachedTokens
+				}
+				res.usage = usageInfo{
+					prompt:     scan.Usage().PromptTokens,
+					completion: scan.Usage().CompletionTokens,
+					cached:     cached,
+					estimated:  false, // 真实值，非估算
+				}
 			} else {
-				res.status, res.errCode, res.retryable = "error", "stream_setup_failed", true
+				// 无法获取真实 usage，使用估算
+				if passthrough {
+					textAcc.WriteString(scan.Text())
+				}
+				res.usage = estimateUsage(res.promptChars, textAcc.String())
+			}
+
+			// 判断：如果已获得 usage（说明流传输完整），将 context canceled 视为成功
+			// 典型场景：客户端收到 [DONE] 后立即关闭连接
+			if res.usage.prompt > 0 || res.usage.completion > 0 {
+				res.status = "success"
+			} else {
+				// usage 缺失，确实是流中断
+				res.status, res.errCode, res.streamBroke = "error", "stream_broken", true
+				// 只记录真正的错误
+				if h.rt.Snapshot().DebugStreamLog {
+					slog.Info("[DEBUG] Stream broken",
+						"model", att.Model.Name,
+						"provider", att.Provider.Name,
+						"error", readErr.Error(),
+						"committed", committed)
+				}
 			}
 			return res
-		}
-		
-		// 流已 committed 且遇到错误：尝试提取真实 usage，并判断是否为成功后的客户端断开
-		if passthrough {
-			scan.Finish() // 确保解析完所有已收到的数据
-		}
-		
-		// 尝试获取真实 usage
-		if u := adapter.streamUsage(); u != nil {
-			res.usage = *u
-		} else if passthrough && scan.Usage() != nil {
-			// passthrough 模式下从 scan 中获取真实 token
-			cached := 0
-			if scan.Usage().PromptTokensDetails != nil {
-				cached = scan.Usage().PromptTokensDetails.CachedTokens
-			}
-			res.usage = usageInfo{
-				prompt:     scan.Usage().PromptTokens,
-				completion: scan.Usage().CompletionTokens,
-				cached:     cached,
-				estimated:  false, // 真实值，非估算
-			}
-		} else {
-			// 无法获取真实 usage，使用估算
-			if passthrough {
-				textAcc.WriteString(scan.Text())
-			}
-			res.usage = estimateUsage(res.promptChars, textAcc.String())
-		}
-		
-		// 判断：如果已获得 usage（说明流传输完整），将 context canceled 视为成功
-		// 典型场景：客户端收到 [DONE] 后立即关闭连接
-		if res.usage.prompt > 0 || res.usage.completion > 0 {
-			res.status = "success"
-		} else {
-			// usage 缺失，确实是流中断
-			res.status, res.errCode, res.streamBroke = "error", "stream_broken", true
-			// 只记录真正的错误
-			if h.rt.Snapshot().DebugStreamLog {
-				slog.Info("[DEBUG] Stream broken",
-					"model", att.Model.Name,
-					"provider", att.Provider.Name,
-					"error", readErr.Error(),
-					"committed", committed)
-			}
-		}
-		return res
 		}
 	}
 }
@@ -837,6 +843,9 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 	}
 	if pendingID > 0 {
 		entry.ID = pendingID
+		// Save 为全列 UPDATE，autoCreateTime 只在 Create 生效：
+		// 显式带请求开始时间，避免 pending 行的 created_at 被零值覆盖。
+		entry.CreatedAt = start.Unix()
 		if err := h.db.DB.Save(&entry).Error; err != nil {
 			slog.Error("update request_log failed", "err", err, "request_id", requestID)
 			return
@@ -988,19 +997,20 @@ ON CONFLICT(request_id) DO UPDATE SET
 }
 
 // Messages 实现 Anthropic 原生端点 /v1/messages（直通模式）。
-// 只路由到 protocol=anthropic 的模型，请求体不做转换直接透传。
+// 只路由到 protocol=messages 的模型，请求体不做转换直接透传。
 func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
-	h.nativeEndpoint(w, r, "anthropic", "messages")
+	h.nativeEndpoint(w, r, "messages")
 }
 
 // Responses 实现 OpenAI Responses 原生端点 /v1/responses（直通模式）。
 // 只路由到 protocol=responses 的模型，请求体不做转换直接透传。
 func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
-	h.nativeEndpoint(w, r, "responses", "responses")
+	h.nativeEndpoint(w, r, "responses")
 }
 
 // nativeEndpoint 原生协议端点的通用处理逻辑：解析请求 → 协议过滤 → 直通转发。
-func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protocol, endpoint string) {
+// 协议过滤在 Selector.pick 内按路由 endpoint 完成（messages/responses 只挑同协议模型）。
+func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoint string) {
 	start := time.Now()
 	requestID := newRequestID()
 	w.Header().Set("X-Request-Id", requestID)
@@ -1118,15 +1128,21 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, protoco
 		h.record(res, rt)
 		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
 		last = res
-		h.writeLog(start, requestID, routeName, att, isStream,
-			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID)
 		if res.committed || !res.retryable {
+			h.writeLog(start, requestID, routeName, att, isStream,
+				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID)
 			break
 		}
 		priorFails++
 		errCodes = append(errCodes, res.errCode)
 		slog.Warn("attempt failed, transferring", "route", routeName,
 			"model", att.Model.Name, "key_id", att.Key.ID, "code", res.errCode, "endpoint", endpoint)
+	}
+
+	// 重试耗尽 / 转移途中无后端可选：最终结果尚未落库时在此补写。
+	if last.att.Model.ID != 0 && !last.committed && last.retryable {
+		h.writeLog(start, requestID, routeName, last.att, isStream,
+			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails-1, last.errorBody, false, vkID, pendingID)
 	}
 
 	if !last.committed {

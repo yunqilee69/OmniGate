@@ -16,7 +16,7 @@ func TestApiPathOverride(t *testing.T) {
 
 	var gotPath string
 	var gotReq map[string]any
-	
+
 	// 创建一个自定义端点的 upstream
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -71,7 +71,7 @@ func TestBodyOverrideModel(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 
 	var gotReq map[string]any
-	
+
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = decodeJSONBody(r, &gotReq)
 		w.Header().Set("Content-Type", "application/json")
@@ -126,7 +126,7 @@ func TestProtocolRename(t *testing.T) {
 
 	// 测试新协议名称
 	protocols := []string{"completions", "messages", "responses"}
-	
+
 	for _, proto := range protocols {
 		t.Run(proto, func(t *testing.T) {
 			p := store.Provider{Name: proto + "-provider", BaseURL: "https://example.com"}
@@ -139,7 +139,7 @@ func TestProtocolRename(t *testing.T) {
 			if err := st.DB.Create(&m).Error; err != nil {
 				t.Fatalf("failed to create model with protocol %s: %v", proto, err)
 			}
-			
+
 			// 验证模型已创建且协议值正确
 			var loaded store.Model
 			st.DB.First(&loaded, m.ID)

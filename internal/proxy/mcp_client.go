@@ -52,19 +52,19 @@ type jsonRPCError struct {
 
 // InitializeParams MCP initialize 参数。
 type InitializeParams struct {
-	ProtocolVersion string                 `json:"protocolVersion"`
-	Capabilities    map[string]any         `json:"capabilities"`
-	ClientInfo      map[string]any         `json:"clientInfo"`
-	Meta            map[string]any         `json:"_meta,omitempty"`
+	ProtocolVersion string         `json:"protocolVersion"`
+	Capabilities    map[string]any `json:"capabilities"`
+	ClientInfo      map[string]any `json:"clientInfo"`
+	Meta            map[string]any `json:"_meta,omitempty"`
 }
 
 // InitializeResult MCP initialize 结果。
 type InitializeResult struct {
-	ProtocolVersion string                 `json:"protocolVersion"`
-	Capabilities    map[string]any         `json:"capabilities"`
-	ServerInfo      map[string]any         `json:"serverInfo"`
-	Instructions    string                 `json:"instructions,omitempty"`
-	Meta            map[string]any         `json:"_meta,omitempty"`
+	ProtocolVersion string         `json:"protocolVersion"`
+	Capabilities    map[string]any `json:"capabilities"`
+	ServerInfo      map[string]any `json:"serverInfo"`
+	Instructions    string         `json:"instructions,omitempty"`
+	Meta            map[string]any `json:"_meta,omitempty"`
 }
 
 // Tool MCP 工具定义。

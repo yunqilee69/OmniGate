@@ -204,6 +204,7 @@ func weightedPick(weights []int) int {
 
 // Pick 在排除 tried 中 key 的候选集内做两级选择（模型加权 → 模型内 key 轮询），并只挑
 // chat 类型后端（embeddings/rerank 模型绝不承接 chat 请求；空 type 视为 chat 兼容旧数据）。
+// 原生直通端点（路由 endpoint 为 messages/responses）在此叠加协议过滤：直通无转换，只挑同协议模型。
 // preferModel 为会话亲和的首选模型（0 表示无）：可用时直接锁定，不可用时无感落入加权路径。
 func (s *Selector) Pick(snap *Snapshot, tried map[int64]bool, now time.Time, preferModel int64) (Attempt, bool) {
 	return s.pick(snap, tried, now, preferModel, "chat")
@@ -232,6 +233,13 @@ func (s *Selector) pick(snap *Snapshot, tried map[int64]bool, now time.Time, pre
 		}
 		if mt != wantType {
 			continue
+		}
+		// 协议过滤：原生直通端点（messages/responses）只挑同协议模型；
+		// completions 端点走适配器转换，任意协议模型都可承接。
+		if e := snap.Route.Endpoint; e == "messages" || e == "responses" {
+			if m.Protocol != e {
+				continue
+			}
 		}
 		if _, hasProvider := snap.Providers[m.ProviderID]; !hasProvider {
 			continue
