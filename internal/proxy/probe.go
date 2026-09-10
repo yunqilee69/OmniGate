@@ -226,6 +226,7 @@ func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) Pro
 	for k, v := range extra {
 		httpReq.Header.Set(k, v)
 	}
+	ApplyUpstreamIdentity(httpReq, provider, nil)
 
 	start := time.Now()
 	resp, err := client.Do(httpReq)

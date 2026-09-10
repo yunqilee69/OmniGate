@@ -494,6 +494,7 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 	for k, v := range extra {
 		upReq.Header.Set(k, v)
 	}
+	ApplyUpstreamIdentity(upReq, att.Provider, r)
 	if isStream {
 		upReq.Header.Set("Accept", "text/event-stream")
 	}
@@ -1263,6 +1264,7 @@ func (h *Handler) nativeAttempt(w http.ResponseWriter, r *http.Request, reqBody 
 	for k, v := range extra {
 		upReq.Header.Set(k, v)
 	}
+	ApplyUpstreamIdentity(upReq, att.Provider, r)
 	if isStream {
 		upReq.Header.Set("Accept", "text/event-stream")
 	}

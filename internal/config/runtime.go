@@ -34,6 +34,8 @@ type Runtime struct {
 	FallbackEnabled         bool
 	FallbackModelID         int64
 	DebugStreamLog          bool
+	// HeaderProfilePresets 请求头组模板库（JSON 数组文本，与 Provider.HeaderProfiles 同构）。
+	HeaderProfilePresets string
 }
 
 type settingSpec struct {
@@ -158,6 +160,27 @@ func headerArr(v any) error {
 	return nil
 }
 
+// headerProfilePresets 校验请求头组模板库（与 Provider.HeaderProfiles 同构的 JSON 数组）：
+// 结构合法性复用 store.ParseHeaderProfiles；保留头同样拒绝（与提供商侧校验文案一致）。
+func headerProfilePresets(v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("invalid value: %w", err)
+	}
+	profiles, err := store.ParseHeaderProfiles(string(b))
+	if err != nil {
+		return err
+	}
+	for _, p := range profiles {
+		for k := range p.Headers {
+			if store.ReservedHeaderKeys[strings.ToLower(k)] {
+				return fmt.Errorf("header key %q is reserved and cannot be overridden", k)
+			}
+		}
+	}
+	return nil
+}
+
 var settingSpecs = []settingSpec{
 	{key: "breaker.cooldown_ladder", def: `["30s","1m","3m"]`, validate: durArr},
 	{key: "breaker.disable_threshold", def: `3`, validate: intRange(1, 100)},
@@ -176,6 +199,7 @@ var settingSpecs = []settingSpec{
 	{key: "pricing.usd_cny", def: `7.25`, validate: floatRange(0.01, 10000)},
 	{key: "fallback.enabled", def: `false`, validate: boolVal},
 	{key: "fallback.model_id", def: `0`, validate: intRange(0, 9999999)},
+	{key: "header_profile_presets", def: `[]`, validate: headerProfilePresets},
 	{key: "debug.stream_log", def: `false`, validate: boolVal},
 }
 
@@ -326,6 +350,7 @@ func (m *RuntimeManager) rebuild() error {
 	rt.USDCNY = rate
 	rt.FallbackEnabled = getBool("fallback.enabled")
 	rt.DebugStreamLog = getBool("debug.stream_log")
+	rt.HeaderProfilePresets = raw["header_profile_presets"]
 
 	m.snap.Store(rt)
 	return nil

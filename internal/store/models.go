@@ -2,6 +2,12 @@
 // 时间戳一律使用 unix 秒（int64 + GORM autoCreateTime/autoUpdateTime）。
 package store
 
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
 // Provider 大模型提供商。
 type Provider struct {
 	ID        int64  `json:"id" gorm:"primaryKey;autoIncrement"`
@@ -11,8 +17,57 @@ type Provider struct {
 	ProxyURL  string `json:"proxy_url" gorm:"column:proxy_url;size:512;not null;default:''"`
 	TimeoutMs int    `json:"timeout_ms" gorm:"not null;default:120000"`
 	Remark    string `json:"remark" gorm:"size:1024;not null;default:''"`
-	CreatedAt int64  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	// 客户端模拟请求头组（JSON 数组）与当前生效组名；空 ActiveProfile = 不模拟，透传客户端自带头。
+	HeaderProfiles string `json:"header_profiles" gorm:"type:text;not null;default:''"`
+	ActiveProfile  string `json:"active_profile" gorm:"size:191;not null;default:''"`
+	CreatedAt      int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt      int64  `json:"updated_at" gorm:"autoUpdateTime"`
+}
+
+// HeaderProfile 一组客户端模拟请求头（模拟某个客户端发出的完整头集合）。
+type HeaderProfile struct {
+	Name    string            `json:"name"`
+	Headers map[string]string `json:"headers"`
+}
+
+// ReservedHeaderKeys 上游请求中不允许由模拟组覆盖的保留头（canonical 小写）：
+// 认证头由适配器写入，其余为传输控制头。
+var ReservedHeaderKeys = map[string]bool{
+	"authorization":   true,
+	"x-api-key":       true,
+	"host":            true,
+	"content-length":  true,
+	"content-type":    true,
+	"accept-encoding": true,
+}
+
+// ParseHeaderProfiles 解析提供商/模板库上的请求头组 JSON 文本。
+// raw 为空 → (nil, nil)；JSON 非法、组名为空、组名重复、header key 为空 → 报错（错误信息含具体 name/key）。
+func ParseHeaderProfiles(raw string) ([]HeaderProfile, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var profiles []HeaderProfile
+	if err := json.Unmarshal([]byte(raw), &profiles); err != nil {
+		return nil, fmt.Errorf("header_profiles JSON 非法: %w", err)
+	}
+	seen := make(map[string]bool, len(profiles))
+	for i, p := range profiles {
+		if strings.TrimSpace(p.Name) == "" {
+			return nil, fmt.Errorf("header_profiles 第 %d 组名为空", i+1)
+		}
+		if seen[p.Name] {
+			return nil, fmt.Errorf("header_profiles 组名重复: %s", p.Name)
+		}
+		seen[p.Name] = true
+		for k := range p.Headers {
+			if strings.TrimSpace(k) == "" {
+				return nil, fmt.Errorf("header_profiles 组 %s 存在空 header key", p.Name)
+			}
+		}
+	}
+	return profiles, nil
 }
 
 // ApiKey 密钥：直接归属某提供商，由模型通过 ModelKey 多对多绑定。KeyValue 带 json:"-"，

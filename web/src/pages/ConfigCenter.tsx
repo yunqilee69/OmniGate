@@ -21,6 +21,8 @@ interface Provider {
   proxy_url: string
   timeout_ms: number
   remark: string
+  header_profiles: string
+  active_profile: string
 }
 
 interface Key {
@@ -117,6 +119,263 @@ const keyStatusTag = (k: Key) => {
   return <Tooltip title={k.disable_reason}><StatusTag tone="error">已禁用</StatusTag></Tooltip>
 }
 
+// ---------- 客户端模拟请求头（Header Profiles） ----------
+
+const RESERVED_HEADER_KEYS = ['authorization', 'x-api-key', 'host', 'content-length', 'content-type', 'accept-encoding']
+
+interface HeaderProfileKV {
+  k: string
+  v: string
+}
+
+interface HeaderProfileRow {
+  name: string
+  headers: HeaderProfileKV[]
+}
+
+// toProfileRows 把 JSON 文本/已解码数组统一转为表单行（headers 用 KV 对，便于 Form.List 编辑）。
+function toProfileRows(v: unknown): HeaderProfileRow[] {
+  let arr: unknown = v
+  if (typeof v === 'string') {
+    const s = v.trim()
+    if (!s) return []
+    try { arr = JSON.parse(s) } catch { return [] }
+  }
+  if (!Array.isArray(arr)) return []
+  return arr.map((item): HeaderProfileRow => {
+    const g = (item && typeof item === 'object') ? item as Record<string, unknown> : {}
+    const rawHeaders = (g.headers && typeof g.headers === 'object') ? g.headers as Record<string, unknown> : {}
+    return {
+      name: typeof g.name === 'string' ? g.name : '',
+      headers: Object.entries(rawHeaders).map(([k, val]) => ({ k, v: typeof val === 'string' ? val : String(val ?? '') })),
+    }
+  })
+}
+
+// stringifyHeaderProfiles 提交前把表单行还原为 header_profiles 的 JSON 文本（无有效组 → ''）。
+function stringifyHeaderProfiles(rows?: HeaderProfileRow[]): string {
+  const groups = (rows || [])
+    .filter((r) => r && r.name.trim() !== '')
+    .map((r) => ({
+      name: r.name.trim(),
+      headers: Object.fromEntries(
+        (r.headers || []).filter((kv) => kv && kv.k.trim() !== '').map((kv) => [kv.k.trim(), kv.v ?? ''])
+      ),
+    }))
+  return groups.length === 0 ? '' : JSON.stringify(groups)
+}
+
+// HeaderPresetsTab 配置中心顶层「请求头模板」Tab：全局模板库管理，保存写入运行时设置 header_profile_presets。
+// 模板供提供商编辑弹窗一键插入；复制后模板与提供商各自独立，互不影响。
+function HeaderPresetsTab() {
+  const [presets, setPresets] = useState<HeaderProfileRow[] | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    api<Record<string, unknown>>('GET', '/api/settings')
+      .then((s) => setPresets(toProfileRows(s?.header_profile_presets ?? [])))
+      .catch((e: unknown) => {
+        message.error(e instanceof Error ? e.message : String(e))
+        setPresets([])
+      })
+  }, [])
+
+  const patch = (i: number, next: HeaderProfileRow) => setPresets((rs) => (rs ?? []).map((r, j) => (j === i ? next : r)))
+
+  const save = async () => {
+    const clean = (presets ?? []).filter((r) => r.name.trim() !== '')
+    setSaving(true)
+    try {
+      await api('PUT', '/api/settings', {
+        header_profile_presets: clean.map((r) => ({
+          name: r.name.trim(),
+          headers: Object.fromEntries(r.headers.filter((kv) => kv.k.trim() !== '').map((kv) => [kv.k.trim(), kv.v ?? ''])),
+        })),
+      })
+      setPresets(clean)
+      message.success('模板已保存')
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Card
+      title="请求头模板"
+      size="small"
+      extra={
+        <Button type="primary" size="small" loading={saving} disabled={presets === null} onClick={save}>保存</Button>
+      }
+    >
+      <div style={{ color: '#8f8f8f', fontSize: 12, marginBottom: 12 }}>
+        全局共享的客户端模拟请求头组预设，可在提供商编辑弹窗「客户端模拟 → 从模板插入」一键填入；
+        保留头（authorization/x-api-key/host/content-length/content-type/accept-encoding）不允许出现在模板中。
+      </div>
+      <div style={{ maxWidth: 760 }}>
+        {presets === null ? (
+          <Spin />
+        ) : (
+          <>
+            {presets.map((g, i) => (
+              <div key={i} style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: '8px 12px', marginBottom: 8 }}>
+                <Space style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <Input
+                    value={g.name}
+                    placeholder="模板名，如 claude-code"
+                    style={{ width: 220 }}
+                    onChange={(e) => patch(i, { ...g, name: e.target.value })}
+                  />
+                  <DeleteOutlined style={{ color: '#ee0000' }} onClick={() => setPresets((rs) => (rs ?? []).filter((_, j) => j !== i))} />
+                </Space>
+                {g.headers.map((kv, j) => (
+                  <Space key={j} align="baseline" style={{ display: 'flex', marginBottom: 4 }}>
+                    <Input
+                      value={kv.k}
+                      placeholder="Header 名"
+                      style={{ width: 170 }}
+                      status={RESERVED_HEADER_KEYS.includes(kv.k.trim().toLowerCase()) ? 'error' : undefined}
+                      onChange={(e) => patch(i, { ...g, headers: g.headers.map((x, m) => (m === j ? { ...x, k: e.target.value } : x)) })}
+                    />
+                    <Input
+                      value={kv.v}
+                      placeholder="值"
+                      style={{ width: 300 }}
+                      onChange={(e) => patch(i, { ...g, headers: g.headers.map((x, m) => (m === j ? { ...x, v: e.target.value } : x)) })}
+                    />
+                    <DeleteOutlined onClick={() => patch(i, { ...g, headers: g.headers.filter((_, m) => m !== j) })} />
+                  </Space>
+                ))}
+                <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={() => patch(i, { ...g, headers: [...g.headers, { k: '', v: '' }] })}>
+                  加请求头
+                </Button>
+              </div>
+            ))}
+            <Button type="dashed" block icon={<PlusOutlined />} onClick={() => setPresets((rs) => [...(rs ?? []), { name: '', headers: [{ k: '', v: '' }] }])}>
+              添加模板
+            </Button>
+          </>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+// HeaderProfilesSection 提供商表单共用区块：组列表 + 当前生效组 + 模板插入/管理。
+// 表单字段 header_profiles 持有解析后的行数组，提交时由调用方 stringifyHeaderProfiles 还原为 JSON 文本。
+function HeaderProfilesSection() {
+  const form = Form.useFormInstance()
+  const [presets, setPresets] = useState<HeaderProfileRow[]>([])
+  const [presetName, setPresetName] = useState<string>()
+
+  useEffect(() => {
+    api<Record<string, unknown>>('GET', '/api/settings')
+      .then((s) => setPresets(toProfileRows(s?.header_profile_presets ?? [])))
+      .catch(() => {})
+  }, [])
+
+  const insertPreset = () => {
+    const g = presets.find((x) => x.name === presetName)
+    if (!g) return
+    const rows: HeaderProfileRow[] = form.getFieldValue('header_profiles') || []
+    form.setFieldsValue({
+      header_profiles: [...rows, { name: g.name, headers: g.headers.map((kv) => ({ ...kv })) }],
+    })
+    setPresetName(undefined)
+  }
+
+  return (
+    <>
+      <Form.Item label="客户端模拟" style={{ marginBottom: 8 }}>
+        <Space wrap>
+          <Select
+            placeholder="从模板插入"
+            style={{ minWidth: 180 }}
+            allowClear
+            value={presetName}
+            onChange={setPresetName}
+            options={presets.map((g) => ({ value: g.name, label: g.name }))}
+            notFoundContent="暂无模板"
+          />
+          <Button disabled={!presetName} onClick={insertPreset}>插入</Button>
+        </Space>
+      </Form.Item>
+      <Form.List name="header_profiles">
+        {(fields, { add, remove }) => (
+          <>
+            {fields.map((field) => (
+              <div key={field.key} style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: '8px 12px', marginBottom: 8 }}>
+                <Space style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <Form.Item name={[field.name, 'name']} noStyle rules={[{ required: true, message: '请输入组名' }]}>
+                    <Input placeholder="组名，如 claude-code" style={{ width: 220 }} />
+                  </Form.Item>
+                  <DeleteOutlined style={{ color: '#ee0000' }} onClick={() => remove(field.name)} />
+                </Space>
+                <Form.List name={[field.name, 'headers']}>
+                  {(hfs, { add: addH, remove: rmH }) => (
+                    <>
+                      {hfs.map((h) => (
+                        <Space key={h.key} align="baseline" style={{ display: 'flex', marginBottom: 4 }}>
+                          <Form.Item
+                            name={[h.name, 'k']}
+                            noStyle
+                            rules={[
+                              {
+                                // 空 key 行（误加未填）视为占位，提交时由 stringifyHeaderProfiles 丢弃；保留头行内拦截。
+                                validator: (_: unknown, v: string) => {
+                                  const kl = (v || '').trim().toLowerCase()
+                                  if (kl && RESERVED_HEADER_KEYS.includes(kl)) {
+                                    return Promise.reject(new Error(`header key "${kl}" is reserved and cannot be overridden`))
+                                  }
+                                  return Promise.resolve()
+                                },
+                              },
+                            ]}
+                          >
+                            <Input placeholder="Header 名，如 User-Agent" style={{ width: 200 }} />
+                          </Form.Item>
+                          <Form.Item name={[h.name, 'v']} noStyle>
+                            <Input placeholder="值" style={{ width: 300 }} />
+                          </Form.Item>
+                          <DeleteOutlined onClick={() => rmH(h.name)} />
+                        </Space>
+                      ))}
+                      <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={() => addH({ k: '', v: '' })}>
+                        加请求头
+                      </Button>
+                    </>
+                  )}
+                </Form.List>
+              </div>
+            ))}
+            <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add({ name: '', headers: [{ k: '', v: '' }] })}>
+              添加组
+            </Button>
+          </>
+        )}
+      </Form.List>
+      <Form.Item noStyle shouldUpdate={(prev, cur) => prev.header_profiles !== cur.header_profiles}>
+        {() => {
+          const groups: HeaderProfileRow[] = form.getFieldValue('header_profiles') || []
+          return (
+            <Form.Item name="active_profile" label="当前生效组" style={{ marginTop: 12 }}>
+              <Select
+                allowClear
+                placeholder="不模拟（透传客户端请求头）"
+                options={[
+                  { value: '', label: '不模拟（透传客户端请求头）' },
+                  ...groups.filter((g) => g && g.name.trim() !== '').map((g) => ({ value: g.name.trim(), label: g.name.trim() })),
+                ]}
+              />
+            </Form.Item>
+          )
+        }}
+      </Form.Item>
+    </>
+  )
+}
+
 export default function ConfigCenter() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [keys, setKeys] = useState<Key[]>([])
@@ -208,7 +467,14 @@ export default function ConfigCenter() {
   const providerModels = models.filter((m) => m.provider_id === selected)
 
   return (
-    <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+    <Tabs
+      defaultActiveKey="providers"
+      items={[
+        {
+          key: 'providers',
+          label: '提供商',
+          children: (
+            <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
       <div style={{ width: 280, flexShrink: 0 }}>
         <Card
           title="提供商"
@@ -300,7 +566,12 @@ export default function ConfigCenter() {
           <Card><Empty description="左侧选择或新增一个提供商" /></Card>
         )}
       </div>
-    </div>
+            </div>
+          ),
+        },
+        { key: 'presets', label: '请求头模板', children: <HeaderPresetsTab /> },
+      ]}
+    />
   )
 }
 
@@ -319,9 +590,18 @@ function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, o
   const [form] = Form.useForm()
 
   const submit = async () => {
-    const values = await form.validateFields()
+    const values = await form.validateFields().catch(() => null)
+    if (!values) {
+      message.warning('请完善表单后再保存')
+      return
+    }
     try {
-      await api('PUT', `/api/providers/${p.id}`, values)
+      const payload = {
+        ...values,
+        header_profiles: stringifyHeaderProfiles(values.header_profiles),
+        active_profile: values.active_profile ?? '',
+      }
+      await api('PUT', `/api/providers/${p.id}`, payload)
       message.success('已保存')
       setOpen(false)
       onSaved()
@@ -348,7 +628,7 @@ function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, o
           <b>{p.name}</b>
         </Space>
         <Space onClick={(e) => e.stopPropagation()}>
-          <a onClick={() => { form.setFieldsValue(p); setOpen(true) }}>编辑</a>
+          <a onClick={() => { form.setFieldsValue({ ...p, header_profiles: toProfileRows(p.header_profiles) }); setOpen(true) }}>编辑</a>
           <Popconfirm
             title="删除将级联清理密钥/模型，确认？"
             onConfirm={async () => {
@@ -367,7 +647,10 @@ function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, o
       </div>
       <div style={{ color: '#8f8f8f', fontSize: 12, marginTop: 4 }}>
         <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.base_url}</div>
-        <div style={{ marginTop: 2 }}>{modelCount} 模型 · {keyCount} 密钥</div>
+        <div style={{ marginTop: 2 }}>
+          {modelCount} 模型 · {keyCount} 密钥
+          {p.active_profile ? <Tag style={{ marginLeft: 8 }}>模拟 {p.active_profile}</Tag> : null}
+        </div>
       </div>
 
       <Modal title={`编辑提供商 ${p.name}`} open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose>
@@ -393,6 +676,7 @@ function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, o
           </Form.Item>
           <Form.Item name="timeout_ms" label="首字响应超时(ms)"><InputNumber min={1000} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="remark" label="备注"><Input /></Form.Item>
+          <HeaderProfilesSection />
         </Form>
       </Modal>
     </Card>
@@ -404,9 +688,18 @@ function ProviderFormButton({ providers, onSaved }: { providers: Provider[]; onS
   const [form] = Form.useForm()
 
   const submit = async () => {
-    const values = await form.validateFields()
+    const values = await form.validateFields().catch(() => null)
+    if (!values) {
+      message.warning('请完善表单后再保存')
+      return
+    }
     try {
-      const created = await api<Provider>('POST', '/api/providers', values)
+      const payload = {
+        ...values,
+        header_profiles: stringifyHeaderProfiles(values.header_profiles),
+        active_profile: values.active_profile ?? '',
+      }
+      const created = await api<Provider>('POST', '/api/providers', payload)
       message.success('已创建')
       setOpen(false)
       form.resetFields()
@@ -446,6 +739,7 @@ function ProviderFormButton({ providers, onSaved }: { providers: Provider[]; onS
             <InputNumber min={1000} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="remark" label="备注"><Input /></Form.Item>
+          <HeaderProfilesSection />
         </Form>
       </Modal>
     </>
@@ -477,6 +771,8 @@ function ModelsTab({ provider, keys, models, onSaved }: {
         base_url: provider.base_url,
         api_key: keys[0].key_value,
         proxy_url: provider.proxy_url,
+        header_profiles: provider.header_profiles,
+        active_profile: provider.active_profile,
       })
       setAvailableModels(res.models.map((m) => m.id))
       if (res.models.length === 0) message.info('提供商返回了空模型列表')

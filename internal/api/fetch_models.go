@@ -8,6 +8,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/cloudomni/omnigate/internal/proxy"
+	"github.com/cloudomni/omnigate/internal/store"
 )
 
 // fetchModelItem 提供商 /v1/models 响应中单个模型的结构。
@@ -18,11 +21,12 @@ type fetchModelItem struct {
 }
 
 type fetchModelsReq struct {
-	BaseURL  string `json:"base_url"`
-	APIKey   string `json:"api_key"`
-	ProxyURL string `json:"proxy_url"`
+	BaseURL        string `json:"base_url"`
+	APIKey         string `json:"api_key"`
+	ProxyURL       string `json:"proxy_url"`
+	HeaderProfiles string `json:"header_profiles"`
+	ActiveProfile  string `json:"active_profile"`
 }
-
 type fetchModelsResp struct {
 	Models []fetchModelItem `json:"models"`
 }
@@ -44,7 +48,7 @@ func (s *Server) fetchProviderModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	models, err := callProviderModels(req.BaseURL, req.APIKey, req.ProxyURL)
+	models, err := callProviderModels(req.BaseURL, req.APIKey, req.ProxyURL, req.HeaderProfiles, req.ActiveProfile)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "fetch_failed", err.Error())
 		return
@@ -54,7 +58,9 @@ func (s *Server) fetchProviderModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // callProviderModels 向提供商发起 GET {baseURL}/v1/models 请求并解析返回的模型列表。
-func callProviderModels(baseURL, apiKey, proxyURL string) ([]fetchModelItem, error) {
+// headerProfiles/activeProfile 来自前端提供商表单当前编辑值：生效组存在时应用组头，否则保留 OmniGate/1.0 UA。
+func callProviderModels(baseURL, apiKey, proxyURL, headerProfiles, activeProfile string) ([]fetchModelItem, error) {
+	ident := store.Provider{Name: "fetch-models", HeaderProfiles: headerProfiles, ActiveProfile: activeProfile}
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	// 智能拼接路径，避免重复 /v1
@@ -82,7 +88,10 @@ func callProviderModels(baseURL, apiKey, proxyURL string) ([]fetchModelItem, err
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Accept", "application/json")
-	httpReq.Header.Set("User-Agent", "OmniGate/1.0")
+	if len(proxy.HeaderProfileFor(ident)) == 0 {
+		httpReq.Header.Set("User-Agent", "OmniGate/1.0")
+	}
+	proxy.ApplyUpstreamIdentity(httpReq, ident, nil)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {

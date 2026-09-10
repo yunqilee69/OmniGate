@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -11,12 +12,36 @@ import (
 )
 
 type providerCreateReq struct {
-	Name      string `json:"name"`
-	BaseURL   string `json:"base_url"`
-	Protocol  string `json:"protocol"`
-	ProxyURL  string `json:"proxy_url"`
-	TimeoutMs int    `json:"timeout_ms"`
-	Remark    string `json:"remark"`
+	Name           string `json:"name"`
+	BaseURL        string `json:"base_url"`
+	Protocol       string `json:"protocol"`
+	ProxyURL       string `json:"proxy_url"`
+	TimeoutMs      int    `json:"timeout_ms"`
+	Remark         string `json:"remark"`
+	HeaderProfiles string `json:"header_profiles"`
+	ActiveProfile  string `json:"active_profile"`
+}
+
+// validateHeaderProfiles 校验请求头组 JSON 与生效组名（create/update 共用）；
+// 返回错误即 400 文案。active_profile 必须为空或指向已定义组；保留头不允许出现在组内。
+func validateHeaderProfiles(headerProfiles, activeProfile string) error {
+	profiles, err := store.ParseHeaderProfiles(headerProfiles)
+	if err != nil {
+		return err
+	}
+	names := make(map[string]bool, len(profiles))
+	for _, p := range profiles {
+		names[p.Name] = true
+		for k := range p.Headers {
+			if store.ReservedHeaderKeys[strings.ToLower(k)] {
+				return fmt.Errorf("header key %q is reserved and cannot be overridden", k)
+			}
+		}
+	}
+	if activeProfile != "" && !names[activeProfile] {
+		return fmt.Errorf("active_profile %q does not match any header profile group", activeProfile)
+	}
+	return nil
 }
 
 func (s *Server) listProviders(w http.ResponseWriter, _ *http.Request) {
@@ -51,9 +76,14 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	if req.TimeoutMs <= 0 {
 		req.TimeoutMs = 120000
 	}
+	if err := validateHeaderProfiles(req.HeaderProfiles, req.ActiveProfile); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 	p := store.Provider{
 		Name: req.Name, BaseURL: req.BaseURL, Protocol: req.Protocol,
 		ProxyURL: req.ProxyURL, TimeoutMs: req.TimeoutMs, Remark: req.Remark,
+		HeaderProfiles: req.HeaderProfiles, ActiveProfile: req.ActiveProfile,
 	}
 	if err := s.store.DB.Create(&p).Error; err != nil {
 		if isUniqueErr(err) {
@@ -67,12 +97,14 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 }
 
 type providerUpdateReq struct {
-	Name      *string `json:"name"`
-	BaseURL   *string `json:"base_url"`
-	Protocol  *string `json:"protocol"`
-	ProxyURL  *string `json:"proxy_url"`
-	TimeoutMs *int    `json:"timeout_ms"`
-	Remark    *string `json:"remark"`
+	Name           *string `json:"name"`
+	BaseURL        *string `json:"base_url"`
+	Protocol       *string `json:"protocol"`
+	ProxyURL       *string `json:"proxy_url"`
+	TimeoutMs      *int    `json:"timeout_ms"`
+	Remark         *string `json:"remark"`
+	HeaderProfiles *string `json:"header_profiles"`
+	ActiveProfile  *string `json:"active_profile"`
 }
 
 func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
@@ -131,6 +163,26 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Remark != nil {
 		updates["remark"] = *req.Remark
+	}
+	if req.HeaderProfiles != nil || req.ActiveProfile != nil {
+		// 合并校验：单改组或单改生效组时都要对照另一侧的最终状态。
+		hp, ap := p.HeaderProfiles, p.ActiveProfile
+		if req.HeaderProfiles != nil {
+			hp = *req.HeaderProfiles
+		}
+		if req.ActiveProfile != nil {
+			ap = *req.ActiveProfile
+		}
+		if err := validateHeaderProfiles(hp, ap); err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+	}
+	if req.HeaderProfiles != nil {
+		updates["header_profiles"] = *req.HeaderProfiles
+	}
+	if req.ActiveProfile != nil {
+		updates["active_profile"] = *req.ActiveProfile
 	}
 	if len(updates) == 0 {
 		writeErr(w, http.StatusBadRequest, "bad_request", "no fields to update")

@@ -319,6 +319,7 @@ func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[s
 	}
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("Authorization", "Bearer "+att.Key.KeyValue)
+	ApplyUpstreamIdentity(upReq, att.Provider, r)
 
 	resp, err := h.clientForProvider(att.Provider.ID).Do(upReq)
 	if err != nil {
