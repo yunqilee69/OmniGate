@@ -123,7 +123,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 	var reqSnap string
 	if captureOn {
 		reqSnap = string(body)
-		cw = newCaptureWriter(w, 1<<20)
+		cw = newCaptureWriter(w, 1<<20, formatHeaders(r.Header))
 		w = cw
 	}
 
@@ -175,6 +175,9 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 						h.record(res, rt)
 						h.writeLog(start, requestID, routeName, fallbackAtt, false,
 							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
+						if cw != nil {
+							cw.setRespHeaders(formatHeaders(res.respHeaders))
+						}
 						h.maybeCapture(requestID, routeName, reqSnap, cw)
 						return
 					}
@@ -218,6 +221,9 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 			"all attempts failed after "+strconv.Itoa(priorFails)+" retries (error sequence: "+strings.Join(errCodes, " → ")+")", nil)
 		h.maybeCapture(requestID, routeName, reqSnap, cw)
 		return
+	}
+	if cw != nil && last.att.Model.ID != 0 {
+		cw.setRespHeaders(formatHeaders(last.respHeaders))
 	}
 	h.maybeCapture(requestID, routeName, reqSnap, cw)
 }
@@ -263,6 +269,7 @@ func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[s
 		}
 		return res
 	}
+	res.respHeaders = resp.Header
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 		_ = resp.Body.Close()

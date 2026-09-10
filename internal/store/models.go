@@ -40,14 +40,14 @@ type Model struct {
 	ID            int64   `json:"id" gorm:"primaryKey;autoIncrement"`
 	ProviderID    int64   `json:"provider_id" gorm:"not null;uniqueIndex:idx_model_provider_name"`
 	Name          string  `json:"name" gorm:"size:191;not null;uniqueIndex:idx_model_provider_name"`
-	Type          string  `json:"type" gorm:"size:32;not null;default:'chat'"` // chat | embedding | rerank
+	Type          string  `json:"type" gorm:"size:32;not null;default:'chat'"`          // chat | embedding | rerank
 	Protocol      string  `json:"protocol" gorm:"size:32;not null;default:completions"` // completions | responses | messages
 	ApiPath       string  `json:"api_path" gorm:"size:512;not null;default:''"`         // 自定义 API 路径覆盖
 	BodyOverride  string  `json:"body_override" gorm:"type:text;not null;default:''"`   // 请求体覆盖 JSON
-	InputPrice    float64 `json:"input_price" gorm:"not null;default:0"`               // 每 1M prompt token 价格
-	OutputPrice   float64 `json:"output_price" gorm:"not null;default:0"`              // 每 1M completion token 价格
-	PriceCurrency string  `json:"price_currency" gorm:"size:8;not null;default:'USD'"` // 价格币种：USD | CNY；计费时统一折算为 USD 入库
-	Status        string  `json:"status" gorm:"size:32;not null;default:active"`       // active | cooldown | disabled
+	InputPrice    float64 `json:"input_price" gorm:"not null;default:0"`                // 每 1M prompt token 价格
+	OutputPrice   float64 `json:"output_price" gorm:"not null;default:0"`               // 每 1M completion token 价格
+	PriceCurrency string  `json:"price_currency" gorm:"size:8;not null;default:'USD'"`  // 价格币种：USD | CNY；计费时统一折算为 USD 入库
+	Status        string  `json:"status" gorm:"size:32;not null;default:active"`        // active | cooldown | disabled
 	FailCount     int     `json:"fail_count" gorm:"not null;default:0"`
 	CooldownUntil int64   `json:"cooldown_until" gorm:"not null;default:0"`
 	DisableReason string  `json:"disable_reason" gorm:"size:512;not null;default:''"`
@@ -65,16 +65,16 @@ type ModelKey struct {
 // ModelKeyBan 模型-密钥组合禁用记录（细粒度熔断）。
 // 当某个模型+密钥组合出现错误时，短暂或永久禁用该组合，而不影响其他组合。
 type ModelKeyBan struct {
-	ID            int64  `json:"id" gorm:"primaryKey;autoIncrement"`
-	ModelID       int64  `json:"model_id" gorm:"not null;uniqueIndex:idx_model_key_ban"`
-	KeyID         int64  `json:"key_id" gorm:"not null;uniqueIndex:idx_model_key_ban"`
-	Status        string `json:"status" gorm:"size:32;not null;default:temp_banned"` // temp_banned | perm_banned
-	BannedUntil   int64  `json:"banned_until" gorm:"not null;default:0"`             // 临时禁用到期时间（unix秒），永久禁用时为0
-	BanReason     string `json:"ban_reason" gorm:"size:512;not null;default:''"`
-	LastError     string `json:"last_error" gorm:"size:512;not null;default:''"`
-	FailCount     int    `json:"fail_count" gorm:"not null;default:0"` // 连续失败次数
-	CreatedAt     int64  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt     int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	ID          int64  `json:"id" gorm:"primaryKey;autoIncrement"`
+	ModelID     int64  `json:"model_id" gorm:"not null;uniqueIndex:idx_model_key_ban"`
+	KeyID       int64  `json:"key_id" gorm:"not null;uniqueIndex:idx_model_key_ban"`
+	Status      string `json:"status" gorm:"size:32;not null;default:temp_banned"` // temp_banned | perm_banned
+	BannedUntil int64  `json:"banned_until" gorm:"not null;default:0"`             // 临时禁用到期时间（unix秒），永久禁用时为0
+	BanReason   string `json:"ban_reason" gorm:"size:512;not null;default:''"`
+	LastError   string `json:"last_error" gorm:"size:512;not null;default:''"`
+	FailCount   int    `json:"fail_count" gorm:"not null;default:0"` // 连续失败次数
+	CreatedAt   int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt   int64  `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 // Route 逻辑路由（客户端请求的 modelId）。
@@ -114,9 +114,9 @@ type MCPBackend struct {
 
 // RouteMcpTarget 路由 ↔ MCPBackend 多对多关联。
 type RouteMcpTarget struct {
-	ID            int64 `json:"id" gorm:"primaryKey;autoIncrement"`
-	RouteID       int64 `json:"route_id" gorm:"not null;index:idx_rmt_route;uniqueIndex:idx_rmt_route_mcp"`
-	MCPBackendID  int64 `json:"mcp_backend_id" gorm:"not null;uniqueIndex:idx_rmt_route_mcp"`
+	ID           int64 `json:"id" gorm:"primaryKey;autoIncrement"`
+	RouteID      int64 `json:"route_id" gorm:"not null;index:idx_rmt_route;uniqueIndex:idx_rmt_route_mcp"`
+	MCPBackendID int64 `json:"mcp_backend_id" gorm:"not null;uniqueIndex:idx_rmt_route_mcp"`
 }
 
 // AppConfig 运行层配置（key-value，value 为 JSON 编码）。
@@ -158,7 +158,7 @@ type VKRateLimit struct {
 }
 
 func (VKRateLimit) TableName() string { return "vk_rate_limits" }
-func (AppConfig) TableName() string { return "app_config" }
+func (AppConfig) TableName() string   { return "app_config" }
 
 // RequestLog 请求日志（统计事实表，只增不改；表结构上不存在任何请求内容字段）。
 type RequestLog struct {
@@ -186,12 +186,15 @@ type RequestLog struct {
 }
 
 // ContentLog 内容日志（可选；全局与路由白名单开关均开启时才写入）。
+// 请求头/响应头按 "Key: value" 多行文本存储，敏感头值脱敏。
 type ContentLog struct {
-	RequestID    string `json:"request_id" gorm:"primaryKey;column:request_id;size:64"`
-	Route        string `json:"route" gorm:"size:191;not null"`
-	RequestBody  string `json:"request_body" gorm:"type:text;not null"`
-	ResponseBody string `json:"response_body" gorm:"type:text;not null"`
-	CreatedAt    int64  `json:"created_at" gorm:"autoCreateTime;index"` // 保留期清理按时间扫描
+	RequestID       string `json:"request_id" gorm:"primaryKey;column:request_id;size:64"`
+	Route           string `json:"route" gorm:"size:191;not null"`
+	RequestHeaders  string `json:"request_headers" gorm:"type:text;not null;default:''"`
+	RequestBody     string `json:"request_body" gorm:"type:text;not null"`
+	ResponseHeaders string `json:"response_headers" gorm:"type:text;not null;default:''"`
+	ResponseBody    string `json:"response_body" gorm:"type:text;not null"`
+	CreatedAt       int64  `json:"created_at" gorm:"autoCreateTime;index"` // 保留期清理按时间扫描
 }
 
 // RequestAttempt 单次尝试的明细记录（含中间失败与最终成功）。request_log 仍记最终结果与总重试次数，

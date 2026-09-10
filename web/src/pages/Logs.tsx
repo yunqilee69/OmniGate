@@ -30,6 +30,7 @@ interface Log {
 
 const statusTag = (s: string) => {
   if (s === 'success') return <StatusTag tone="ok">成功</StatusTag>
+  if (s === 'pending') return <StatusTag tone="processing">转发中</StatusTag>
   if (s === 'client_error') return <StatusTag tone="mute">客户端错误</StatusTag>
   if (s === 'cooldown') return <StatusTag tone="warn">冷却</StatusTag>
   return <StatusTag tone="error">错误</StatusTag>
@@ -43,12 +44,15 @@ export default function Logs() {
   const [routes, setRoutes] = useState<{ id: number; name: string }[]>([])
   const [filterRoute, setFilterRoute] = useState<string | undefined>()
   const [filterStatus, setFilterStatus] = useState<string | undefined>()
-  const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(6, 'day').startOf('day'), dayjs()])
+  // null = 未手动圈定范围，默认"最近 7 天（含今天）"；每次 load 动态计算，保证刷新能看到最新日志
+  const [range, setRange] = useState<[Dayjs, Dayjs] | null>(null)
 
   const load = async (p = page) => {
+    const [start, end] = range ?? [dayjs().subtract(6, 'day'), dayjs()]
     const q = new URLSearchParams({
-      from: String(range[0].unix()),
-      to: String(range[1].unix()),
+      // 按天粒度过滤：起止分别对齐到当日 00:00:00 / 23:59:59
+      from: String(start.startOf('day').unix()),
+      to: String(end.endOf('day').unix()),
       page: String(p),
       size: '50',
     })
@@ -81,9 +85,13 @@ export default function Logs() {
             { value: 'success', label: '成功' },
             { value: 'error', label: '错误' },
             { value: 'client_error', label: '客户端错误' },
+            { value: 'pending', label: '转发中' },
           ]}
         />
-        <DatePicker.RangePicker value={range} onChange={(v) => v?.[0] && v[1] && setRange([v[0], v[1]])} />
+        <DatePicker.RangePicker
+          value={range ?? [dayjs().subtract(6, 'day'), dayjs()]}
+          onChange={(v) => setRange(v?.[0] && v[1] ? [v[0], v[1]] : null)}
+        />
         <Button onClick={() => load()}>刷新</Button>
       </Space>
       <Table<Log>

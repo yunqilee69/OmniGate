@@ -70,6 +70,7 @@ func (s *Server) Router() http.Handler {
 		ar.Get("/stats/timeseries", s.getStatsTimeseries)
 		ar.Get("/logs", s.getLogs)
 		ar.Get("/logs/{request_id}/attempts", s.getLogAttempts)
+		ar.Get("/logs/{request_id}/content", s.getLogContent)
 		ar.Get("/logs/{request_id}", s.getLogByID)
 
 		ar.Post("/maintenance/cleanup", s.postMaintenanceCleanup)

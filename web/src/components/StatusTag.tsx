@@ -7,6 +7,8 @@ const tones: Record<string, CSSProperties> = {
   warn: { color: '#ab570a', borderColor: '#ffefcf', background: '#ffffff' },
   error: { color: '#ee0000', borderColor: 'rgba(238, 0, 0, 0.25)', background: '#ffffff' },
   mute: { color: '#8f8f8f', borderColor: '#ebebeb', background: '#ffffff' },
+  // 进行中（请求转发中等中间态）：实心蓝底，与静态语义色明确区分
+  processing: { color: '#ffffff', borderColor: '#0070f3', background: '#0070f3' },
 }
 
 export default function StatusTag({ tone, children }: { tone: keyof typeof tones; children: React.ReactNode }) {

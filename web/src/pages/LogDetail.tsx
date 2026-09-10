@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Breadcrumb, Button, Card, Col, Descriptions, Row, Space, Spin, Table, Tag, Tooltip, Typography, message } from 'antd'
+import { Breadcrumb, Button, Card, Col, Descriptions, Row, Space, Spin, Table, Tabs, Tag, Tooltip, Typography, message } from 'antd'
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import { useNavigate, useParams, Link } from 'react-router-dom'
 import dayjs from 'dayjs'
@@ -50,22 +50,30 @@ interface DetailResp {
   attempts: Attempt[]
 }
 
+interface ContentResp {
+  request_headers: string
+  request_body: string
+  response_headers: string
+  response_body: string
+}
+
 export default function LogDetail() {
   const { request_id } = useParams<{ request_id: string }>()
   const nav = useNavigate()
   const [data, setData] = useState<DetailResp | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  const [content, setContent] = useState<string | null>(null)
+  const [content, setContent] = useState<ContentResp | null>(null)
+  const [contentHint, setContentHint] = useState<string | null>(null)
 
   useEffect(() => {
     if (!request_id) return
-    setData(null); setErr(null); setContent(null)
+    setData(null); setErr(null); setContent(null); setContentHint(null)
     api<DetailResp>('GET', `/api/logs/${request_id}`)
       .then((d) => setData(d))
       .catch((e) => setErr(e.message))
-    api<{ request_body: string; response_body: string }>('GET', `/api/logs/${request_id}/content`)
-      .then((c) => setContent(`请求体:\n${c.request_body}\n\n响应体:\n${c.response_body}`))
-      .catch(() => setContent(null))
+    api<ContentResp>('GET', `/api/logs/${request_id}/content`)
+      .then(setContent)
+      .catch((e) => setContentHint(e.message))
   }, [request_id])
 
   if (err) {
@@ -94,7 +102,7 @@ export default function LogDetail() {
             ]} />
           </Space>
         </Col>
-        <Col><StatusTag tone={log.status === 'success' ? 'ok' : log.status === 'error' ? 'error' : 'mute'}>{log.status}</StatusTag></Col>
+        <Col>{statusTag(log.status)}</Col>
       </Row>
 
       <Card title="请求详情" style={{ marginBottom: 16 }}>
@@ -161,20 +169,48 @@ export default function LogDetail() {
 
       <Card title="请求/响应内容捕获">
         {content ? (
-          <pre style={{
-            whiteSpace: 'pre-wrap', background: '#ffffff', border: '1px solid #ebebeb',
-            padding: 16, borderRadius: 12, maxHeight: 480, overflow: 'auto', fontSize: 12, margin: 0,
-          }}>{content}</pre>
+          <ContentTabs content={content} />
         ) : (
-          <Typography.Text type="secondary">内容捕获未开启或该请求无捕获内容</Typography.Text>
+          <Typography.Text type="secondary">{contentHint || '内容捕获未开启或该请求无捕获内容'}</Typography.Text>
         )}
       </Card>
     </div>
   )
 }
 
+// prettyBody：能解析为 JSON 时美化缩进展示，原样失败则退回原文。
+const prettyBody = (s: string) => {
+  try {
+    return JSON.stringify(JSON.parse(s), null, 2)
+  } catch {
+    return s
+  }
+}
+
+const preStyle: React.CSSProperties = {
+  whiteSpace: 'pre-wrap', background: '#ffffff', border: '1px solid #ebebeb',
+  padding: 16, borderRadius: 12, maxHeight: 480, overflow: 'auto', fontSize: 12, margin: 0,
+}
+
+function ContentTabs({ content }: { content: ContentResp }) {
+  const items = [
+    { key: 'req_headers', label: '请求头', children: <pre style={preStyle}>{content.request_headers || '（无）'}</pre> },
+    {
+      key: 'req_body', label: '请求体',
+      children: <pre style={preStyle}>{content.request_body ? prettyBody(content.request_body) : '（无）'}</pre>,
+    },
+    { key: 'resp_headers', label: '响应头', children: <pre style={preStyle}>{content.response_headers || '（无）'}</pre> },
+    {
+      key: 'resp_body', label: '响应体',
+      children: <pre style={preStyle}>{content.response_body ? prettyBody(content.response_body) : '（无）'}</pre>,
+    },
+  ]
+  return <Tabs defaultActiveKey="req_headers" items={items} />
+}
+
 function statusTag(s: string) {
   if (s === 'success') return <StatusTag tone="ok">成功</StatusTag>
+  if (s === 'pending') return <StatusTag tone="processing">转发中</StatusTag>
   if (s === 'client_error') return <StatusTag tone="mute">客户端错误</StatusTag>
   if (s === 'cooldown') return <StatusTag tone="warn">冷却</StatusTag>
   return <StatusTag tone="error">错误</StatusTag>

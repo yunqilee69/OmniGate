@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -115,7 +116,8 @@ type attemptResult struct {
 	latencyMs   int64
 	retryAfterS int
 	streamBroke bool
-	errorBody   string // 上游错误响应体摘要（< 2KB）；仅错误路径填充
+	errorBody   string      // 上游错误响应体摘要（< 2KB）；仅错误路径填充
+	respHeaders http.Header // 上游响应头快照；内容捕获开启时随 content_log 落库
 }
 
 func openAIError(w http.ResponseWriter, status int, code, msg string, detail any) {
@@ -299,7 +301,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var reqSnap string
 	if captureOn {
 		reqSnap = string(body)
-		cw = newCaptureWriter(w, 1<<20)
+		cw = newCaptureWriter(w, 1<<20, formatHeaders(r.Header))
 		w = cw
 	}
 
@@ -335,6 +337,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						h.record(res, rt)
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
 							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
+						if cw != nil {
+							cw.setRespHeaders(formatHeaders(res.respHeaders))
+						}
 						h.maybeCapture(requestID, routeName, reqSnap, cw)
 						return
 					}
@@ -403,6 +408,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(errCodes) > 1 {
 		slog.Info("all attempts exhausted", "route", routeName,
 			"attempts", len(errCodes), "errors", errCodes)
+	}
+	if cw != nil && last.att.Model.ID != 0 {
+		cw.setRespHeaders(formatHeaders(last.respHeaders))
 	}
 	h.maybeCapture(requestID, routeName, reqSnap, cw)
 }
@@ -517,6 +525,7 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 		}
 		return res
 	}
+	res.respHeaders = resp.Header
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 		_ = resp.Body.Close()
@@ -940,16 +949,21 @@ func containsStr(s []string, v string) bool {
 }
 
 type captureWriter struct {
-	w        http.ResponseWriter
-	mu       sync.Mutex
-	buf      []byte
-	limit    int
-	overflow bool
+	w           http.ResponseWriter
+	mu          sync.Mutex
+	buf         []byte
+	limit       int
+	overflow    bool
+	reqHeaders  string // 请求头快照（已格式化+脱敏），随响应体一并落 content_log
+	respHeaders string // 上游响应头快照（已格式化+脱敏）；attempt 完成后回填
 }
 
-func newCaptureWriter(w http.ResponseWriter, limit int) *captureWriter {
-	return &captureWriter{w: w, limit: limit}
+func newCaptureWriter(w http.ResponseWriter, limit int, reqHeaders string) *captureWriter {
+	return &captureWriter{w: w, limit: limit, reqHeaders: reqHeaders}
 }
+
+// setRespHeaders 回填上游响应头（格式化+脱敏后的文本）。在 maybeCapture 之前调用。
+func (cw *captureWriter) setRespHeaders(s string) { cw.respHeaders = s }
 
 func (cw *captureWriter) Header() http.Header { return cw.w.Header() }
 
@@ -976,20 +990,67 @@ func (cw *captureWriter) Body() string {
 	return string(cw.buf)
 }
 
+// sensitiveHeaderFragments 命中任一子串（小写比较）的头视为敏感，值需脱敏。
+var sensitiveHeaderFragments = []string{"auth", "key", "token", "secret", "cookie"}
+
+func isSensitiveHeader(k string) bool {
+	kl := strings.ToLower(k)
+	for _, frag := range sensitiveHeaderFragments {
+		if strings.Contains(kl, frag) {
+			return true
+		}
+	}
+	return false
+}
+
+// maskHeaderValue 保留前 8 个字符供辨认，其余以 **** 隐藏。
+func maskHeaderValue(v string) string {
+	if len(v) <= 8 {
+		return "****"
+	}
+	return v[:8] + "****"
+}
+
+// formatHeaders 将 HTTP 头格式化为 "Key: value" 多行文本（键排序保证稳定输出）。
+func formatHeaders(h http.Header) string {
+	if len(h) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(h))
+	for k := range h {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		v := h.Get(k)
+		if isSensitiveHeader(k) {
+			v = maskHeaderValue(v)
+		}
+		b.WriteString(k)
+		b.WriteString(": ")
+		b.WriteString(v)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 func (h *Handler) maybeCapture(requestID, route, reqBody string, cw *captureWriter) {
 	if cw == nil {
 		return
 	}
 	respBody := cw.Body()
 	err := h.db.DB.Exec(`
-INSERT INTO content_log (request_id, route, request_body, response_body, created_at)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO content_log (request_id, route, request_headers, request_body, response_headers, response_body, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(request_id) DO UPDATE SET
   route=excluded.route,
+  request_headers=excluded.request_headers,
   request_body=excluded.request_body,
+  response_headers=excluded.response_headers,
   response_body=excluded.response_body,
   created_at=excluded.created_at`,
-		requestID, route, reqBody, respBody, time.Now().Unix(),
+		requestID, route, cw.reqHeaders, reqBody, cw.respHeaders, respBody, time.Now().Unix(),
 	).Error
 	if err != nil {
 		slog.Warn("write content_log failed", "err", err, "request_id", requestID)
@@ -1044,7 +1105,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 	var reqSnap string
 	if captureOn {
 		reqSnap = string(body)
-		cw = newCaptureWriter(w, 1<<20)
+		cw = newCaptureWriter(w, 1<<20, formatHeaders(r.Header))
 		w = cw
 	}
 
@@ -1104,6 +1165,9 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 						h.record(res, rt)
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
 							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
+						if cw != nil {
+							cw.setRespHeaders(formatHeaders(res.respHeaders))
+						}
 						h.maybeCapture(requestID, routeName, reqSnap, cw)
 						return
 					}
@@ -1151,6 +1215,9 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 		h.maybeCapture(requestID, routeName, reqSnap, cw)
 		return
 	}
+	if cw != nil && last.att.Model.ID != 0 {
+		cw.setRespHeaders(formatHeaders(last.respHeaders))
+	}
 	h.maybeCapture(requestID, routeName, reqSnap, cw)
 }
 
@@ -1197,6 +1264,7 @@ func (h *Handler) nativeAttempt(w http.ResponseWriter, r *http.Request, reqBody 
 		}
 		return res
 	}
+	res.respHeaders = resp.Header
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 		_ = resp.Body.Close()

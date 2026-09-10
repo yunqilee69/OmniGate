@@ -90,6 +90,61 @@ func TestContentCaptureOnRecordsRequestAndResponse(t *testing.T) {
 	}
 }
 
+// TestContentCaptureRecordsHeaders：内容捕获需记录请求头与上游响应头；敏感头值（Authorization 等）脱敏。
+func TestContentCaptureRecordsHeaders(t *testing.T) {
+	st, rtm := newStackWithRTM(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Upstream-Trace", "trace-abc-123")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":2}}`))
+	}))
+	defer up.Close()
+
+	p := store.Provider{Name: "hdr-prov", BaseURL: up.URL}
+	st.DB.Create(&p)
+	m := store.Model{ProviderID: p.ID, Name: "m"}
+	st.DB.Create(&m)
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-1", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
+	rt := store.Route{Name: "glm-pool"}
+	st.DB.Create(&rt)
+	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
+
+	if err := rtm.Update(map[string]json.RawMessage{
+		"capture.enabled": json.RawMessage(`true`),
+	}); err != nil {
+		t.Fatalf("enable capture: %v", err)
+	}
+
+	// 带 Authorization 头调用（该栈无 VK 中间件，头原样到达处理器被捕获）
+	resp := postWithAuth(t, hWithRTM(st, rtm), chatBody(false), "vk-secret-token-abcdefgh")
+	if resp.StatusCode != 200 {
+		t.Fatalf("call should succeed, got %d", resp.StatusCode)
+	}
+
+	var cl store.ContentLog
+	st.DB.Order("created_at DESC").First(&cl)
+	if cl.RequestID == "" {
+		t.Fatalf("content_log row missing")
+	}
+	// 请求头：普通头原样保留
+	if !strings.Contains(cl.RequestHeaders, "Content-Type: application/json") {
+		t.Fatalf("request_headers missing Content-Type: %q", cl.RequestHeaders)
+	}
+	// 请求头：Authorization 脱敏为前 8 字符 + ****
+	if !strings.Contains(cl.RequestHeaders, "Authorization: Bearer v****") {
+		t.Fatalf("request_headers Authorization should be masked: %q", cl.RequestHeaders)
+	}
+	if strings.Contains(cl.RequestHeaders, "vk-secret-token-abcdefgh") {
+		t.Fatalf("request_headers must not contain raw credential: %q", cl.RequestHeaders)
+	}
+	// 响应头：来自上游（而非网关自构头）
+	if !strings.Contains(cl.ResponseHeaders, "X-Upstream-Trace: trace-abc-123") {
+		t.Fatalf("response_headers missing upstream header: %q", cl.ResponseHeaders)
+	}
+}
+
 // TestContentCaptureRouteWhitelist：白名单生效（不在列表的路由不被捕获）。
 func TestContentCaptureRouteWhitelist(t *testing.T) {
 	st, rtm := newStackWithRTM(t)
