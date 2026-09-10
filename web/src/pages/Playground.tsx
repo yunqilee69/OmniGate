@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import {
-  Button, Card, Collapse, Input, InputNumber, Select, Space, Tag, Tooltip, Typography, message,
+  Button, Card, Collapse, Input, InputNumber, Select, Space, Tabs, Tag, Tooltip, Typography, message,
 } from 'antd'
 import { ClearOutlined, SendOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
@@ -11,6 +11,7 @@ interface Route {
   id: number
   name: string
   endpoint: string
+  targets?: { model_id: number }[]
 }
 
 interface VirtualKey {
@@ -18,6 +19,25 @@ interface VirtualKey {
   key_value: string
   name: string
   status: string
+}
+
+interface ModelInfo {
+  id: number
+  type: string
+}
+
+interface EmbeddingResp {
+  data?: { index: number; embedding: number[] }[]
+  usage?: { prompt_tokens?: number; total_tokens?: number }
+}
+
+interface RerankResp {
+  results?: { index: number; relevance_score: number }[]
+}
+
+interface ImageResp {
+  data?: { url?: string; b64_json?: string }[]
+  usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number }
 }
 
 interface ToolCall {
@@ -220,15 +240,91 @@ async function throwHttpError(res: Response): Promise<never> {
   throw new Error(msg)
 }
 
+// 路由选择器：按家族过滤后的路由列表；familyLabel 用于占位与空态文案。
+function RouteSelect({ routes, value, onChange, familyLabel }: {
+  routes: Route[]
+  value?: string
+  onChange: (v?: string) => void
+  familyLabel: string
+}) {
+  return (
+    <Select
+      showSearch
+      style={{ width: '100%', marginTop: 4 }}
+      placeholder={`选择${familyLabel}路由`}
+      value={value}
+      onChange={onChange}
+      options={routes.map((r) => ({ value: r.name, label: r.name }))}
+      notFoundContent={
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          暂无{familyLabel}路由，<Link to="/routes">去创建</Link>
+        </Typography.Text>
+      }
+    />
+  )
+}
+
+// 虚拟密钥选择器：四个测试 Tab 共用同一选中值。
+function VkSelect({ vks, value, onChange }: {
+  vks: VirtualKey[]
+  value?: number
+  onChange: (v?: number) => void
+}) {
+  return (
+    <Select
+      showSearch
+      style={{ width: '100%', marginTop: 4 }}
+      placeholder="选择虚拟密钥"
+      value={value}
+      onChange={onChange}
+      options={vks.map((k) => ({ value: k.id, label: `${k.name}（${k.key_value}）` }))}
+      notFoundContent={
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          暂无可用虚拟密钥，<Link to="/keys">去创建</Link>
+        </Typography.Text>
+      }
+    />
+  )
+}
+
 export default function PlaygroundPage() {
   const [routes, setRoutes] = useState<Route[]>([])
   const [vks, setVks] = useState<VirtualKey[]>([])
+  const [models, setModels] = useState<ModelInfo[]>([])
   const [chatRoute, setChatRoute] = useState<string>()
   const [vkId, setVkId] = useState<number>()
   const [vkKey, setVkKey] = useState('')
   const [mcpRoutes, setMcpRoutes] = useState<string[]>([])
   const [tools, setTools] = useState<McpToolInfo[]>([])
   const [toolsLoading, setToolsLoading] = useState(false)
+
+  const [tab, setTab] = useState('chat')
+
+  // Embedding 测试
+  const [embRoute, setEmbRoute] = useState<string>()
+  const [embText, setEmbText] = useState('')
+  const [embBusy, setEmbBusy] = useState(false)
+  const [embMs, setEmbMs] = useState<number | null>(null)
+  const [embResult, setEmbResult] = useState<EmbeddingResp | null>(null)
+
+  // Rerank 测试
+  const [rrkRoute, setRrkRoute] = useState<string>()
+  const [rrkQuery, setRrkQuery] = useState('')
+  const [rrkDocs, setRrkDocs] = useState('')
+  const [rrkTopN, setRrkTopN] = useState<number | null>(null)
+  const [rrkBusy, setRrkBusy] = useState(false)
+  const [rrkMs, setRrkMs] = useState<number | null>(null)
+  const [rrkDocArr, setRrkDocArr] = useState<string[]>([])
+  const [rrkResult, setRrkResult] = useState<RerankResp | null>(null)
+
+  // 生图测试
+  const [imgRoute, setImgRoute] = useState<string>()
+  const [imgPrompt, setImgPrompt] = useState('')
+  const [imgSize, setImgSize] = useState<string>()
+  const [imgN, setImgN] = useState(1)
+  const [imgBusy, setImgBusy] = useState(false)
+  const [imgMs, setImgMs] = useState<number | null>(null)
+  const [imgResult, setImgResult] = useState<ImageResp | null>(null)
 
   const [systemPrompt, setSystemPrompt] = useState('')
   const [temperature, setTemperature] = useState<number | null>(null)
@@ -243,9 +339,25 @@ export default function PlaygroundPage() {
   // MCP 路由 → 会话 ID（initialize 响应头 MCP-Session-Id）；动态增删故用 Map
   const mcpSessions = useRef<Map<string, string>>(new Map())
 
-  const chatRoutes = useMemo(() => routes.filter((r) => r.endpoint === 'completions'), [routes])
   const mcpRouteOptions = useMemo(() => routes.filter((r) => r.endpoint === 'mcp'), [routes])
   const activeVks = useMemo(() => vks.filter((k) => k.status === 'active'), [vks])
+
+  // 路由 → 模型类型集合：按家族过滤路由（targets × models 联查；无 type 视为 chat）
+  const modelsById = useMemo(() => new Map(models.map((m) => [m.id, m])), [models])
+  const routeFamilies = useMemo(() => {
+    const map: Record<string, Set<string>> = {}
+    for (const r of routes) {
+      const set = new Set<string>()
+      for (const t of r.targets ?? []) {
+        set.add(modelsById.get(t.model_id)?.type || 'chat')
+      }
+      map[r.name] = set
+    }
+    return map
+  }, [routes, modelsById])
+  const routesFor = (family: string) =>
+    routes.filter((r) => r.endpoint !== 'mcp' && routeFamilies[r.name]?.has(family))
+  const chatRoutes = useMemo(() => routesFor('chat'), [routesFor])
 
   const toolMap = useMemo(() => {
     const m: Record<string, McpToolInfo> = {}
@@ -263,10 +375,15 @@ export default function PlaygroundPage() {
   )
 
   useEffect(() => {
-    Promise.all([api<Route[]>('GET', '/api/routes'), api<VirtualKey[]>('GET', '/api/virtual-keys')])
-      .then(([rs, ks]) => {
+    Promise.all([
+      api<Route[]>('GET', '/api/routes'),
+      api<VirtualKey[]>('GET', '/api/virtual-keys'),
+      api<ModelInfo[]>('GET', '/api/models'),
+    ])
+      .then(([rs, ks, ms]) => {
         setRoutes(rs)
         setVks(ks)
+        setModels(ms)
       })
       .catch((e: unknown) => message.error(errText(e)))
   }, [])
@@ -515,9 +632,114 @@ export default function PlaygroundPage() {
     }
     return undefined
   }
+  // ---------- Embedding ----------
+  const runEmbedding = async () => {
+    const inputs = embText.split('\n').map((s) => s.trim()).filter(Boolean)
+    if (!embRoute) { message.warning('请先选择向量路由'); return }
+    if (!vkKey) { message.warning('请先选择虚拟密钥'); return }
+    if (!inputs.length) { message.warning('请输入至少一条文本'); return }
+    setEmbBusy(true)
+    try {
+      const t0 = performance.now()
+      const res = await fetch('/v1/embeddings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${vkKey}` },
+        body: JSON.stringify({ model: embRoute, input: inputs }),
+      })
+      if (!res.ok) await throwHttpError(res)
+      const body = (await res.json()) as EmbeddingResp
+      setEmbMs(Math.round(performance.now() - t0))
+      setEmbResult({ data: body.data ?? [], usage: body.usage })
+    } catch (e: unknown) {
+      message.error(errText(e))
+    } finally {
+      setEmbBusy(false)
+    }
+  }
 
-  return (
-    <div style={{ display: 'flex', gap: 16, alignItems: 'stretch', height: 'calc(100vh - 136px)' }}>
+  // ---------- Rerank ----------
+  const runRerank = async () => {
+    const docs = rrkDocs.split('\n').map((s) => s.trim()).filter(Boolean)
+    if (!rrkRoute) { message.warning('请先选择重排路由'); return }
+    if (!vkKey) { message.warning('请先选择虚拟密钥'); return }
+    if (!rrkQuery.trim() || !docs.length) { message.warning('请输入 query 与候选文档'); return }
+    setRrkBusy(true)
+    try {
+      const t0 = performance.now()
+      const body: Record<string, unknown> = { model: rrkRoute, query: rrkQuery.trim(), documents: docs }
+      if (rrkTopN) body.top_n = rrkTopN
+      const res = await fetch('/v1/rerank', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${vkKey}` },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) await throwHttpError(res)
+      const parsed = (await res.json()) as RerankResp
+      setRrkMs(Math.round(performance.now() - t0))
+      setRrkDocArr(docs)
+      setRrkResult({ results: parsed.results ?? [] })
+    } catch (e: unknown) {
+      message.error(errText(e))
+    } finally {
+      setRrkBusy(false)
+    }
+  }
+
+  // ---------- 生图 ----------
+  const runImage = async () => {
+    const prompt = imgPrompt.trim()
+    if (!imgRoute) { message.warning('请先选择生图路由'); return }
+    if (!vkKey) { message.warning('请先选择虚拟密钥'); return }
+    if (!prompt) { message.warning('请输入生图提示词'); return }
+    setImgBusy(true)
+    try {
+      const t0 = performance.now()
+      const body: Record<string, unknown> = { model: imgRoute, prompt, n: imgN }
+      if (imgSize) body.size = imgSize
+      const res = await fetch('/v1/images/generations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${vkKey}` },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) await throwHttpError(res)
+      const parsed = (await res.json()) as ImageResp
+      setImgMs(Math.round(performance.now() - t0))
+      setImgResult({ data: parsed.data ?? [], usage: parsed.usage })
+    } catch (e: unknown) {
+      message.error(errText(e))
+    } finally {
+      setImgBusy(false)
+    }
+  }
+
+  // 非 chat 家族的配置侧栏：家族路由（按 targets 类型过滤）+ 共享虚拟密钥 + 各自参数
+  const configCard = (
+    familyLabel: string,
+    familyKey: 'embedding' | 'rerank' | 'image',
+    routeValue: string | undefined,
+    onRoute: (v?: string) => void,
+    extra: ReactNode,
+  ) => (
+    <Card
+      title="测试配置"
+      size="small"
+      style={{ width: 320, flexShrink: 0, overflowY: 'auto' }}
+      styles={{ body: { display: 'flex', flexDirection: 'column', gap: 12 } }}
+    >
+      <div>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>{familyLabel}路由</Typography.Text>
+        <RouteSelect routes={routesFor(familyKey)} value={routeValue} onChange={onRoute} familyLabel={familyLabel} />
+      </div>
+      <div>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>虚拟密钥</Typography.Text>
+        <VkSelect vks={activeVks} value={vkId} onChange={setVkId} />
+      </div>
+      {extra}
+    </Card>
+  )
+
+  const chatPane = (
+    <div style={{ display: 'flex', gap: 16, alignItems: 'stretch', height: 'calc(100vh - 190px)' }}>
       {/* 配置栏 */}
       <Card
         title="测试配置"
@@ -527,35 +749,11 @@ export default function PlaygroundPage() {
       >
         <div>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>对话路由</Typography.Text>
-          <Select
-            showSearch
-            style={{ width: '100%', marginTop: 4 }}
-            placeholder="选择 completions 路由"
-            value={chatRoute}
-            onChange={setChatRoute}
-            options={chatRoutes.map((r) => ({ value: r.name, label: r.name }))}
-            notFoundContent={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                暂无 completions 路由，<Link to="/routes">去创建</Link>
-              </Typography.Text>
-            }
-          />
+          <RouteSelect routes={chatRoutes} value={chatRoute} onChange={setChatRoute} familyLabel="对话" />
         </div>
         <div>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>虚拟密钥</Typography.Text>
-          <Select
-            showSearch
-            style={{ width: '100%', marginTop: 4 }}
-            placeholder="选择虚拟密钥"
-            value={vkId}
-            onChange={setVkId}
-            options={activeVks.map((k) => ({ value: k.id, label: `${k.name}（${k.key_value}）` }))}
-            notFoundContent={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                暂无可用虚拟密钥，<Link to="/keys">去创建</Link>
-              </Typography.Text>
-            }
-          />
+          <VkSelect vks={activeVks} value={vkId} onChange={setVkId} />
         </div>
         <div>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>MCP 路由（可选，多选）</Typography.Text>
@@ -774,6 +972,235 @@ export default function PlaygroundPage() {
         </div>
       </Card>
     </div>
+  )
+
+  const embeddingPane = (
+    <div style={{ display: 'flex', gap: 16, alignItems: 'stretch', height: 'calc(100vh - 190px)' }}>
+      {configCard('向量', 'embedding', embRoute, setEmbRoute, (
+        <>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>输入文本（每行一条）</Typography.Text>
+            <Input.TextArea
+              rows={6}
+              style={{ marginTop: 4 }}
+              placeholder={'第一行文本\n第二行文本'}
+              value={embText}
+              onChange={(e) => setEmbText(e.target.value)}
+            />
+          </div>
+          <Button type="primary" icon={<SendOutlined />} loading={embBusy} disabled={!embText.trim()} onClick={runEmbedding}>
+            计算向量
+          </Button>
+        </>
+      ))}
+      <Card
+        title={`向量结果${embRoute ? ` · ${embRoute}` : ''}`}
+        size="small"
+        style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}
+        styles={{ body: { display: 'flex', flexDirection: 'column', gap: 12 } }}
+      >
+        {!embResult && (
+          <div style={{ margin: 'auto', textAlign: 'center' }}>
+            <Typography.Text type="secondary">选择路由与密钥后输入文本；每行一条将分别返回向量。</Typography.Text>
+          </div>
+        )}
+        {embResult && (
+          <>
+            <Space size={4} wrap>
+              {embMs !== null && <Tag style={{ fontSize: 11 }}>{(embMs / 1000).toFixed(2)}s</Tag>}
+              {embResult.usage?.total_tokens !== undefined && (
+                <Tag style={{ fontSize: 11 }}>{embResult.usage.prompt_tokens ?? '?'} tok</Tag>
+              )}
+            </Space>
+            {(embResult.data ?? []).map((item) => {
+              const vec = item.embedding ?? []
+              return (
+                <div key={item.index} style={{ border: '1px solid #ebebeb', borderRadius: 8, padding: '8px 12px' }}>
+                  <Space size={8}>
+                    <Tag style={{ fontSize: 11 }}>#{item.index}</Tag>
+                    <Tag style={{ fontSize: 11 }}>{vec.length} 维</Tag>
+                  </Space>
+                  <pre style={preStyle}>{vec.slice(0, 8).map((v) => v.toFixed(6)).join(', ')}{vec.length > 8 ? ', …' : ''}</pre>
+                </div>
+              )
+            })}
+          </>
+        )}
+      </Card>
+    </div>
+  )
+
+  const rerankPane = (
+    <div style={{ display: 'flex', gap: 16, alignItems: 'stretch', height: 'calc(100vh - 190px)' }}>
+      {configCard('重排', 'rerank', rrkRoute, setRrkRoute, (
+        <>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>Query</Typography.Text>
+            <Input
+              style={{ marginTop: 4 }}
+              placeholder="检索问题"
+              value={rrkQuery}
+              onChange={(e) => setRrkQuery(e.target.value)}
+            />
+          </div>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>候选文档（每行一条）</Typography.Text>
+            <Input.TextArea
+              rows={6}
+              style={{ marginTop: 4 }}
+              value={rrkDocs}
+              onChange={(e) => setRrkDocs(e.target.value)}
+            />
+          </div>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>Top N（可选）</Typography.Text>
+            <InputNumber
+              min={1}
+              max={100}
+              style={{ width: '100%', marginTop: 4 }}
+              placeholder="默认全部"
+              value={rrkTopN}
+              onChange={(v) => setRrkTopN(v)}
+            />
+          </div>
+          <Button
+            type="primary"
+            icon={<SendOutlined />}
+            loading={rrkBusy}
+            disabled={!rrkQuery.trim() || !rrkDocs.trim()}
+            onClick={runRerank}
+          >
+            重排
+          </Button>
+        </>
+      ))}
+      <Card
+        title={`重排结果${rrkRoute ? ` · ${rrkRoute}` : ''}`}
+        size="small"
+        style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}
+        styles={{ body: { display: 'flex', flexDirection: 'column', gap: 12 } }}
+      >
+        {!rrkResult && (
+          <div style={{ margin: 'auto', textAlign: 'center' }}>
+            <Typography.Text type="secondary">输入 query 与候选文档，按相关度重排展示。</Typography.Text>
+          </div>
+        )}
+        {rrkResult && (
+          <>
+            <Space size={4} wrap>
+              {rrkMs !== null && <Tag style={{ fontSize: 11 }}>{(rrkMs / 1000).toFixed(2)}s</Tag>}
+              <Tag style={{ fontSize: 11 }}>{rrkResult.results?.length ?? 0} 条</Tag>
+            </Space>
+            {(rrkResult.results ?? []).map((r, i) => (
+              <div key={`${r.index}-${i}`} style={{ border: '1px solid #ebebeb', borderRadius: 8, padding: '8px 12px' }}>
+                <Space size={8}>
+                  <Tag style={{ fontSize: 11 }}>#{r.index}</Tag>
+                  <Tag color="blue" style={{ fontSize: 11 }}>score {Number(r.relevance_score).toFixed(4)}</Tag>
+                </Space>
+                <div style={{ marginTop: 6, fontSize: 13, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {rrkDocArr[r.index] ?? ''}
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+      </Card>
+    </div>
+  )
+
+  const imagePane = (
+    <div style={{ display: 'flex', gap: 16, alignItems: 'stretch', height: 'calc(100vh - 190px)' }}>
+      {configCard('生图', 'image', imgRoute, setImgRoute, (
+        <>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>提示词</Typography.Text>
+            <Input.TextArea
+              rows={5}
+              style={{ marginTop: 4 }}
+              placeholder="描述想生成的图像"
+              value={imgPrompt}
+              onChange={(e) => setImgPrompt(e.target.value)}
+            />
+          </div>
+          <Space size="middle">
+            <div>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>尺寸</Typography.Text>
+              <Select
+                allowClear
+                style={{ width: 140, marginTop: 4, display: 'block' }}
+                placeholder="默认"
+                value={imgSize}
+                onChange={(v) => setImgSize(v)}
+                options={['auto', '512x512', '1024x1024', '1024x1536', '1536x1024'].map((s) => ({ value: s, label: s }))}
+              />
+            </div>
+            <div>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>张数</Typography.Text>
+              <InputNumber
+                min={1}
+                max={4}
+                style={{ width: 140, marginTop: 4, display: 'block' }}
+                value={imgN}
+                onChange={(v) => setImgN(v ?? 1)}
+              />
+            </div>
+          </Space>
+          <Button type="primary" icon={<SendOutlined />} loading={imgBusy} disabled={!imgPrompt.trim()} onClick={runImage}>
+            生成图像
+          </Button>
+        </>
+      ))}
+      <Card
+        title={`生图结果${imgRoute ? ` · ${imgRoute}` : ''}`}
+        size="small"
+        style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}
+        styles={{ body: { display: 'flex', flexDirection: 'column', gap: 12 } }}
+      >
+        {!imgResult && (
+          <div style={{ margin: 'auto', textAlign: 'center' }}>
+            <Typography.Text type="secondary">输入提示词生成图像；url 与 b64_json 两种返回均可预览。</Typography.Text>
+          </div>
+        )}
+        {imgResult && (
+          <>
+            <Space size={4} wrap>
+              {imgMs !== null && <Tag style={{ fontSize: 11 }}>{(imgMs / 1000).toFixed(2)}s</Tag>}
+              {imgResult.usage?.total_tokens !== undefined && (
+                <Tag style={{ fontSize: 11 }}>
+                  {imgResult.usage.input_tokens ?? '?'} + {imgResult.usage.output_tokens ?? '?'} = {imgResult.usage.total_tokens} tok
+                </Tag>
+              )}
+            </Space>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
+              {(imgResult.data ?? []).map((d, i) => {
+                const src = d.url ?? (d.b64_json ? `data:image/png;base64,${d.b64_json}` : '')
+                return src ? (
+                  <img
+                    key={i}
+                    src={src}
+                    alt={`generated-${i}`}
+                    style={{ width: '100%', borderRadius: 8, border: '1px solid #ebebeb' }}
+                  />
+                ) : null
+              })}
+            </div>
+          </>
+        )}
+      </Card>
+    </div>
+  )
+
+  return (
+    <Tabs
+      activeKey={tab}
+      onChange={setTab}
+      items={[
+        { key: 'chat', label: '对话', children: chatPane },
+        { key: 'embedding', label: 'Embedding', children: embeddingPane },
+        { key: 'rerank', label: 'Rerank', children: rerankPane },
+        { key: 'image', label: '生图', children: imagePane },
+      ]}
+    />
   )
 }
 
