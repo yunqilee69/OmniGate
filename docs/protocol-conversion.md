@@ -31,6 +31,7 @@ OmniGate 采用 **OpenAI 作为统一接口格式**，通过协议适配器实�
 | **`/v1/responses`** | OpenAI Responses | OpenAI Responses | `protocol=responses` | **直通透传** |
 | `/v1/embeddings` | OpenAI | OpenAI | `type=embedding` | 直通(仅改 model) |
 | `/v1/rerank` | Cohere | Cohere | `type=rerank` | 直通(仅改 model) |
+| `/v1/images/generations` | OpenAI Images | OpenAI | `type=image` | 直通(仅改 model；`stream` 原样透传) |
 
 ---
 

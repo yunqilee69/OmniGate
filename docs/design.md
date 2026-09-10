@@ -15,7 +15,7 @@
 
 | # | 能力 | 说明 |
 |---|------|------|
-| G1 | OpenAI 兼容代理 | 对下游暴露 `/v1/chat/completions`（含 SSE 流式）、`/v1/embeddings`、`/v1/rerank`、`/v1/models` |
+| G1 | OpenAI 兼容代理 | 对下游暴露 `/v1/chat/completions`（含 SSE 流式）、`/v1/embeddings`、`/v1/rerank`、`/v1/images/generations`、`/v1/models` |
 | G2 | 逻辑模型路由 | 请求一个逻辑 modelId（如 `glm`），按权重分发到 N 个真实模型（可以是不同模型） |
 | G3 | 提供商/密钥/模型实体 | Provider → ApiKey；模型与密钥多对多绑定（须同提供商）；模型内 key 轮询 |
 | G4 | 阶梯熔断 | 模型级：30s → 1m → 3m，连续 3 次禁用并明确报错；key 级：401/403 立即禁用，429 短冷却 |
@@ -28,7 +28,7 @@
 
 - 多实例集群 / 高可用（单机单进程）
 - 用户体系、配额计费（仅一个可选的管理 token）
-- 协议转换仅覆盖 chat/completions（openai ↔ responses ↔ anthropic，见 `model.protocol`）；embeddings/rerank 按业界事实格式**直通**（仅重写 model 字段），不做跨厂商转换；完整字段映射与限制见 [`protocol-conversion.md`](./protocol-conversion.md)
+- 协议转换仅覆盖 chat/completions（openai ↔ responses ↔ anthropic，见 `model.protocol`）；embeddings/rerank/images 按业界事实格式**直通**（仅重写 model 字段），不做跨厂商转换；完整字段映射与限制见 [`protocol-conversion.md`](./protocol-conversion.md)
 - 按用户/按 key 的限流
 
 ---
@@ -118,7 +118,7 @@ CREATE TABLE model (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   provider_id    INTEGER NOT NULL REFERENCES provider(id) ON DELETE CASCADE,
   name           TEXT NOT NULL,                   -- 真实模型名，如 glm-4.6
-  type           TEXT NOT NULL DEFAULT 'chat',    -- chat(/v1/chat/completions) | embedding(/v1/embeddings) | rerank(/v1/rerank)；非 chat 仅支持 openai 协议
+  type           TEXT NOT NULL DEFAULT 'chat',    -- chat(/v1/chat/completions) | embedding(/v1/embeddings) | rerank(/v1/rerank) | image(/v1/images/generations)；非 chat 仅支持 openai 协议
   protocol       TEXT NOT NULL DEFAULT 'openai',  -- openai(chat/completions) | responses(/responses) | anthropic(/v1/messages)
   input_price    REAL NOT NULL DEFAULT 0,         -- 每 1M prompt token 价格
   output_price   REAL NOT NULL DEFAULT 0,         -- 每 1M completion token 价格
@@ -380,23 +380,25 @@ HTTP 503
 | POST | `/v1/chat/completions` | 聊天补全，支持 `stream:true` SSE |
 | POST | `/v1/embeddings` | 文本向量化（OpenAI embeddings 格式） |
 | POST | `/v1/rerank` | 文档重排（Cohere rerank 骨架） |
+| POST | `/v1/images/generations` | 生图（OpenAI Images 格式，缓冲式直通，`stream` 原样透传） |
 | GET  | `/v1/models` | 返回所有逻辑路由名（客户端模型列表） |
 
 上游鉴权：代理替换 `Authorization: Bearer <选中的key>`，客户端无需带真实 key。
 
-**端点协议标准说明**（三个端点家族各自跟随的业界事实标准）：
+**端点协议标准说明**（四个端点家族各自跟随的业界事实标准）：
 
 | 端点 | 标准 | 出站路径（baseURL 已含版本前缀，如 `https://api.openai.com/v1`） |
 |---|---|---|
 | `/v1/chat/completions` | OpenAI Chat Completions —— 官方规范，全行业事实标准 | `baseURL + /chat/completions`（anthropic/responses 协议模型走各自路径） |
 | `/v1/embeddings` | OpenAI Embeddings —— 请求/响应格式被 OpenAI/vLLM/Ollama/硅基流动等广泛复制的的事实标准 | `baseURL + /embeddings` |
 | `/v1/rerank` | Cohere Rerank 骨架（`{model, query, documents, top_n}` → `results[].relevance_score`）—— OpenAI 无此 API，无官方标准；Jina/硅基流动/vLLM/HF TEI 均近似该形状但字段细节不一 | `baseURL + /rerank` |
+| `/v1/images/generations` | OpenAI Images API —— 事实标准，智谱 CogView、Azure OpenAI、硅基流动、OpenRouter Unified Image API 同形状 | `baseURL + /images/generations` |
 
 实现约定：
 
 - **模型按 `type` 归属端点**：路由内只有同类型后端会被选中（embedding 请求绝不落到 chat 模型上）；请求体仅重写 `model` 字段（逻辑路由名 → 物理模型名），其余字段与响应体**原样直通**——rerank 无标准可归一，改写必踩厂商字段差异（vLLM 另有 `/v2/rerank`、Jina 多 `instruction`、`top_n`/`top_k` 混用），故不做任何转换。
-- **usage 提取（尽力而为）**：embeddings 读 `usage.prompt_tokens/total_tokens`；rerank 依次尝试 `meta.tokens` → `meta.billed_units` → `usage.total_tokens`。计费与 chat 一致：`prompt × input_price + completion × output_price`。
-- **非流式**：两个端点忽略 `stream` 字段（业界均无流式语义）；同样走失败转移/熔断/统计/request_log 全链路，网关自身错误统一以 OpenAI error envelope 返回。
+- **usage 提取（尽力而为）**：embeddings 读 `usage.prompt_tokens/total_tokens`；rerank 依次尝试 `meta.tokens` → `meta.billed_units` → `usage.total_tokens`；images 读 `usage.input_tokens/output_tokens`（OpenRouter 形状 `prompt_tokens/completion_tokens` 兜底；按图计费的厂商如 CogView 无 token 用量记 0）。计费与 chat 一致：`prompt × input_price + completion × output_price`。
+- **流式**：embeddings/rerank 忽略 `stream` 字段（业界均无流式语义）；images 将 `stream` 原样透传（上游 gpt-image 系可能返回 SSE 渐进预览），网关为缓冲式转发，响应体与 Content-Type 原样回写，流式响应 usage 记 0。typed 端点同样走失败转移/熔断/统计/request_log 全链路，网关自身错误统一以 OpenAI error envelope 返回。
 
 ### 7.2 管理面（`/api/*`，按启动层鉴权配置受保护，见 §9.1）
 

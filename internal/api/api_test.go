@@ -511,7 +511,7 @@ func TestModelTypeValidation(t *testing.T) {
 		t.Fatalf("rerank+messages must be rejected: %d — %s", rec.Code, rec.Body.String())
 	}
 	rec = do(t, h, "POST", "/api/models", map[string]any{
-		"provider_id": 1, "name": "bad", "type": "image", "key_ids": []int64{1},
+		"provider_id": 1, "name": "bad", "type": "video", "key_ids": []int64{1},
 	}, "test-token")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid type must be rejected: %d", rec.Code)
@@ -531,6 +531,19 @@ func TestModelTypeValidation(t *testing.T) {
 	rec = do(t, h, "PUT", "/api/models/1", map[string]any{"type": "rerank"}, "test-token")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"type":"rerank"`) {
 		t.Fatalf("type update: %d — %s", rec.Code, rec.Body.String())
+	}
+	// image 模型：可创建，但 protocol 必须 completions
+	rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": 1, "name": "img", "type": "image", "protocol": "messages", "key_ids": []int64{1},
+	}, "test-token")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "仅支持 completions 协议") {
+		t.Fatalf("image+messages must be rejected: %d — %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": 1, "name": "img", "type": "image", "key_ids": []int64{1},
+	}, "test-token")
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"type":"image"`) {
+		t.Fatalf("image model create: %d — %s", rec.Code, rec.Body.String())
 	}
 }
 

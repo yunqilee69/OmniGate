@@ -158,7 +158,7 @@ func ProbeModelKeys(db *store.Store, rt *config.RuntimeManager, modelID int64) (
 }
 
 // probeModelKey 用指定密钥发起一次极小真实请求（探测核心，不写 request_log）。
-// 按模型类型构造最小载荷：chat → 一条 ping 消息；embedding → 单串输入；rerank → 单文档重排。
+// 按模型类型构造最小载荷：chat → 一条 ping 消息；embedding → 单串输入；rerank → 单文档重排；image → 一句生图提示。
 func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) ProbeResult {
 	res := ProbeResult{ModelID: m.ID, Model: m.Name, Provider: provider.Name, Protocol: m.Protocol, KeyID: key.ID}
 
@@ -176,6 +176,9 @@ func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) Pro
 	case "rerank":
 		req = map[string]any{"model": m.Name, "query": "ping", "documents": []string{"pong"}}
 		endpoint = strings.TrimRight(provider.BaseURL, "/") + "/rerank"
+	case "image":
+		req = map[string]any{"model": m.Name, "prompt": "ping"}
+		endpoint = strings.TrimRight(provider.BaseURL, "/") + "/images/generations"
 	default:
 		req = map[string]any{
 			"model":      m.Name,
@@ -249,6 +252,9 @@ func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) Pro
 		res.PromptTokens, res.CompletionTokens = e.prompt, e.completion
 	} else if modelType == "rerank" {
 		e := rerankKind.parseUsage(respBody)
+		res.PromptTokens, res.CompletionTokens = e.prompt, e.completion
+	} else if modelType == "image" {
+		e := imageKind.parseUsage(respBody)
 		res.PromptTokens, res.CompletionTokens = e.prompt, e.completion
 	} else {
 		// openai 直通适配器不解析 usage，这里按 chat 格式兜底提取

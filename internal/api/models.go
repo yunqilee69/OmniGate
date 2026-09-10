@@ -23,7 +23,7 @@ type modelResp struct {
 
 var validProtocols = map[string]bool{"completions": true, "responses": true, "messages": true}
 var validCurrencies = map[string]bool{"USD": true, "CNY": true}
-var validModelTypes = map[string]bool{"chat": true, "embedding": true, "rerank": true}
+var validModelTypes = map[string]bool{"chat": true, "embedding": true, "rerank": true, "image": true}
 
 type modelCreateReq struct {
 	ProviderID    int64   `json:"provider_id"`
@@ -134,12 +134,12 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		req.Type = "chat"
 	}
 	if !validModelTypes[req.Type] {
-		writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding or rerank")
+		writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding, rerank or image")
 		return
 	}
-	// embedding/rerank 出站固定 completions 风格直通（业界无可归一标准），不支持协议转换
+	// 非 chat 类型出站固定 completions 风格直通（业界无可归一标准），不支持协议转换
 	if req.Type != "chat" && req.Protocol != "completions" {
-		writeErr(w, http.StatusBadRequest, "bad_request", "embedding/rerank 模型仅支持 completions 协议")
+		writeErr(w, http.StatusBadRequest, "bad_request", "embedding/rerank/image 模型仅支持 completions 协议")
 		return
 	}
 	if req.PriceCurrency == "" {
@@ -271,7 +271,7 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Type != nil {
 		if !validModelTypes[*req.Type] {
-			writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding or rerank")
+			writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding, rerank or image")
 			return
 		}
 		simple["type"] = *req.Type
@@ -285,7 +285,7 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 		effProto = *req.Protocol
 	}
 	if effType != "" && effType != "chat" && effProto != "completions" {
-		writeErr(w, http.StatusBadRequest, "bad_request", "embedding/rerank 模型仅支持 completions 协议")
+		writeErr(w, http.StatusBadRequest, "bad_request", "embedding/rerank/image 模型仅支持 completions 协议")
 		return
 	}
 	if req.InputPrice != nil {

@@ -36,14 +36,15 @@ type ChatPlane interface {
 	Mcp(w http.ResponseWriter, r *http.Request)
 }
 
-// TypedPlane 非 chat 端点族（/v1/embeddings、/v1/rerank）的代理处理器集合。
+// TypedPlane 非 chat 端点族（/v1/embeddings、/v1/rerank、/v1/images/generations）的代理处理器集合。
 type TypedPlane interface {
 	Embeddings(w http.ResponseWriter, r *http.Request)
 	Rerank(w http.ResponseWriter, r *http.Request)
+	Images(w http.ResponseWriter, r *http.Request)
 }
 
 // New 构造管理面服务。auth 为启动层静态鉴权配置（详见 AdminAuth）；
-// chat 为 chat 端点族处理器，typed 为 embeddings/rerank 处理器（均可为 nil，测试场景）。
+// chat 为 chat 端点族处理器，typed 为 embeddings/rerank/images 处理器（均可为 nil，测试场景）。
 func New(st *store.Store, rt *config.RuntimeManager, auth AdminAuth, chat ChatPlane, typed TypedPlane) *Server {
 	return &Server{store: st, rt: rt, auth: auth, sessions: newSessionStore(), chat: chat, typed: typed, vkHandler: NewVirtualKeyHandler(st)}
 }
@@ -157,6 +158,7 @@ func (s *Server) Router() http.Handler {
 		if s.typed != nil {
 			vr.Post("/embeddings", s.typed.Embeddings)
 			vr.Post("/rerank", s.typed.Rerank)
+			vr.Post("/images/generations", s.typed.Images)
 		}
 		vr.NotFound(func(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", "endpoint not found")

@@ -16,15 +16,22 @@ import (
 	"github.com/cloudomni/omnigate/internal/store"
 )
 
-// 非 chat 端点家族。两者均为非流式、无会话亲和（请求体里没有 messages 前缀可做指纹），
+// 非 chat 端点家族。均为缓冲式转发、无会话亲和（请求体里没有 messages 前缀可做指纹），
 // 请求/响应按各自业界事实格式直通，仅重写 model 字段（逻辑路由名 → 物理模型名）：
 //   - embeddings：OpenAI /v1/embeddings 格式，是全行业被广泛复制的的事实标准；
 //   - rerank：Cohere /v1/rerank 骨架（query/documents/top_n → results[].relevance_score），
-//     无官方标准，Jina/硅基流动/vLLM/TEI 均近似该形状，字段存在差异，故不做跨厂商改写。
+//     无官方标准，Jina/硅基流动/vLLM/TEI 均近似该形状，字段存在差异，故不做跨厂商改写；
+//   - images：OpenAI Images API POST /images/generations，同为广泛复制的事实标准
+//     （智谱 CogView、Azure OpenAI、硅基流动、OpenRouter Unified Image API 同形状）。
+//     客户端 stream 字段原样透传：上游可能返回 SSE（gpt-image 渐进预览），网关仍为
+//     缓冲式转发，响应体与 Content-Type 原样回写，流式响应的 usage 无法提取记 0。
 type typedKind struct {
 	modelType  string
 	path       string
 	parseUsage func([]byte) usageInfo
+	// respLimit 上游响应体读取上限；0 用默认 32MB。images 响应内嵌 base64 图片，
+	// n=10 张高分辨率图可远超 chat 响应体积，该家族放宽到 128MB。
+	respLimit int64
 }
 
 var embeddingKind = typedKind{
@@ -82,6 +89,39 @@ var rerankKind = typedKind{
 	},
 }
 
+// imageKind 生图家族。usage 仅按 token 计费的厂商返回：gpt-image 系为
+// input_tokens/output_tokens，OpenRouter 为 prompt_tokens/completion_tokens；
+// 按图计费的厂商（如 CogView）无 token 用量，记 0。
+var imageKind = typedKind{
+	modelType: "image",
+	path:      "/images/generations",
+	respLimit: 128 << 20,
+	parseUsage: func(body []byte) usageInfo {
+		var parsed struct {
+			Usage *struct {
+				InputTokens      int `json:"input_tokens"`
+				OutputTokens     int `json:"output_tokens"`
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal(body, &parsed) != nil || parsed.Usage == nil {
+			return usageInfo{}
+		}
+		u := parsed.Usage
+		switch {
+		case u.InputTokens > 0 || u.OutputTokens > 0:
+			return usageInfo{prompt: u.InputTokens, completion: u.OutputTokens}
+		case u.PromptTokens > 0 || u.CompletionTokens > 0:
+			return usageInfo{prompt: u.PromptTokens, completion: u.CompletionTokens}
+		case u.TotalTokens > 0:
+			return usageInfo{prompt: u.TotalTokens}
+		}
+		return usageInfo{}
+	},
+}
+
 // Embeddings 处理 POST /v1/embeddings（OpenAI 格式）。
 func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	h.serveTyped(w, r, embeddingKind)
@@ -90,6 +130,11 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 // Rerank 处理 POST /v1/rerank（Cohere 骨架）。
 func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 	h.serveTyped(w, r, rerankKind)
+}
+
+// Images 处理 POST /v1/images/generations（OpenAI Images 格式）。
+func (h *Handler) Images(w http.ResponseWriter, r *http.Request) {
+	h.serveTyped(w, r, imageKind)
 }
 
 func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedKind) {
@@ -234,8 +279,8 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 	h.maybeCapture(requestID, routeName, reqSnap, cw)
 }
 
-// typedAttempt 单次非流式转发：出站固定 OpenAI 风格 Bearer 头 + kind.path 路径，
-// 成功时响应体直通（usage 从响应按家族格式提取），失败分类与 chat attempt 一致。
+// typedAttempt 单次转发：出站固定 OpenAI 风格 Bearer 头 + kind.path 路径，
+// 成功时响应体与 Content-Type 直通（usage 从响应按家族格式提取），失败分类与 chat attempt 一致。
 func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[string]any,
 	att router.Attempt, kind typedKind, rt *config.Runtime) attemptResult {
 
@@ -315,14 +360,22 @@ func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[s
 		return res
 	}
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	limit := kind.respLimit
+	if limit <= 0 {
+		limit = maxBodyBytes
+	}
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
 		res.errCode, res.status, res.retryable = "read_error", "error", true
 		return res
 	}
 	res.usage = kind.parseUsage(respBody)
 	res.committed, res.status, res.ttft = true, "success", time.Since(attemptStart)
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "application/json; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", ct)
 	w.Header().Set("X-Modelrouter-Model", att.Model.Name)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)

@@ -20,7 +20,7 @@ The largest practical gap is the missing policy plane. OmniGate explicitly exclu
 | Guardrails / data policy | No hook | Limited policy surface | Pluggable guardrails | Enterprise governance | ZDR/data-collection routing | Input/output guardrails | PII, prompt/response guards |
 | Observability export | SQLite/UI, privacy default | Usage/admin metrics | Logging/callback ecosystem | Prometheus/OTel/logging | Broadcast integrations | OTel-compliant logs | OTLP/metrics/audit/Konnect |
 | Tenancy / SSO / RBAC | Admin auth only | Users/groups/OIDC in new-api | Users/teams/orgs/SSO | Teams/customers/OIDC (edition scoped) | Workspaces/members | Hosted control plane | Consumers/groups/workspaces |
-| Protocol breadth | Chat, embeddings, rerank, Anthropic/Responses | Broad provider adapters | Very broad provider/pass-through | Broad provider/native/async APIs | Broad managed catalog | Multimodal/MCP/other APIs | LLM + MCP + A2A |
+| Protocol breadth | Chat, embeddings, rerank, images, Anthropic/Responses | Broad provider adapters | Very broad provider/pass-through | Broad provider/native/async APIs | Broad managed catalog | Multimodal/MCP/other APIs | LLM + MCP + A2A |
 
 ## Findings by theme
 

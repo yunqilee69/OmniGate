@@ -34,13 +34,13 @@ type ApiKey struct {
 
 // Model 真实模型。阶梯熔断状态机挂在这一层（跨路由共享的物理事实）。
 // Protocol 决定上游调用格式：completions(/chat/completions) | responses(/responses) | messages(/messages)。
-// Type 决定端点家族：chat(/v1/chat/completions) | embedding(/v1/embeddings) | rerank(/v1/rerank)；
-// embedding/rerank 仅支持 protocol=completions（业界无可归一标准，按各自事实骨架直通）。
+// Type 决定端点家族：chat(/v1/chat/completions) | embedding(/v1/embeddings) | rerank(/v1/rerank) | image(/v1/images/generations)；
+// 非 chat 家族仅支持 protocol=completions（按各自业界事实格式直通，不做跨厂商协议转换）。
 type Model struct {
 	ID            int64   `json:"id" gorm:"primaryKey;autoIncrement"`
 	ProviderID    int64   `json:"provider_id" gorm:"not null;uniqueIndex:idx_model_provider_name"`
 	Name          string  `json:"name" gorm:"size:191;not null;uniqueIndex:idx_model_provider_name"`
-	Type          string  `json:"type" gorm:"size:32;not null;default:'chat'"`          // chat | embedding | rerank
+	Type          string  `json:"type" gorm:"size:32;not null;default:'chat'"`          // chat | embedding | rerank | image
 	Protocol      string  `json:"protocol" gorm:"size:32;not null;default:completions"` // completions | responses | messages
 	ApiPath       string  `json:"api_path" gorm:"size:512;not null;default:''"`         // 自定义 API 路径覆盖
 	BodyOverride  string  `json:"body_override" gorm:"type:text;not null;default:''"`   // 请求体覆盖 JSON

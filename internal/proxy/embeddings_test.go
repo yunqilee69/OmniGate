@@ -14,7 +14,7 @@ import (
 	"github.com/cloudomni/omnigate/internal/store"
 )
 
-// seedTypedRoute 建一个含 chat + embedding + rerank 三类后端的路由 "mixed"。
+// seedTypedRoute 建一个含 chat + embedding + rerank + image 四类后端的路由 "mixed"。
 // chat 后端一旦被非 chat 端点选中会直接让测试失败（返回 500），用于验证类型过滤。
 func seedTypedRoute(t *testing.T, st *store.Store, baseURL string) {
 	t.Helper()
@@ -39,11 +39,12 @@ func seedTypedRoute(t *testing.T, st *store.Store, baseURL string) {
 	mChat := mk("gpt-chat", "chat")
 	mEmb := mk("text-embedding-3-small", "embedding")
 	mRrk := mk("bge-reranker-v2-m3", "rerank")
+	mImg := mk("cogview-4", "image")
 	rt := store.Route{Name: "mixed"}
 	if err := st.DB.Create(&rt).Error; err != nil {
 		t.Fatal(err)
 	}
-	for _, m := range []store.Model{mChat, mEmb, mRrk} {
+	for _, m := range []store.Model{mChat, mEmb, mRrk, mImg} {
 		if err := st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 100}).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -150,6 +151,63 @@ func TestRerankProxy(t *testing.T) {
 	}
 }
 
+func TestImagesProxy(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	var gotStream bool
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/images/generations" {
+			t.Errorf("upstream path = %s, want /v1/images/generations", r.URL.Path)
+			w.WriteHeader(404)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-e-cogview-4" {
+			t.Errorf("auth header = %q", got)
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["model"] != "cogview-4" {
+			t.Errorf("upstream model = %v, want physical name", body["model"])
+		}
+		if body["prompt"] != "a cat" {
+			t.Errorf("upstream prompt = %v", body["prompt"])
+		}
+		gotStream = body["stream"] == true
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"created":1789000000,"data":[{"url":"https://cdn.example.com/img.png"}],"usage":{"input_tokens":13,"output_tokens":4096,"total_tokens":4109}}`)
+	}))
+	defer up.Close()
+	seedTypedRoute(t, st, up.URL+"/v1")
+
+	// 非流式：响应直通，usage 按 OpenAI Images 格式落库
+	resp := typedPost(t, h, "/v1/images/generations", map[string]any{"model": "mixed", "prompt": "a cat"}, vkToken)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var out struct {
+		Data []struct {
+			URL string `json:"url"`
+		} `json:"data"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(b, &out); err != nil || len(out.Data) != 1 || out.Data[0].URL == "" {
+		t.Fatalf("image response not relayed: %s", b)
+	}
+
+	// stream 字段原样透传：上游收到 stream:true，客户端拿到上游响应
+	resp = typedPost(t, h, "/v1/images/generations", map[string]any{"model": "mixed", "prompt": "a cat", "stream": true}, vkToken)
+	if resp.StatusCode != 200 {
+		t.Fatalf("stream status = %d", resp.StatusCode)
+	}
+	if !gotStream {
+		t.Fatalf("stream flag not forwarded to upstream")
+	}
+
+	rows := logs(t, st)
+	if len(rows) != 2 || rows[0].Model != "cogview-4" || rows[0].PromptTokens != 13 || rows[0].CompletionTokens != 4096 || rows[0].IsStream {
+		t.Fatalf("image usage not recorded: %+v", rows)
+	}
+}
+
 func TestTypedEndpointsFilterModelType(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	var embModels []string
@@ -224,4 +282,5 @@ func TestTypedEndpointValidation(t *testing.T) {
 var _ interface {
 	Embeddings(w http.ResponseWriter, r *http.Request)
 	Rerank(w http.ResponseWriter, r *http.Request)
+	Images(w http.ResponseWriter, r *http.Request)
 } = (*proxy.Handler)(nil)

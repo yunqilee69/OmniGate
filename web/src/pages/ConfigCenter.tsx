@@ -67,6 +67,7 @@ const modelTypeOptions = [
   { value: 'chat', label: '语言模型' },
   { value: 'embedding', label: '向量模型' },
   { value: 'rerank', label: '重排模型' },
+  { value: 'image', label: '生图模型' },
 ]
 
 const proxyURLLabel = (
@@ -92,6 +93,7 @@ const proxyURLLabel = (
 const modelTypeTag = (t: string) => {
   if (t === 'embedding') return <Tag color="geekblue">embedding</Tag>
   if (t === 'rerank') return <Tag color="purple">rerank</Tag>
+  if (t === 'image') return <Tag color="orange">image</Tag>
   return <Tag>chat</Tag>
 }
 
@@ -644,15 +646,17 @@ function ModelsTab({ provider, keys, models, onSaved }: {
             {({ getFieldValue }) => {
               const type = getFieldValue('type') as string | undefined
               if (type && type !== 'chat') {
-                const isRerank = type === 'rerank'
+                const typedExtra: Record<string, string> = {
+                  embedding: '向量以 completions 风格直通上游，不做跨厂商协议改写',
+                  rerank: '重排无官方标准，以 completions 风格直通上游，不做跨厂商协议改写',
+                  image: '生图以 OpenAI Images 格式直通上游（baseURL + /images/generations），不做跨厂商协议改写',
+                }
                 return (
                   <Form.Item name="protocol" label="出站格式（由端点类型决定）"
-                    extra={isRerank
-                      ? '重排无官方标准，以 completions 风格直通上游，不做跨厂商协议改写'
-                      : '向量以 completions 风格直通上游，不做跨厂商协议改写'}>
+                    extra={typedExtra[type] ?? '以 completions 风格直通上游，不做跨厂商协议改写'}>
                     <Select disabled options={[{
                       value: 'completions',
-                      label: isRerank ? 'Completions 直通（rerank）' : 'Completions 直通（embedding）',
+                      label: type === 'image' ? 'OpenAI Images 直通' : `Completions 直通（${type}）`,
                     }]} />
                   </Form.Item>
                 )
