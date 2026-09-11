@@ -7,17 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"time"
 
 	"gorm.io/gorm"
 )
 
 var (
-	ErrVKNotFound          = errors.New("virtual key not found")
-	ErrVKDisabled          = errors.New("virtual key disabled")
-	ErrVKRateLimitExceeded = errors.New("rate limit exceeded")
-	ErrVKBudgetExceeded    = errors.New("budget exceeded")
-	ErrVKAccessDenied      = errors.New("route not allowed")
+	ErrVKNotFound       = errors.New("virtual key not found")
+	ErrVKDisabled       = errors.New("virtual key disabled")
+	ErrVKBudgetExceeded = errors.New("budget exceeded")
+	ErrVKAccessDenied   = errors.New("route not allowed")
 )
 
 // GenerateVKToken 生成 vk- 前缀的随机 token（16 字节 hex，128 bit 熵，总长 35 字符）。
@@ -113,53 +111,6 @@ func (s *Store) CheckVKBudget(vk *VirtualKey) error {
 		return ErrVKBudgetExceeded
 	}
 	return nil
-}
-
-// RecordVKUsage 记录虚拟 key 使用量（请求成功后调用，扣除费用）。
-func (s *Store) RecordVKUsage(vkID int64, costUSD float64) error {
-	return s.DB.Model(&VirtualKey{}).Where("id = ?", vkID).Updates(map[string]interface{}{
-		"used_usd":       s.DB.Raw("used_usd + ?", costUSD),
-		"total_requests": s.DB.Raw("total_requests + 1"),
-		"last_used_at":   time.Now().Unix(),
-	}).Error
-}
-
-// CheckVKRateLimit 检查虚拟 key 是否超过限流（滑动窗口，过去 1 分钟）。
-func (s *Store) CheckVKRateLimit(vkID int64, rpmLimit int64) error {
-	if rpmLimit == 0 {
-		return nil // 0=不限制
-	}
-	now := time.Now().Unix()
-	windowStart := now - 60
-	var count int64
-	err := s.DB.Model(&VKRateLimit{}).
-		Where("vk_id = ? AND minute_ts >= ?", vkID, windowStart).
-		Select("COALESCE(SUM(request_count), 0)").
-		Scan(&count).Error
-	if err != nil {
-		return fmt.Errorf("query rate limit: %w", err)
-	}
-	if count >= rpmLimit {
-		return ErrVKRateLimitExceeded
-	}
-	return nil
-}
-
-// RecordVKRateLimitHit 记录虚拟 key 限流命中（handler 返回后调用）。
-func (s *Store) RecordVKRateLimitHit(vkID int64) error {
-	now := time.Now()
-	minuteTs := now.Unix() / 60 * 60
-	return s.DB.Exec(`
-		INSERT INTO vk_rate_limits (vk_id, minute_ts, request_count)
-		VALUES (?, ?, 1)
-		ON CONFLICT(vk_id, minute_ts) DO UPDATE SET request_count = request_count + 1
-	`, vkID, minuteTs).Error
-}
-
-// CleanupVKRateLimit 清理过期的限流窗口（建议定期调用，如每小时）。
-func (s *Store) CleanupVKRateLimit() error {
-	cutoff := time.Now().Unix() - 3600 // 保留 1 小时
-	return s.DB.Where("minute_ts < ?", cutoff).Delete(&VKRateLimit{}).Error
 }
 
 // normalizeVKAllowedRoutes 历史版本经 API 层把 allowed_routes 写成路由名数组，

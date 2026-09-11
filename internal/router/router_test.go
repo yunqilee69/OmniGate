@@ -84,7 +84,7 @@ func TestWeightedDistribution(t *testing.T) {
 		t.Fatalf("load snapshot: found=%v err=%v", found, err)
 	}
 	now := time.Now()
-	tried := map[int64]bool{}
+	tried := map[Combo]bool{}
 	counts := map[string]int{}
 	const n = 10000
 	for i := 0; i < n; i++ {
@@ -108,7 +108,7 @@ func TestRoundRobinWithinModel(t *testing.T) {
 	sel := NewSelector(st)
 	snap, _, _ := sel.LoadSnapshot(route)
 	now := time.Now()
-	tried := map[int64]bool{}
+	tried := map[Combo]bool{}
 	seen := map[int64]int{}
 	for i := 0; i < 30; i++ {
 		att, ok := sel.Pick(snap, tried, now, 0)
@@ -140,14 +140,14 @@ func TestExhaustionAndSkip(t *testing.T) {
 	snap, _, _ := sel.LoadSnapshot(route)
 	now := time.Now()
 
-	tried := map[int64]bool{}
+	tried := map[Combo]bool{}
 	reachedFlash := false
 	for {
 		att, ok := sel.Pick(snap, tried, now, 0)
 		if !ok {
 			break
 		}
-		tried[att.Key.ID] = true
+		tried[att.Combo()] = true
 		if att.Model.Name != "glm-4.6" {
 			reachedFlash = true
 		}
@@ -163,14 +163,14 @@ func TestExhaustionAndSkip(t *testing.T) {
 	banCombos(t, st, m.ID, "temp_banned", now.Unix()+60)
 	banCombos(t, st, flash.ID, "perm_banned", 0)
 	snap2, _, _ := sel.LoadSnapshot(route)
-	if _, ok := sel.Pick(snap2, map[int64]bool{}, now, 0); ok {
+	if _, ok := sel.Pick(snap2, map[Combo]bool{}, now, 0); ok {
 		t.Fatal("cooldown + disabled combos must yield no candidate")
 	}
 
 	// 冷却到期（半开）：glm-4.6 组合恢复可选
 	st.DB.Model(&store.ModelKeyBan{}).Where("model_id = ?", m.ID).Update("banned_until", now.Unix()-1)
 	snap3, _, _ := sel.LoadSnapshot(route)
-	if att, ok := sel.Pick(snap3, map[int64]bool{}, now, 0); !ok || att.Model.Name != "glm-4.6" {
+	if att, ok := sel.Pick(snap3, map[Combo]bool{}, now, 0); !ok || att.Model.Name != "glm-4.6" {
 		t.Fatal("expired cooldown (half-open) must be selectable again")
 	}
 }
@@ -235,7 +235,7 @@ func TestPickPrefersAffinityModel(t *testing.T) {
 
 	// 首选模型可用：每次都锁定 flash（权重 3:7 下纯随机几乎不可能连续命中）
 	for i := 0; i < 50; i++ {
-		att, ok := sel.Pick(snap, map[int64]bool{}, now, flash.ID)
+		att, ok := sel.Pick(snap, map[Combo]bool{}, now, flash.ID)
 		if !ok || att.Model.ID != flash.ID {
 			t.Fatalf("preferred model must win: ok=%v model=%d", ok, att.Model.ID)
 		}
@@ -244,7 +244,7 @@ func TestPickPrefersAffinityModel(t *testing.T) {
 	// 首选模型全部组合冷却：无感降级为加权随机
 	banCombos(t, st, flash.ID, "temp_banned", now.Unix()+60)
 	snap2, _, _ := sel.LoadSnapshot(route)
-	att, ok := sel.Pick(snap2, map[int64]bool{}, now, flash.ID)
+	att, ok := sel.Pick(snap2, map[Combo]bool{}, now, flash.ID)
 	if !ok || att.Model.ID == flash.ID {
 		t.Fatalf("cooldown preferred must fall back: ok=%v model=%v", ok, att.Model.Name)
 	}
@@ -252,7 +252,60 @@ func TestPickPrefersAffinityModel(t *testing.T) {
 	// 冷却到期（半开）：首选恢复锁定
 	st.DB.Model(&store.ModelKeyBan{}).Where("model_id = ?", flash.ID).Update("banned_until", now.Unix()-1)
 	snap3, _, _ := sel.LoadSnapshot(route)
-	if att, ok := sel.Pick(snap3, map[int64]bool{}, now, flash.ID); !ok || att.Model.ID != flash.ID {
+	if att, ok := sel.Pick(snap3, map[Combo]bool{}, now, flash.ID); !ok || att.Model.ID != flash.ID {
 		t.Fatal("half-open preferred model must win again")
+	}
+}
+
+func TestPickTransfersSharedKeyAcrossModels(t *testing.T) {
+	st := newStore(t)
+	p := store.Provider{Name: "ar", BaseURL: "https://example.com"}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-shared", Status: "active"}
+	if err := st.DB.Create(&k).Error; err != nil {
+		t.Fatal(err)
+	}
+	m1 := store.Model{ProviderID: p.ID, Name: "glm-5.3", Status: "active"}
+	m2 := store.Model{ProviderID: p.ID, Name: "deepseek-v4-flash", Status: "active"}
+	if err := st.DB.Create(&m1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&m2).Error; err != nil {
+		t.Fatal(err)
+	}
+	st.DB.Create(&store.ModelKey{ModelID: m1.ID, KeyID: k.ID})
+	st.DB.Create(&store.ModelKey{ModelID: m2.ID, KeyID: k.ID})
+	rt := store.Route{Name: "agentrouter"}
+	st.DB.Create(&rt)
+	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m1.ID, Weight: 1})
+	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m2.ID, Weight: 1})
+
+	sel := NewSelector(st)
+	snap, _, err := sel.LoadSnapshot(rt.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	tried := map[Combo]bool{}
+	att1, ok := sel.Pick(snap, tried, now, 0)
+	if !ok {
+		t.Fatal("first pick must succeed")
+	}
+	tried[att1.Combo()] = true
+	att2, ok := sel.Pick(snap, tried, now, 0)
+	if !ok {
+		t.Fatal("shared key must still allow the other model")
+	}
+	if att2.Model.ID == att1.Model.ID {
+		t.Fatalf("second pick must be the other model, both %s", att1.Model.Name)
+	}
+	if att2.Key.ID != att1.Key.ID {
+		t.Fatalf("both hops should reuse the shared key, got %d then %d", att1.Key.ID, att2.Key.ID)
+	}
+	tried[att2.Combo()] = true
+	if _, ok := sel.Pick(snap, tried, now, 0); ok {
+		t.Fatal("both combos tried: pick must fail")
 	}
 }

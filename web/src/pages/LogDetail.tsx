@@ -135,8 +135,10 @@ export default function LogDetail() {
         </Card>
       ) : null}
 
-      {attempts.length > 1 ? (
-        <Card title={`尝试链路（共 ${attempts.length} 次，含重试 ${log.retries} 次）`} style={{ marginBottom: 16 }}>
+      {attempts.length > 0 ? (
+        <Card title={attempts.length > 1
+          ? `尝试链路（共 ${attempts.length} 次，含重试 ${log.retries} 次）`
+          : '尝试记录'} style={{ marginBottom: 16 }}>
           <Table<Attempt>
             rowKey="id"
             dataSource={attempts}

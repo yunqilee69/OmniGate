@@ -15,8 +15,12 @@ type Store struct {
 }
 
 // Open 打开（必要时创建）SQLite 数据库并执行迁移。
+//
+// synchronous=NORMAL：WAL 模式下提交不再逐条 fsync（仅 checkpoint 时落盘），
+// 进程崩溃不丢已提交事务，仅断电可能丢最近若干提交——对本地统计库是可接受的取舍，
+// 高并发写入路径上这一项消除的是每请求多次 fsync 的最大开销。
 func Open(path string) (*Store, error) {
-	db, err := gorm.Open(sqlite.Open(path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=secure_delete(1)&mode=rwc"), &gorm.Config{
+	db, err := gorm.Open(sqlite.Open(path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_pragma=secure_delete(1)&mode=rwc"), &gorm.Config{
 		Logger:         logger.Default.LogMode(logger.Silent),
 		NamingStrategy: schema.NamingStrategy{SingularTable: true},
 	})
@@ -29,6 +33,11 @@ func Open(path string) (*Store, error) {
 	if err := migratePoolsAway(db); err != nil {
 		return nil, fmt.Errorf("migrate key pools away: %w", err)
 	}
+	// vk_rate_limits（旧版 DB 落库限流计数）已废弃：限流改为进程内固定分钟窗口，
+	// 见 internal/api/vk_limiter.go；表中数据无消费方，直接删除。
+	if err := dropLegacyVKRateLimits(db); err != nil {
+		return nil, fmt.Errorf("drop legacy vk_rate_limits: %w", err)
+	}
 	// content_log 走手工迁移：GORM AutoMigrate 对 SQLite 改列会整表重建，
 	// 正文表 + 大 WAL 会把启动卡死（start.sh 15s 健康检查失败）。
 	if err := migrateContentLog(db); err != nil {
@@ -38,7 +47,7 @@ func Open(path string) (*Store, error) {
 		&Provider{}, &ApiKey{}, &Model{}, &ModelKey{}, &ModelKeyBan{},
 		&Route{}, &RouteTarget{}, &AppConfig{}, &RequestLog{}, &RequestAttempt{},
 		&RequestLogDaily{},
-		&VirtualKey{}, &VKRateLimit{},
+		&VirtualKey{},
 		&MCPBackend{}, &RouteMcpTarget{},
 	); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -53,6 +62,14 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("migrate protocol rename and fields: %w", err)
 	}
 	return &Store{DB: db}, nil
+}
+
+// dropLegacyVKRateLimits 删除旧版 DB 落库限流计数表（幂等；新库无此表直接跳过）。
+func dropLegacyVKRateLimits(db *gorm.DB) error {
+	if !db.Migrator().HasTable("vk_rate_limits") {
+		return nil
+	}
+	return db.Migrator().DropTable("vk_rate_limits")
 }
 
 // Close 关闭底层连接池(同时触发 WAL checkpoint 并清理 -wal/-shm 副产物)。

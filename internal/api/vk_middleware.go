@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -58,8 +57,9 @@ func GetVKFromContext(ctx context.Context) (*store.VirtualKey, bool) {
 }
 
 // VKRateLimitMiddleware 虚拟 key 限流中间件。
-// 检查 RPM 限制；命中计数在 handler 返回后记录，避免失败请求消耗配额。
-func VKRateLimitMiddleware(db *store.Store) func(http.Handler) http.Handler {
+// 检查 RPM 限制（进程内固定分钟窗口，零 DB 开销）；计数在 handler 返回后记录，
+// 保持"被拒绝的请求不消耗配额"的原语义。
+func VKRateLimitMiddleware(l *vkRateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			vk, ok := GetVKFromContext(r.Context())
@@ -68,21 +68,14 @@ func VKRateLimitMiddleware(db *store.Store) func(http.Handler) http.Handler {
 				return
 			}
 
-			if err := db.CheckVKRateLimit(vk.ID, vk.RPMLimit); err != nil {
-				if err == store.ErrVKRateLimitExceeded {
-					w.Header().Set("X-RateLimit-Limit-Requests", formatInt64(vk.RPMLimit))
-					writeErr(w, 429, "rate_limit_exceeded", "rate limit exceeded")
-				} else {
-					writeErr(w, 500, "rate_limit_error", err.Error())
-				}
+			if !l.Allow(vk.ID, vk.RPMLimit) {
+				w.Header().Set("X-RateLimit-Limit-Requests", formatInt64(vk.RPMLimit))
+				writeErr(w, 429, "rate_limit_exceeded", "rate limit exceeded")
 				return
 			}
 
 			next.ServeHTTP(w, r)
-
-			if err := db.RecordVKRateLimitHit(vk.ID); err != nil {
-				slog.Warn("failed to record rate limit hit", "vk_id", vk.ID, "err", err)
-			}
+			l.Record(vk.ID)
 		})
 	}
 }

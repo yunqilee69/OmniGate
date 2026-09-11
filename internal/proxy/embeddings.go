@@ -199,11 +199,12 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 	}
 
 	pendingID := h.createPendingLog(requestID, routeName, kind.modelType, false, vkID)
-	tried := map[int64]bool{}
+	tried := map[router.Combo]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult
 	var errCodes []string
 	priorFails := 0
+	var attempts []store.RequestAttempt
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		att, ok := h.sel.PickTyped(snap, tried, time.Now(), kind.modelType)
@@ -217,9 +218,9 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 						res := h.typedAttempt(w, r, req, fallbackAtt, kind, rt)
 						res.latencyMs = time.Since(attemptStart).Milliseconds()
 						h.record(res, rt)
-						h.writeAttempt(requestID, routeName, 0, fallbackAtt, res, attemptStart)
+						attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
 						h.writeLog(start, requestID, routeName, fallbackAtt, false,
-							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
 						cw.setAttempt(res)
 						h.maybeCapture(requestID, routeName, cw)
 						return
@@ -228,13 +229,13 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 				}
 
 				// all_backends 错误：没有可用模型，仍需记录尝试
-				h.writeAttempt(requestID, routeName, 0, router.Attempt{}, attemptResult{
+				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
 					status:  "error",
 					errCode: "all_backends",
-				}, start)
+				}, start))
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, false,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID)
+					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					"route '"+routeName+"' has no available "+kind.modelType+" type backends", statuses)
 				h.maybeCapture(requestID, routeName, cw)
@@ -242,16 +243,16 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 			}
 			break
 		}
-		tried[att.Key.ID] = true
+		tried[att.Combo()] = true
 		attemptStart := time.Now()
 		res := h.typedAttempt(w, r, req, att, kind, rt)
 		res.latencyMs = time.Since(attemptStart).Milliseconds()
 		h.record(res, rt)
-		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
+		attempts = append(attempts, h.attemptRow(requestID, routeName, attempt, att, res, attemptStart))
 		last = res
 		if res.committed || !res.retryable {
 			h.writeLog(start, requestID, routeName, att, false,
-				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID)
+				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID, attempts)
 			break
 		}
 		priorFails++
@@ -261,7 +262,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 	// 重试耗尽 / 转移途中无后端可选：最终结果尚未落库时在此补写。
 	if last.att.Model.ID != 0 && !last.committed && last.retryable {
 		h.writeLog(start, requestID, routeName, last.att, false,
-			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails-1, last.errorBody, false, vkID, pendingID)
+			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails-1, last.errorBody, false, vkID, pendingID, attempts)
 	}
 
 	if !last.committed {

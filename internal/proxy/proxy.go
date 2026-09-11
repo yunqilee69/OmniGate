@@ -318,11 +318,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	pendingID := h.createPendingLog(requestID, routeName, "completions", isStream, vkID)
 
-	tried := map[int64]bool{}
+	tried := map[router.Combo]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult
 	var errCodes []string
 	priorFails := 0
+	var attempts []store.RequestAttempt
 	finalLogged := false
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -337,9 +338,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						res := h.attempt(w, r, req, fallbackAtt, isStream, rt)
 						res.latencyMs = time.Since(attemptStart).Milliseconds()
 						h.record(res, rt)
-						h.writeAttempt(requestID, routeName, 0, fallbackAtt, res, attemptStart)
+						attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
-							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
 						cw.setAttempt(res)
 						h.maybeCapture(requestID, routeName, cw)
 						return
@@ -348,13 +349,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// all_backends 错误：没有可用模型，仍需记录尝试
-				h.writeAttempt(requestID, routeName, 0, router.Attempt{}, attemptResult{
+				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
 					status:  "error",
 					errCode: "all_backends",
-				}, start)
+				}, start))
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID)
+					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
 				h.maybeCapture(requestID, routeName, cw)
@@ -362,19 +363,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			break
 		}
-		tried[att.Key.ID] = true
+		tried[att.Combo()] = true
 		attemptStart := time.Now()
 		res := h.attempt(w, r, req, att, isStream, rt)
 		res.latencyMs = time.Since(attemptStart).Milliseconds()
 		h.record(res, rt)
-		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
+		attempts = append(attempts, h.attemptRow(requestID, routeName, attempt, att, res, attemptStart))
 		last = res
 
 		// request_log 只记最终结果（中间跳数由 request_attempt 表逐次落盘）。
 		// 逐次写入会把中间失败 UPSERT 进 request_log_daily，污染统计口径。
 		if res.committed || !res.retryable {
 			h.writeLog(start, requestID, routeName, att, isStream,
-				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID)
+				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID, attempts)
 			finalLogged = true
 			break
 		}
@@ -387,7 +388,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 重试耗尽 / 转移途中无后端可选：最终结果尚未落库时在此写入。
 	if !finalLogged && last.att.Model.ID != 0 {
 		h.writeLog(start, requestID, routeName, last.att, isStream,
-			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails-1, last.errorBody, false, vkID, pendingID)
+			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails-1, last.errorBody, false, vkID, pendingID, attempts)
 	}
 
 	// 所有重试都失败且可重试（没有提交响应），返回 502 Bad Gateway
@@ -399,16 +400,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 亲和只在最终成功后回写：失败转移到别的模型成功时，记住的是缓存真正生效的落点。
 	if affKey != "" && last.att.Model.ID != 0 && last.status == "success" {
 		h.sel.SetAffinity(affKey, last.att.Model.ID, rt.AffinityTTL, time.Now())
-	}
-
-	// 记录虚拟 key 使用量（成功请求才扣费）
-	if last.status == "success" && last.att.Model.ID != 0 {
-		if vk, ok := getVKFromContext(r.Context()); ok {
-			costUSD := cost(last.att.Model, last.usage, h.rt.Snapshot().USDCNY)
-			if err := h.db.RecordVKUsage(vk.ID, costUSD); err != nil {
-				slog.Warn("failed to record vk usage", "vk_id", vk.ID, "cost", costUSD, "err", err)
-			}
-		}
 	}
 
 	if len(errCodes) > 1 {
@@ -843,9 +834,12 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 	}
 }
 
+// writeLog 落库最终结果：尝试明细、日志终态、日聚合与 VK 用量结算合并为一次事务
+// 提交（见 store.SettleRequest）。attempts 为本次请求各跳的尝试明细，按发生顺序落库。
 func (h *Handler) writeLog(start time.Time, requestID, routeName string, att router.Attempt,
 	isStream bool, status, errCode string, u usageInfo, ttft, total time.Duration,
-	retries int, errorBody string, isFallback bool, vkID int64, pendingID int64) {
+	retries int, errorBody string, isFallback bool, vkID int64, pendingID int64,
+	attempts []store.RequestAttempt) {
 
 	entry := store.RequestLog{
 		RequestID: requestID, Route: routeName,
@@ -866,26 +860,18 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 		// Save 为全列 UPDATE，autoCreateTime 只在 Create 生效：
 		// 显式带请求开始时间，避免 pending 行的 created_at 被零值覆盖。
 		entry.CreatedAt = start.Unix()
-		// endpoint 在入口已写入 pending 行；Omit 防止零值覆盖。
-		if err := h.db.DB.Omit("endpoint").Save(&entry).Error; err != nil {
-			slog.Error("update request_log failed", "err", err, "request_id", requestID)
-			return
-		}
-	} else {
-		if err := h.db.DB.Create(&entry).Error; err != nil {
-			slog.Error("write request_log failed", "err", err, "request_id", requestID)
-			return
-		}
 	}
-	store.UpsertDaily(h.db.DB, &entry)
+	if err := h.db.SettleRequest(&entry, attempts); err != nil {
+		slog.Error("settle request log failed", "err", err, "request_id", requestID)
+	}
 }
 
-// writeAttempt 把每一次转发尝试的完整明细落库（含成功与失败），便于排查重试链路。
+// attemptRow 构造一次转发尝试的完整明细行（含成功与失败），由调用方累积后随
+// writeLog 统一落库，便于排查重试链路。
 // 对于 all_backends 错误（没有可用模型），model 和 provider 字段为空字符串。
-func (h *Handler) writeAttempt(requestID, routeName string, attempt int, att router.Attempt,
-	res attemptResult, start time.Time) {
-	// all_backends 场景：att.Model.ID == 0，但仍应记录尝试
-	row := store.RequestAttempt{
+func (h *Handler) attemptRow(requestID, routeName string, attempt int, att router.Attempt,
+	res attemptResult, start time.Time) store.RequestAttempt {
+	return store.RequestAttempt{
 		RequestID:        requestID,
 		Route:            routeName,
 		Attempt:          attempt,
@@ -900,9 +886,6 @@ func (h *Handler) writeAttempt(requestID, routeName string, attempt int, att rou
 		TTFTMs:           res.ttft.Milliseconds(),
 		PromptTokens:     res.usage.prompt,
 		CompletionTokens: res.usage.completion,
-	}
-	if err := h.db.DB.Create(&row).Error; err != nil {
-		slog.Error("write request_attempt failed", "err", err, "request_id", requestID)
 	}
 }
 
@@ -1177,11 +1160,12 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 		}
 	}
 	pendingID := h.createPendingLog(requestID, routeName, endpoint, isStream, vkID)
-	tried := map[int64]bool{}
+	tried := map[router.Combo]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult
 	var errCodes []string
 	priorFails := 0
+	var attempts []store.RequestAttempt
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		att, ok := h.sel.Pick(snap, tried, time.Now(), 0)
@@ -1195,9 +1179,9 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 						res := h.nativeAttempt(w, r, body, fallbackAtt, isStream, rt, endpoint)
 						res.latencyMs = time.Since(attemptStart).Milliseconds()
 						h.record(res, rt)
-						h.writeAttempt(requestID, routeName, 0, fallbackAtt, res, attemptStart)
+						attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
-							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
 						cw.setAttempt(res)
 						h.maybeCapture(requestID, routeName, cw)
 						return
@@ -1207,30 +1191,30 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID)
+					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
 				h.maybeCapture(requestID, routeName, cw)
 				return
 			}
 			// all_backends 错误：没有可用模型，仍需记录尝试
-			h.writeAttempt(requestID, routeName, 0, router.Attempt{}, attemptResult{
+			attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
 				status:  "error",
 				errCode: "all_backends",
-			}, start)
+			}, start))
 			break
 		}
 
-		tried[att.Key.ID] = true
+		tried[att.Combo()] = true
 		attemptStart := time.Now()
 		res := h.nativeAttempt(w, r, body, att, isStream, rt, endpoint)
 		res.latencyMs = time.Since(attemptStart).Milliseconds()
 		h.record(res, rt)
-		h.writeAttempt(requestID, routeName, attempt, att, res, attemptStart)
+		attempts = append(attempts, h.attemptRow(requestID, routeName, attempt, att, res, attemptStart))
 		last = res
 		if res.committed || !res.retryable {
 			h.writeLog(start, requestID, routeName, att, isStream,
-				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID)
+				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID, attempts)
 			break
 		}
 		priorFails++
@@ -1242,7 +1226,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 	// 重试耗尽 / 转移途中无后端可选：最终结果尚未落库时在此补写。
 	if last.att.Model.ID != 0 && !last.committed && last.retryable {
 		h.writeLog(start, requestID, routeName, last.att, isStream,
-			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails-1, last.errorBody, false, vkID, pendingID)
+			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails-1, last.errorBody, false, vkID, pendingID, attempts)
 	}
 
 	if !last.committed {

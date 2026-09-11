@@ -224,15 +224,7 @@ type VirtualKey struct {
 	UpdatedAt int64 `gorm:"autoUpdateTime"`
 }
 
-// VKRateLimit 虚拟 key 限流窗口（滑动窗口计数，按分钟聚合）。
-type VKRateLimit struct {
-	VKID         int64 `gorm:"column:vk_id;primaryKey;not null"`
-	MinuteTs     int64 `gorm:"column:minute_ts;primaryKey;not null"` // 分钟时间戳(秒)
-	RequestCount int64 `gorm:"column:request_count;not null;default:0"`
-}
-
-func (VKRateLimit) TableName() string { return "vk_rate_limits" }
-func (AppConfig) TableName() string   { return "app_config" }
+func (AppConfig) TableName() string { return "app_config" }
 
 // RequestLog 请求日志（统计事实表，只增不改；表结构上不存在任何请求内容字段）。
 // Endpoint 记录请求进入的端点类型（completions/messages/responses/embedding/rerank/image），

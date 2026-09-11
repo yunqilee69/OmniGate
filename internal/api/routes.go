@@ -419,7 +419,8 @@ func (s *Server) deleteRoute(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
-// v1Models 代理面模型列表：返回全部逻辑路由名（OpenAI 兼容格式，无需鉴权）。
+// v1Models 代理面模型列表：返回全部逻辑路由名（OpenAI 兼容格式）。
+// 与 /v1 其他端点一样经虚拟密钥鉴权（VKAuthMiddleware 挂在 /v1 路由组上）。
 func (s *Server) v1Models(w http.ResponseWriter, _ *http.Request) {
 	var routes []store.Route
 	if err := s.store.DB.Order("id").Find(&routes).Error; err != nil {

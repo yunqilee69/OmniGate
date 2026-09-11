@@ -3,7 +3,6 @@ package store
 import (
 	"os"
 	"testing"
-	"time"
 )
 
 func setupTestDB(t *testing.T) *Store {
@@ -210,113 +209,6 @@ func TestCheckVKBudget(t *testing.T) {
 				t.Errorf("expected %v, got %v", tt.wantErr, err)
 			}
 		})
-	}
-}
-
-func TestRecordVKUsage(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	vk := &VirtualKey{
-		Name:           "test",
-		Status:         "active",
-		UsedUSD:        5.0,
-		TotalBudgetUSD: 100.0,
-	}
-	db.CreateVirtualKey(vk)
-
-	// Record usage
-	if err := db.RecordVKUsage(vk.ID, 2.5); err != nil {
-		t.Fatalf("record usage failed: %v", err)
-	}
-
-	// Check updated values
-	vk2, _ := db.GetVirtualKey(vk.ID)
-	if vk2.UsedUSD != 7.5 {
-		t.Errorf("expected used=7.5, got %f", vk2.UsedUSD)
-	}
-	if vk2.TotalRequests != 1 {
-		t.Errorf("expected total_requests=1, got %d", vk2.TotalRequests)
-	}
-	if vk2.LastUsedAt == 0 {
-		t.Error("last_used_at should be set")
-	}
-}
-
-func TestCheckVKRateLimit(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	vk := &VirtualKey{
-		Name:     "test",
-		Status:   "active",
-		RPMLimit: 10,
-	}
-	db.CreateVirtualKey(vk)
-
-	// Record some hits
-	for range 5 {
-		if err := db.RecordVKRateLimitHit(vk.ID); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// Should not be limited yet (5 < 10)
-	if err := db.CheckVKRateLimit(vk.ID, vk.RPMLimit); err != nil {
-		t.Errorf("should not be limited: %v", err)
-	}
-
-	// Add more hits (all in same minute window)
-	for range 6 {
-		if err := db.RecordVKRateLimitHit(vk.ID); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// Should be limited now (11 >= 10)
-	if err := db.CheckVKRateLimit(vk.ID, vk.RPMLimit); err != ErrVKRateLimitExceeded {
-		t.Errorf("expected rate limited, got %v", err)
-	}
-}
-
-func TestCleanupVKRateLimit(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-	vk := &VirtualKey{Name: "test", Status: "active"}
-	db.CreateVirtualKey(vk)
-
-	// Insert old records
-	oldMinute := time.Now().Unix() - 7200 // 2 hours ago
-	db.DB.Create(&VKRateLimit{
-		VKID:         vk.ID,
-		MinuteTs:     oldMinute,
-		RequestCount: 10,
-	})
-
-	// Insert recent records
-	recentMinute := time.Now().Unix() - 30
-	db.DB.Create(&VKRateLimit{
-		VKID:         vk.ID,
-		MinuteTs:     recentMinute,
-		RequestCount: 5,
-	})
-
-	// Cleanup
-	if err := db.CleanupVKRateLimit(); err != nil {
-		t.Fatalf("cleanup failed: %v", err)
-	}
-
-	// Check old records removed
-	var count int64
-	db.DB.Model(&VKRateLimit{}).Where("minute_ts = ?", oldMinute).Count(&count)
-	if count != 0 {
-		t.Error("old records should be removed")
-	}
-
-	// Check recent records kept
-	db.DB.Model(&VKRateLimit{}).Where("minute_ts = ?", recentMinute).Count(&count)
-	if count != 1 {
-		t.Error("recent records should be kept")
 	}
 }
 

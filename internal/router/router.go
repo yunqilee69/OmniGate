@@ -19,6 +19,17 @@ type Attempt struct {
 	Key      store.ApiKey
 }
 
+// Combo 模型×密钥组合。重试排除按组合而不是按 key_id：
+// 同一把 key 绑到路由里多个模型时，失败一跳仍可换模型再试。
+type Combo struct {
+	ModelID int64
+	KeyID   int64
+}
+
+func (a Attempt) Combo() Combo {
+	return Combo{ModelID: a.Model.ID, KeyID: a.Key.ID}
+}
+
 // Snapshot 是请求开始时一次性读入的路由视图；请求期间不再变化（快照语义）。
 type Snapshot struct {
 	Route     store.Route
@@ -132,7 +143,7 @@ func loadModelKeys(db *gorm.DB, snap *Snapshot, modelIDs []int64) error {
 	return nil
 }
 
-func (s *Selector) availableKeys(modelID int64, keys []store.ApiKey, tried map[int64]bool, now time.Time) []store.ApiKey {
+func (s *Selector) availableKeys(modelID int64, keys []store.ApiKey, tried map[Combo]bool, now time.Time) []store.ApiKey {
 	out := make([]store.ApiKey, 0, len(keys))
 	// 批量加载本模型全部组合禁用，避免逐 key 查询。过期 temp_banned 保留记录（半开放行），
 	// 由后续成功删除或失败累加 fail_count——不在此清理，否则半开探测失败会丢失阶梯计数。
@@ -144,7 +155,7 @@ func (s *Selector) availableKeys(modelID int64, keys []store.ApiKey, tried map[i
 		}
 	}
 	for _, k := range keys {
-		if tried[k.ID] {
+		if tried[Combo{ModelID: modelID, KeyID: k.ID}] {
 			continue
 		}
 		if b, ok := banByKey[k.ID]; ok {
@@ -177,20 +188,20 @@ func weightedPick(weights []int) int {
 	return len(weights) - 1
 }
 
-// Pick 在排除 tried 中 key 的候选集内做两级选择（模型加权 → 模型内 key 轮询），并只挑
+// Pick 在排除 tried 中模型×密钥组合的候选集内做两级选择（模型加权 → 模型内 key 轮询），并只挑
 // chat 类型后端（embeddings/rerank/image 模型绝不承接 chat 请求；空 type 视为 chat 兼容旧数据）。
 // 原生直通端点（路由 endpoint 为 messages/responses）在此叠加协议过滤：直通无转换，只挑同协议模型。
 // preferModel 为会话亲和的首选模型（0 表示无）：可用时直接锁定，不可用时无感落入加权路径。
-func (s *Selector) Pick(snap *Snapshot, tried map[int64]bool, now time.Time, preferModel int64) (Attempt, bool) {
+func (s *Selector) Pick(snap *Snapshot, tried map[Combo]bool, now time.Time, preferModel int64) (Attempt, bool) {
 	return s.pick(snap, tried, now, preferModel, "chat")
 }
 
 // PickTyped 在两级选择上叠加模型类型过滤（embedding/rerank/image 端点只挑同类型后端）。
-func (s *Selector) PickTyped(snap *Snapshot, tried map[int64]bool, now time.Time, wantType string) (Attempt, bool) {
+func (s *Selector) PickTyped(snap *Snapshot, tried map[Combo]bool, now time.Time, wantType string) (Attempt, bool) {
 	return s.pick(snap, tried, now, 0, wantType)
 }
 
-func (s *Selector) pick(snap *Snapshot, tried map[int64]bool, now time.Time, preferModel int64, wantType string) (Attempt, bool) {
+func (s *Selector) pick(snap *Snapshot, tried map[Combo]bool, now time.Time, preferModel int64, wantType string) (Attempt, bool) {
 	type candModel struct {
 		model store.Model
 		keys  []store.ApiKey

@@ -27,9 +27,9 @@
 ### 1.2 非目标（v1 明确不做）
 
 - 多实例集群 / 高可用（单机单进程）
-- 用户体系、配额计费（仅一个可选的管理 token）
+- 多用户 / RBAC / 多租户组织层级（v1 仅单管理员 + 虚拟密钥凭证体系：RPM 限流、美元预算、按路由授权）
 - 协议转换仅覆盖 chat/completions（openai ↔ responses ↔ anthropic，见 `model.protocol`）；embeddings/rerank/images 按业界事实格式**直通**（仅重写 model 字段），不做跨厂商转换；完整字段映射与限制见 [`protocol-conversion.md`](./protocol-conversion.md)
-- 按用户/按 key 的限流
+- 虚拟密钥仅 RPM 限流（进程内分钟窗口）与总预算；无 TPM、模型级限流与周期自动重置
 
 ---
 

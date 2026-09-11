@@ -70,7 +70,7 @@ func TestRequestLogRecordsVKID(t *testing.T) {
 		t.Fatal(err)
 	}
 	if updated.TotalRequests != 1 {
-		t.Fatalf("RecordVKUsage did not run: total_requests=%d", updated.TotalRequests)
+		t.Fatalf("VK usage settlement did not run: total_requests=%d", updated.TotalRequests)
 	}
 }
 
@@ -244,4 +244,35 @@ func TestPendingNotRolledIntoDaily(t *testing.T) {
 		t.Fatalf("status %d — %s", resp.StatusCode, readAll(t, resp))
 	}
 	_ = json.RawMessage(nil)
+}
+
+// TestVKUsageRecordedForTypedEndpoint 回归：typed 端点（embeddings）的成功请求必须结算 VK
+// 用量。此前只有 chat 端点扣费，typed/native 端点只查预算不扣费，预算形同虚设。
+func TestVKUsageRecordedForTypedEndpoint(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":5,"total_tokens":5}}`)
+	}))
+	defer up.Close()
+	seedTypedRoute(t, st, up.URL)
+
+	resp := typedPost(t, h, "/v1/embeddings", map[string]any{"model": "mixed", "input": "hello"}, vkToken)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d — %s", resp.StatusCode, readAll(t, resp))
+	}
+	vk, err := st.GetVirtualKeyByValue(vkToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := st.GetVirtualKey(vk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.TotalRequests != 1 {
+		t.Fatalf("typed success must record vk usage: total_requests=%d", updated.TotalRequests)
+	}
+	wantCost := 5 * 10 / 1e6 // input 5 tokens × $10/1M
+	if updated.UsedUSD != wantCost {
+		t.Fatalf("used_usd = %v, want %v", updated.UsedUSD, wantCost)
+	}
 }
