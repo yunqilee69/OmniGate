@@ -280,7 +280,7 @@ export default function Settings() {
                   />
                 )}
                 <Form.Item label={<span>捕获路由白名单（空 = 全部路由）</span>} name="capture.routes">
-                  <Select mode="tags" placeholder="逻辑 modelId" tokenSeparators={[',']} />
+                  <Select mode="tags" placeholder="模型别名" tokenSeparators={[',']} />
                 </Form.Item>
                 <Form.Item label={<span>内容日志保留天数</span>} name="capture.retention_days">
                   <InputNumber min={1} max={365} style={{ width: '100%' }} />

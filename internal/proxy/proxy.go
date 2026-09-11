@@ -142,10 +142,11 @@ func newRequestID() string {
 
 // createPendingLog 在请求进入后立即创建 pending 状态的日志行，返回其 ID。
 // 后续 writeLog 通过该 ID 做 UPDATE 补充最终字段。
-func (h *Handler) createPendingLog(requestID, routeName string, isStream bool, vkID int64) int64 {
+func (h *Handler) createPendingLog(requestID, routeName, endpoint string, isStream bool, vkID int64) int64 {
 	entry := store.RequestLog{
 		RequestID: requestID,
 		Route:     routeName,
+		Endpoint:  endpoint,
 		Status:    "pending",
 		IsStream:  isStream,
 		VKID:      vkID,
@@ -314,7 +315,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pendingID := h.createPendingLog(requestID, routeName, isStream, vkID)
+	pendingID := h.createPendingLog(requestID, routeName, "completions", isStream, vkID)
 
 	tried := map[int64]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
@@ -862,7 +863,8 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 		// Save 为全列 UPDATE，autoCreateTime 只在 Create 生效：
 		// 显式带请求开始时间，避免 pending 行的 created_at 被零值覆盖。
 		entry.CreatedAt = start.Unix()
-		if err := h.db.DB.Save(&entry).Error; err != nil {
+		// endpoint 在入口已写入 pending 行；Omit 防止零值覆盖。
+		if err := h.db.DB.Omit("endpoint").Save(&entry).Error; err != nil {
 			slog.Error("update request_log failed", "err", err, "request_id", requestID)
 			return
 		}
@@ -1151,8 +1153,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 			return
 		}
 	}
-
-	pendingID := h.createPendingLog(requestID, routeName, isStream, vkID)
+	pendingID := h.createPendingLog(requestID, routeName, endpoint, isStream, vkID)
 	tried := map[int64]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult

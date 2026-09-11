@@ -150,7 +150,7 @@ export default function RoutesPage() {
         },
       }}>
         <Table.Column title="ID" dataIndex="id" width={60} />
-        <Table.Column title="逻辑 modelId" dataIndex="name" render={(v) => <code>{v}</code>} />
+        <Table.Column title="模型别名" dataIndex="name" render={(v) => <code>{v}</code>} />
         <Table.Column title="端点类型" dataIndex="endpoint" width={120} />
         <Table.Column title="目标数" render={(_, r: Route) => r.endpoint === 'mcp' ? r.mcp_targets?.length || 0 : r.targets?.length || 0} width={80} />
         <Table.Column title="备注" dataIndex="remark" ellipsis />
@@ -173,7 +173,7 @@ export default function RoutesPage() {
 
       <Modal title={editing ? '编辑路由' : '新增路由'} open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnHidden width={640}>
         <Form form={form} layout="vertical">
-          <Form.Item name="name" label="逻辑 modelId（客户端请求时填写）" rules={[{ required: true }]}>
+          <Form.Item name="name" label="模型别名（客户端 model 参数填写）" rules={[{ required: true }]}>
             <Input placeholder="如 glm" />
           </Form.Item>
           <Form.Item 
@@ -349,7 +349,7 @@ function curlBodyJson(model: string, endpoint: string, stream: boolean): string 
   } else {
     body.messages = [{ role: 'user', content: '你好' }]
   }
-  return JSON.stringify(body).replaceAll('"', '\\"')
+  return JSON.stringify(body).replace(/"/g, '\\"')
 }
 
 function buildCurl(base: string, model: string, endpoint: string, stream = false): string {
@@ -477,7 +477,7 @@ function RequestExample({ route, onClose }: { route: Route | null; onClose: () =
           <code>{base}{epPath}</code>
         </Typography.Paragraph>
         <div className="meta-text" style={{ marginTop: 4 }}>
-          代理面通过虚拟密钥鉴权：把 vk-你的虚拟密钥 替换为「虚拟密钥」页创建的 key；model 填路由名
+          代理面通过虚拟密钥鉴权：把 vk-你的虚拟密钥 替换为「虚拟密钥」页创建的 key；model 填模型别名
         </div>
       </div>
       <Tabs

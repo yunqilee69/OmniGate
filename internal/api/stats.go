@@ -535,6 +535,10 @@ func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
 		conds = append(conds, "r.status = ?")
 		args = append(args, v)
 	}
+	if v := q.Get("endpoint"); v != "" {
+		conds = append(conds, "r.endpoint = ?")
+		args = append(args, v)
+	}
 	from, to := parseTimeRange(r)
 	conds = append(conds, "r.created_at BETWEEN ? AND ?")
 	args = append(args, from, to)

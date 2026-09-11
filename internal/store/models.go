@@ -216,10 +216,13 @@ func (VKRateLimit) TableName() string { return "vk_rate_limits" }
 func (AppConfig) TableName() string   { return "app_config" }
 
 // RequestLog 请求日志（统计事实表，只增不改；表结构上不存在任何请求内容字段）。
+// Endpoint 记录请求进入的端点类型（completions/messages/responses/embedding/rerank/image），
+// 在入口创建 pending 行时写入；路由删除后日志仍自包含。
 type RequestLog struct {
-	ID               int64   `json:"id" gorm:"primaryKey;autoIncrement"`
-	CreatedAt        int64   `json:"created_at" gorm:"autoCreateTime;index:idx_rl_time_route,priority:1;index:idx_rl_time_provider,priority:1"`
-	Status           string  `json:"status" gorm:"size:32;not null"`
+	ID               int64  `json:"id" gorm:"primaryKey;autoIncrement"`
+	CreatedAt        int64  `json:"created_at" gorm:"autoCreateTime;index:idx_rl_time_route,priority:1;index:idx_rl_time_provider,priority:1"`
+	Status           string `json:"status" gorm:"size:32;not null"`
+	Endpoint         string `json:"endpoint" gorm:"size:32;not null;default:''"`
 	Route            string  `json:"route" gorm:"size:191;not null;index:idx_rl_route;index:idx_rl_time_route,priority:2"`
 	Provider         string  `json:"provider" gorm:"size:191;not null;index:idx_rl_provider;index:idx_rl_time_provider,priority:2"`
 	Model            string  `json:"model" gorm:"size:191;not null"`

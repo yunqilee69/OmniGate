@@ -9,7 +9,7 @@ interface Log {
   id: number
   request_id: string
   route: string
-  model: string
+  endpoint: string
   provider: string
   key_id: number
   key_value_masked?: string
@@ -36,14 +36,25 @@ const statusTag = (s: string) => {
   return <StatusTag tone="error">错误</StatusTag>
 }
 
+const endpointLabel = (v?: string) => ({
+  completions: '对话',
+  messages: '对话 (Anthropic)',
+  responses: 'Responses',
+  embedding: '向量化',
+  rerank: '重排',
+  image: '生图',
+  mcp: 'MCP',
+}[v ?? ''] ?? v)
+
 export default function Logs() {
   const nav = useNavigate()
   const [items, setItems] = useState<Log[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
-  const [routes, setRoutes] = useState<{ id: number; name: string }[]>([])
+  const [routes, setRoutes] = useState<{ id: number; name: string; endpoint?: string }[]>([])
   const [filterRoute, setFilterRoute] = useState<string | undefined>()
   const [filterStatus, setFilterStatus] = useState<string | undefined>()
+  const [filterEndpoint, setFilterEndpoint] = useState<string | undefined>()
   // null = 未手动圈定范围，默认"最近 7 天（含今天）"；每次 load 动态计算，保证刷新能看到最新日志
   const [range, setRange] = useState<[Dayjs, Dayjs] | null>(null)
 
@@ -58,6 +69,7 @@ export default function Logs() {
     })
     if (filterRoute) q.set('route', filterRoute)
     if (filterStatus) q.set('status', filterStatus)
+    if (filterEndpoint) q.set('endpoint', filterEndpoint)
     try {
       const res = await api<{ total: number; items: Log[] }>('GET', `/api/logs?${q.toString()}`)
       setItems(res.items)
@@ -66,9 +78,8 @@ export default function Logs() {
       message.error(e.message)
     }
   }
-
-  useEffect(() => { load(1) }, [filterRoute, filterStatus, range])
-  useEffect(() => { api<{ id: number; name: string }[]>('GET', '/api/routes').then(setRoutes).catch(() => {}) }, [])
+  useEffect(() => { load(1) }, [filterRoute, filterStatus, filterEndpoint, range])
+  useEffect(() => { api<{ id: number; name: string; endpoint?: string }[]>('GET', '/api/routes').then(setRoutes).catch(() => {}) }, [])
 
   return (
     <div>
@@ -77,6 +88,13 @@ export default function Logs() {
           allowClear placeholder="路由" style={{ width: 180 }}
           value={filterRoute} onChange={setFilterRoute}
           options={routes.map((r) => ({ value: r.name, label: r.name }))}
+        />
+        <Select
+          allowClear placeholder="路由类型" style={{ width: 140 }}
+          value={filterEndpoint} onChange={setFilterEndpoint}
+          options={[...new Set(routes.map((r) => r.endpoint).filter(Boolean))].map((v) => ({
+            value: v, label: endpointLabel(v),
+          }))}
         />
         <Select
           allowClear placeholder="状态" style={{ width: 140 }}
@@ -99,7 +117,7 @@ export default function Logs() {
         dataSource={items}
         size="small"
         tableLayout="fixed"
-        scroll={{ x: 1480 }}
+        scroll={{ x: 1590 }}
         onRow={(log) => ({ onClick: () => nav(`/logs/${log.request_id}`), style: { cursor: 'pointer' } })}
         rowClassName={(l) => l.status === 'error' ? 'log-row-error' : ''}
         pagination={{
@@ -112,6 +130,8 @@ export default function Logs() {
           render={(v) => dayjs(v * 1000).format('MM-DD HH:mm:ss')} />
         <Table.Column title="路由" dataIndex="route" width={110}
           render={(v) => <code>{v}</code>} />
+        <Table.Column title="路由类型" dataIndex="endpoint" width={110}
+          render={(v) => endpointLabel(v)} />
         <Table.Column title="提供商/模型" dataIndex="model" width={200} ellipsis
           render={(_, l) => l.provider ? `${l.provider}/${l.model}` : l.model} />
         <Table.Column title="密钥" width={180} render={(_, l: Log) => (

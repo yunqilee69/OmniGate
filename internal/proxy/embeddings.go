@@ -199,7 +199,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 		}
 	}
 
-	pendingID := h.createPendingLog(requestID, routeName, false, vkID)
+	pendingID := h.createPendingLog(requestID, routeName, kind.modelType, false, vkID)
 	tried := map[int64]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult
