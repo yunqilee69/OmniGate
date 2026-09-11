@@ -57,6 +57,20 @@ const FALLBACK_SLOTS: { key: string; label: string; path: string; match: (m: Mod
   { key: 'fallback.embedding_model_id', label: 'Embedding 兜底', path: '/v1/embeddings', match: (m) => m.type === 'embedding' },
   { key: 'fallback.rerank_model_id', label: 'Rerank 兜底', path: '/v1/rerank', match: (m) => m.type === 'rerank' },
 ]
+// Select mode="tags" 键入的标签始终是字符串，而默认值自服务端反序列化为数字；
+// 统一归一化为 100-599 的整数，避免后端 intArr 因字符串元素拒绝保存。
+const normalizeStatuses = (v: unknown): number[] => {
+  if (!Array.isArray(v)) throw new Error('可重试 HTTP 状态码必须是数组')
+  const out: number[] = []
+  for (const raw of v) {
+    const n = Number(raw)
+    if (!Number.isInteger(n) || n < 100 || n > 599) {
+      throw new Error(`无效的 HTTP 状态码：${String(raw)}`)
+    }
+    if (!out.includes(n)) out.push(n)
+  }
+  return out.sort((a, b) => a - b)
+}
 
 export default function Settings() {
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -101,11 +115,12 @@ export default function Settings() {
       if (v !== undefined && v !== null) payload[k] = v
     }
     try {
+      if ('retry.statuses' in payload) payload['retry.statuses'] = normalizeStatuses(payload['retry.statuses'])
       const updated = await api('PUT', '/api/settings', payload)
       setSettings(updated)
       message.success('已保存，即时生效')
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e))
     }
   }
 
