@@ -37,8 +37,8 @@ func TestProbeModelOK(t *testing.T) {
 	}))
 	defer up.Close()
 
-	for _, tc := range []struct{ proto string }{{"completions"}, {"messages"}} {
-		id := seedProbeTarget(t, st, up.URL, tc.proto)
+	for _, tc := range []struct{ proto, basePath string }{{"completions", ""}, {"messages", "/v1"}} {
+		id := seedProbeTarget(t, st, up.URL+tc.basePath, tc.proto)
 		rtm, _ := config.NewRuntimeManager(st)
 		res := proxy.ProbeModel(st, rtm, id)
 		if !res.Ok || res.HTTPStatus != 200 || res.LatencyMs < 0 {

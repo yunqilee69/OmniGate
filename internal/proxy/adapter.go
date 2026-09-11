@@ -149,7 +149,7 @@ func (*anthropicAdapter) endpoint(baseURL string, model *store.Model) string {
 	if model != nil && model.ApiPath != "" {
 		return model.ApiPath
 	}
-	return strings.TrimRight(baseURL, "/") + "/v1/messages"
+	return strings.TrimRight(baseURL, "/") + "/messages"
 }
 func (*anthropicAdapter) setHeaders(h map[string]string, apiKey string) {
 	h["x-api-key"] = apiKey

@@ -399,6 +399,7 @@ HTTP 503
 - **模型按 `type` 归属端点**：路由内只有同类型后端会被选中（embedding 请求绝不落到 chat 模型上）；请求体仅重写 `model` 字段（逻辑路由名 → 物理模型名），其余字段与响应体**原样直通**——rerank 无标准可归一，改写必踩厂商字段差异（vLLM 另有 `/v2/rerank`、Jina 多 `instruction`、`top_n`/`top_k` 混用），故不做任何转换。
 - **usage 提取（尽力而为）**：embeddings 读 `usage.prompt_tokens/total_tokens`；rerank 依次尝试 `meta.tokens` → `meta.billed_units` → `usage.total_tokens`；images 读 `usage.input_tokens/output_tokens`（OpenRouter 形状 `prompt_tokens/completion_tokens` 兜底；按图计费的厂商如 CogView 无 token 用量记 0）。计费与 chat 一致：`prompt × input_price + completion × output_price`。
 - **流式**：embeddings/rerank 忽略 `stream` 字段（业界均无流式语义）；images 将 `stream` 原样透传（上游 gpt-image 系可能返回 SSE 渐进预览），网关为缓冲式转发，响应体与 Content-Type 原样回写，流式响应 usage 记 0。typed 端点同样走失败转移/熔断/统计/request_log 全链路，网关自身错误统一以 OpenAI error envelope 返回。
+- **出站路径版本段**：base 由用户填写且必须自带版本前缀（OpenAI 式 `/v1`、智谱 `/v4`），出站一律 `baseURL + /<resource>`：chat `/chat/completions`、messages `/messages`、responses `/responses`、typed `/embeddings` `/rerank` `/images/generations`。网关不推断版本段，故 base 填 `https://api.anthropic.com/v1` 得到 `.../v1/messages`，填 `https://api.anthropic.com` 得到 `.../messages`。
 
 ### 7.2 管理面（`/api/*`，按启动层鉴权配置受保护，见 §9.1）
 

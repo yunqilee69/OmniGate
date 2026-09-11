@@ -1,6 +1,8 @@
 package proxy_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -63,7 +65,7 @@ func TestAnthropicBufferedConversion(t *testing.T) {
 	var gotAuth string
 	up := anthropicUpstream(t, &gotReq, &gotAuth)
 	defer up.Close()
-	seedProtocolModel(t, st, up.URL, "claude-sonnet-4", "messages")
+	seedProtocolModel(t, st, up.URL+"/v1", "claude-sonnet-4", "messages")
 
 	resp := postWithAuth(t, h, map[string]any{
 		"model": "claude-sonnet-4-route",
@@ -108,7 +110,7 @@ func TestAnthropicStreamConversion(t *testing.T) {
 	var gotAuth string
 	up := anthropicUpstream(t, &gotReq, &gotAuth)
 	defer up.Close()
-	seedProtocolModel(t, st, up.URL, "claude-sonnet-4", "messages")
+	seedProtocolModel(t, st, up.URL+"/v1", "claude-sonnet-4", "messages")
 
 	resp := postWithAuth(t, h, map[string]any{
 		"model": "claude-sonnet-4-route", "stream": true,
@@ -132,6 +134,92 @@ func TestAnthropicStreamConversion(t *testing.T) {
 	ls := logs(t, st)
 	if ls[0].PromptTokens != 25 || ls[0].CompletionTokens != 7 || !ls[0].IsStream {
 		t.Fatalf("stream log usage wrong: %+v", ls[0])
+	}
+}
+
+// messagesUpstreamPath 仅记录出站路径并返回最小 Anthropic 响应；路径不符时返回 404 供断言失败暴露。
+func messagesUpstreamPath(t *testing.T, gotPath *string, wantPath string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*gotPath = r.URL.Path
+		if r.URL.Path != wantPath {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, `{"error":"wrong path %s"}`, r.URL.Path)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_01","type":"message","role":"assistant","model":"claude-sonnet-4","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+}
+
+// messages 出站与 responses 同规则：直接拼 /messages，版本前缀由 base 自带。
+// 回归：base 已含 /v1（用户在提供商里填 https://.../v1）时不得拼成 /v1/v1/messages。
+func TestAnthropicMessagesEndpointAppendsSuffix(t *testing.T) {
+	tests := []struct {
+		name     string
+		basePath string
+		wantPath string
+	}{
+		{"bare base", "", "/messages"},
+		{"versioned base", "/v1", "/v1/messages"},
+		{"versioned base with trailing slash", "/v1/", "/v1/messages"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st, h, vkToken := newTestStackWithVK(t)
+			var gotPath string
+			up := messagesUpstreamPath(t, &gotPath, tt.wantPath)
+			defer up.Close()
+			seedProtocolModel(t, st, up.URL+tt.basePath, "claude-sonnet-4", "messages")
+
+			resp := postWithAuth(t, h, map[string]any{
+				"model":    "claude-sonnet-4-route",
+				"messages": []map[string]any{{"role": "user", "content": "hi"}},
+			}, vkToken)
+			if resp.StatusCode != 200 {
+				t.Fatalf("status %d — %s (upstream path %s)", resp.StatusCode, readAll(t, resp), gotPath)
+			}
+			if gotPath != tt.wantPath {
+				t.Fatalf("upstream path = %s, want %s", gotPath, tt.wantPath)
+			}
+		})
+	}
+}
+
+// 原生 /v1/messages 直通路径（路由 endpoint=messages）同样不得重复 /v1。
+func TestAnthropicNativeMessagesEndpointNoVersionDuplication(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	var gotPath string
+	up := messagesUpstreamPath(t, &gotPath, "/v1/messages")
+	defer up.Close()
+
+	p := store.Provider{Name: "claude-prov", BaseURL: up.URL + "/v1", TimeoutMs: 3000}
+	st.DB.Create(&p)
+	m := store.Model{ProviderID: p.ID, Name: "claude", Protocol: "messages", Type: "chat"}
+	st.DB.Create(&m)
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-m", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
+	rt := store.Route{Name: "claude-route", Endpoint: "messages"}
+	st.DB.Create(&rt)
+	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
+
+	body, _ := json.Marshal(map[string]any{
+		"model":      "claude-route",
+		"max_tokens": 16,
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+vkToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	resp := rec.Result()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d — %s (upstream path %s)", resp.StatusCode, readAll(t, resp), gotPath)
+	}
+	if gotPath != "/v1/messages" {
+		t.Fatalf("upstream path = %s, want /v1/messages", gotPath)
 	}
 }
 
@@ -264,7 +352,7 @@ func TestAnthropicThinkingConversion(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	up := anthropicThinkingUpstream(t)
 	defer up.Close()
-	seedProtocolModel(t, st, up.URL, "claude-think", "messages")
+	seedProtocolModel(t, st, up.URL+"/v1", "claude-think", "messages")
 
 	// 流式：thinking_delta → delta.reasoning_content，thinking 原始事件不得泄漏
 	resp := postWithAuth(t, h, map[string]any{

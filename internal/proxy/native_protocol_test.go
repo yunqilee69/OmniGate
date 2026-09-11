@@ -40,7 +40,7 @@ func TestNativeMessagesFiltersProtocol(t *testing.T) {
 	st.DB.Create(&kC)
 	st.DB.Create(&store.ModelKey{ModelID: mC.ID, KeyID: kC.ID})
 
-	pM := store.Provider{Name: "claude-prov", BaseURL: messagesUp.URL, TimeoutMs: 3000}
+	pM := store.Provider{Name: "claude-prov", BaseURL: messagesUp.URL + "/v1", TimeoutMs: 3000}
 	st.DB.Create(&pM)
 	mM := store.Model{ProviderID: pM.ID, Name: "claude", Protocol: "messages", Type: "chat"}
 	st.DB.Create(&mM)
