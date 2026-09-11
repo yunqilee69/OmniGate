@@ -181,13 +181,16 @@ export default function RoutesPage() {
             label="端点类型" 
             initialValue="completions" 
             rules={[{ required: true }]}
-            extra="决定代理路径与协议：completions/messages/responses 用于 LLM，mcp 用于 MCP 工具聚合"
+            extra="决定代理路径与协议：completions/messages/responses用于LLM，embedding/rerank/image用于专用模型，mcp用于MCP工具聚合"
           >
             <Select
               options={[
                 { value: 'completions', label: 'completions — /v1/chat/completions（OpenAI）' },
                 { value: 'messages', label: 'messages — /v1/messages（Anthropic）' },
                 { value: 'responses', label: 'responses — /v1/responses（OpenAI）' },
+                { value: 'embedding', label: 'embedding — /v1/embeddings（向量化）' },
+                { value: 'rerank', label: 'rerank — /v1/rerank（重排）' },
+                { value: 'image', label: 'image — /v1/images/generations（生图）' },
                 { value: 'mcp', label: 'mcp — /v1/mcp/{route_name}（MCP 工具聚合）' },
               ]}
             />
@@ -244,7 +247,13 @@ export default function RoutesPage() {
                           const requiredProtocol = endpoint === 'messages' ? 'messages' : endpoint === 'responses' ? 'responses' : 'completions'
                           const targets = getFieldValue('targets') || []
                           const selectedModelIds = new Set(targets.map((t: any) => t?.model_id).filter(Boolean))
-                          const filteredModels = models.filter((m) => m.protocol === requiredProtocol)
+                          const filteredModels = models.filter((m) => {
+                            if (m.protocol !== requiredProtocol) return false
+                            if (endpoint === 'embedding') return m.type === 'embedding'
+                            if (endpoint === 'rerank') return m.type === 'rerank'
+                            if (endpoint === 'image') return m.type === 'image'
+                            return m.type === 'chat'
+                          })
                           
                           return (
                             <>
@@ -298,89 +307,83 @@ export default function RoutesPage() {
 }
 
 function endpointPath(ep: string): string {
-  return ep === 'messages' ? '/v1/messages' : ep === 'responses' ? '/v1/responses' : '/v1/chat/completions'
+  return ep === 'messages' ? '/v1/messages' : ep === 'responses' ? '/v1/responses' : ep === 'embedding' ? '/v1/embeddings' : ep === 'rerank' ? '/v1/rerank' : ep === 'image' ? '/v1/images/generations' : '/v1/chat/completions'
 }
 
-function buildCurl(base: string, model: string, endpoint: string): string {
-  const path = endpointPath(endpoint)
+const VK_KEY = 'vk-你的虚拟密钥'
+
+// 按端点生成示例请求体行（bash 多行美观格式）
+function curlBodyLines(model: string, endpoint: string, stream: boolean): string[] {
+  const streamLine = stream ? [`    "stream": true,`] : []
   if (endpoint === 'messages') {
     return [
-      `curl ${base}${path} \\`,
-      `  -H 'Content-Type: application/json' \\`,
-      `  -H 'x-api-key: unused' \\`,
-      `  -H 'anthropic-version: 2023-06-01' \\`,
-      `  -d '{`,
       `    "model": "${model}",`,
       `    "max_tokens": 1024,`,
+      ...streamLine,
       `    "messages": [{"role": "user", "content": "你好"}]`,
-      `  }'`,
-    ].join('\n')
+    ]
   }
   if (endpoint === 'responses') {
     return [
-      `curl ${base}${path} \\`,
-      `  -H 'Content-Type: application/json' \\`,
-      `  -d '{`,
       `    "model": "${model}",`,
+      ...streamLine,
       `    "input": "你好"`,
-      `  }'`,
-    ].join('\n')
+    ]
   }
   return [
-    `curl ${base}${path} \\`,
-    `  -H 'Content-Type: application/json' \\`,
-    `  -d '{`,
     `    "model": "${model}",`,
+    ...streamLine,
     `    "messages": [{"role": "user", "content": "你好"}]`,
-    `  }'`,
-  ].join('\n')
+  ]
 }
 
-function buildCurlStream(base: string, model: string, endpoint: string): string {
-  const path = endpointPath(endpoint)
+// 按端点生成单行 JSON（Windows cmd 用，双引号转义）
+function curlBodyJson(model: string, endpoint: string, stream: boolean): string {
+  const body: Record<string, unknown> = { model }
+  if (stream) body.stream = true
   if (endpoint === 'messages') {
-    return [
-      `curl -N ${base}${path} \\`,
-      `  -H 'Content-Type: application/json' \\`,
-      `  -H 'x-api-key: unused' \\`,
-      `  -H 'anthropic-version: 2023-06-01' \\`,
-      `  -d '{`,
-      `    "model": "${model}",`,
-      `    "max_tokens": 1024,`,
-      `    "stream": true,`,
-      `    "messages": [{"role": "user", "content": "你好"}]`,
-      `  }'`,
-    ].join('\n')
+    body.max_tokens = 1024
+    body.messages = [{ role: 'user', content: '你好' }]
+  } else if (endpoint === 'responses') {
+    body.input = '你好'
+  } else {
+    body.messages = [{ role: 'user', content: '你好' }]
   }
-  if (endpoint === 'responses') {
-    return [
-      `curl -N ${base}${path} \\`,
-      `  -H 'Content-Type: application/json' \\`,
-      `  -d '{`,
-      `    "model": "${model}",`,
-      `    "stream": true,`,
-      `    "input": "你好"`,
-      `  }'`,
-    ].join('\n')
-  }
-  return [
-    `curl -N ${base}${path} \\`,
+  return JSON.stringify(body).replaceAll('"', '\\"')
+}
+
+function buildCurl(base: string, model: string, endpoint: string, stream = false): string {
+  const path = endpointPath(endpoint)
+  const lines = [
+    `curl ${stream ? '-N ' : ''}${base}${path} \\`,
     `  -H 'Content-Type: application/json' \\`,
-    `  -d '{`,
-    `    "model": "${model}",`,
-    `    "stream": true,`,
-    `    "messages": [{"role": "user", "content": "你好"}]`,
-    `  }'`,
-  ].join('\n')
+    `  -H 'Authorization: Bearer ${VK_KEY}' \\`,
+  ]
+  if (endpoint === 'messages') lines.push(`  -H 'anthropic-version: 2023-06-01' \\`)
+  lines.push(`  -d '{`, ...curlBodyLines(model, endpoint, stream), `  }'`)
+  return lines.join('\n')
+}
+
+function buildCurlCmd(base: string, model: string, endpoint: string, stream = false): string {
+  const path = endpointPath(endpoint)
+  const lines = [
+    `rem 中文内容需 UTF-8 编码：先执行 chcp 65001`,
+    `curl ${stream ? '-N ' : ''}${base}${path} ^`,
+    `  -H "Content-Type: application/json" ^`,
+    `  -H "Authorization: Bearer ${VK_KEY}" ^`,
+  ]
+  if (endpoint === 'messages') lines.push(`  -H "anthropic-version: 2023-06-01" ^`)
+  lines.push(`  -d "${curlBodyJson(model, endpoint, stream)}"`)
+  return lines.join('\n')
 }
 
 function buildPython(base: string, model: string, endpoint: string): string {
-  const path = endpointPath(endpoint)
   if (endpoint === 'messages') {
     return [
       `from anthropic import Anthropic`,
       ``,
-      `client = Anthropic(base_url="${base}/v1", api_key="unused")`,
+      `# auth_token 生成 Authorization: Bearer 头，供网关虚拟密钥鉴权`,
+      `client = Anthropic(base_url="${base}/v1", auth_token="${VK_KEY}")`,
       ``,
       `resp = client.messages.create(`,
       `    model="${model}",`,
@@ -394,7 +397,7 @@ function buildPython(base: string, model: string, endpoint: string): string {
     return [
       `from openai import OpenAI`,
       ``,
-      `client = OpenAI(base_url="${base}/v1", api_key="unused")`,
+      `client = OpenAI(base_url="${base}/v1", api_key="${VK_KEY}")`,
       ``,
       `resp = client.responses.create(`,
       `    model="${model}",`,
@@ -406,7 +409,7 @@ function buildPython(base: string, model: string, endpoint: string): string {
   return [
     `from openai import OpenAI`,
     ``,
-    `client = OpenAI(base_url="${base}/v1", api_key="unused")`,
+    `client = OpenAI(base_url="${base}/v1", api_key="${VK_KEY}")`,
     ``,
     `resp = client.chat.completions.create(`,
     `    model="${model}",`,
@@ -474,13 +477,15 @@ function RequestExample({ route, onClose }: { route: Route | null; onClose: () =
           <code>{base}{epPath}</code>
         </Typography.Paragraph>
         <div className="meta-text" style={{ marginTop: 4 }}>
-          代理面无需鉴权；把 model 换成任意逻辑 modelId 即可直接调用
+          代理面通过虚拟密钥鉴权：把 vk-你的虚拟密钥 替换为「虚拟密钥」页创建的 key；model 填路由名
         </div>
       </div>
       <Tabs
         items={[
           { key: 'curl', label: 'curl', children: <CodeBlock code={buildCurl(base, route.name, ep)} /> },
-          { key: 'curl-stream', label: 'curl 流式', children: <CodeBlock code={buildCurlStream(base, route.name, ep)} /> },
+          { key: 'curl-win', label: 'curl (Windows)', children: <CodeBlock code={buildCurlCmd(base, route.name, ep)} /> },
+          { key: 'curl-stream', label: 'curl 流式', children: <CodeBlock code={buildCurl(base, route.name, ep, true)} /> },
+          { key: 'curl-stream-win', label: 'curl 流式 (Windows)', children: <CodeBlock code={buildCurlCmd(base, route.name, ep, true)} /> },
           { key: 'python', label: 'Python SDK', children: <CodeBlock code={buildPython(base, route.name, ep)} /> },
         ]}
       />

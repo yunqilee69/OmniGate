@@ -211,8 +211,8 @@ func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
 	if req.Endpoint == "" {
 		req.Endpoint = "completions"
 	}
-	if req.Endpoint != "completions" && req.Endpoint != "messages" && req.Endpoint != "responses" && req.Endpoint != "mcp" {
-		writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses, mcp")
+	if req.Endpoint != "completions" && req.Endpoint != "messages" && req.Endpoint != "responses" && req.Endpoint != "embedding" && req.Endpoint != "rerank" && req.Endpoint != "image" && req.Endpoint != "mcp" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses, embedding, rerank, image, mcp")
 		return
 	}
 
@@ -308,8 +308,8 @@ func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Endpoint != nil {
 		v := strings.TrimSpace(*req.Endpoint)
-		if v != "completions" && v != "messages" && v != "responses" && v != "mcp" {
-			writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses, mcp")
+		if v != "completions" && v != "messages" && v != "responses" && v != "embedding" && v != "rerank" && v != "image" && v != "mcp" {
+			writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses, embedding, rerank, image, mcp")
 			return
 		}
 		simple["endpoint"] = v

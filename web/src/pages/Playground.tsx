@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import {
-  AutoComplete, Button, Card, Collapse, Input, InputNumber, Select, Space, Tabs, Tag, Tooltip, Typography, message,
+  AutoComplete, Button, Card, Collapse, Image, Input, InputNumber, Select, Space, Tabs, Tag, Tooltip, Typography, Upload, message,
 } from 'antd'
-import { ClearOutlined, SendOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
+import { ClearOutlined, DownloadOutlined, SendOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { isRecord } from '../utils/guards'
@@ -320,7 +320,9 @@ export default function PlaygroundPage() {
   // 生图测试
   const [imgRoute, setImgRoute] = useState<string>()
   const [imgPrompt, setImgPrompt] = useState('')
-  const [imgSize, setImgSize] = useState<string>()
+  const [imgSize, setImgSize] = useState<string>('1K')
+  const [imgRatio, setImgRatio] = useState<string>('1:1')
+  const [imgImages, setImgImages] = useState<string[]>([])
   const [imgN, setImgN] = useState(1)
   const [imgBusy, setImgBusy] = useState(false)
   const [imgMs, setImgMs] = useState<number | null>(null)
@@ -696,6 +698,8 @@ export default function PlaygroundPage() {
       const t0 = performance.now()
       const body: Record<string, unknown> = { model: imgRoute, prompt, n: imgN }
       if (imgSize) body.size = imgSize
+      if (imgRatio) body.ratio = imgRatio
+      if (imgImages.length > 0) body.image = imgImages
       const res = await fetch('/v1/images/generations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${vkKey}` },
@@ -1108,6 +1112,45 @@ export default function PlaygroundPage() {
     </div>
   )
 
+
+  // 生成图片独立组件（支持悬浮下载 + 预览放大）
+  function GeneratedImage({ src, index }: { src: string; index: number }) {
+    const [isHovered, setIsHovered] = useState(false)
+    return (
+      <div
+        style={{ position: 'relative' }}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+      >
+        <Image
+          src={src}
+          alt={`generated-${index}`}
+          style={{ width: '100%', borderRadius: 8, border: '1px solid #ebebeb' }}
+        />
+        {isHovered && (
+          <Button
+            size="small"
+            icon={<DownloadOutlined />}
+            style={{
+              position: 'absolute',
+              top: 8,
+              right: 8,
+              opacity: 0.9,
+            }}
+            onClick={() => {
+              const a = document.createElement('a')
+              a.href = src
+              a.download = `generated-${Date.now()}-${index}.png`
+              a.click()
+            }}
+          >
+            下载
+          </Button>
+        )}
+      </div>
+    )
+  }
+
   const imagePane = (
     <div style={{ display: 'flex', gap: 16, alignItems: 'stretch', height: 'calc(100vh - 190px)' }}>
       {configCard('生图', 'image', imgRoute, setImgRoute, (
@@ -1115,36 +1158,94 @@ export default function PlaygroundPage() {
           <div>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>提示词</Typography.Text>
             <Input.TextArea
-              rows={5}
+              rows={4}
               style={{ marginTop: 4 }}
               placeholder="描述想生成的图像"
               value={imgPrompt}
               onChange={(e) => setImgPrompt(e.target.value)}
             />
           </div>
-          <Space size="middle">
-            <div>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>尺寸 / 清晰度</Typography.Text>
-              <AutoComplete
-                style={{ width: 140, marginTop: 4, display: 'block' }}
-                placeholder="默认，可自定义"
-                value={imgSize}
-                onChange={(v) => setImgSize(v || undefined)}
-                options={['auto', '512x512', '1024x1024', '1024x1536', '1536x1024', '2048x2048（2K）', '4096x4096（4K）', '2K', '4K'].map((s) => ({ value: s.includes('（') ? s.slice(0, s.indexOf('（')) : s, label: s }))}
-                filterOption={(input, option) => (option?.value as string).toLowerCase().includes(input.toLowerCase())}
-              />
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>图片分辨率</Typography.Text>
+            <div style={{ marginTop: 4 }}>
+              <Button.Group style={{ width: '100%' }}>
+                {['1K', '2K', '3K', '4K'].map((size) => (
+                  <Button
+                    key={size}
+                    type={imgSize === size ? 'primary' : 'default'}
+                    style={{ flex: 1 }}
+                    onClick={() => setImgSize(size)}
+                  >
+                    {size}
+                  </Button>
+                ))}
+              </Button.Group>
             </div>
-            <div>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>张数</Typography.Text>
-              <InputNumber
-                min={1}
-                max={4}
-                style={{ width: 140, marginTop: 4, display: 'block' }}
-                value={imgN}
-                onChange={(v) => setImgN(v ?? 1)}
-              />
+          </div>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>宽高比</Typography.Text>
+            <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <Button.Group style={{ width: '100%' }}>
+                {['1:1', '3:4', '4:3', '16:9'].map((ratio) => (
+                  <Button
+                    key={ratio}
+                    type={imgRatio === ratio ? 'primary' : 'default'}
+                    style={{ flex: 1 }}
+                    onClick={() => setImgRatio(ratio)}
+                  >
+                    {ratio}
+                  </Button>
+                ))}
+              </Button.Group>
+              <Button.Group style={{ width: '100%' }}>
+                {['9:16', '2:3', '3:2', '21:9'].map((ratio) => (
+                  <Button
+                    key={ratio}
+                    type={imgRatio === ratio ? 'primary' : 'default'}
+                    style={{ flex: 1 }}
+                    onClick={() => setImgRatio(ratio)}
+                  >
+                    {ratio}
+                  </Button>
+                ))}
+              </Button.Group>
             </div>
-          </Space>
+          </div>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>参考图(图生图/多图合成)</Typography.Text>
+            <Upload
+              accept="image/*"
+              multiple
+              fileList={imgImages.map((url, i) => ({ uid: String(i), name: `image-${i}`, status: 'done' as const, url }))}
+              beforeUpload={(file) => {
+                const reader = new FileReader()
+                reader.onload = (e) => {
+                  const dataUrl = e.target?.result as string
+                  setImgImages((prev) => [...prev, dataUrl])
+                }
+                reader.readAsDataURL(file)
+                return false
+              }}
+              onRemove={(file) => {
+                const idx = imgImages.findIndex((_, i) => String(i) === file.uid)
+                if (idx >= 0) setImgImages((prev) => prev.filter((_, i) => i !== idx))
+              }}
+              listType="picture-card"
+              style={{ marginTop: 4 }}
+            >
+              {imgImages.length < 5 && <div><Typography.Text type="secondary">+上传</Typography.Text></div>}
+            </Upload>
+          </div>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>张数</Typography.Text>
+            <InputNumber
+              min={1}
+              max={4}
+              style={{ width: '100%', marginTop: 4 }}
+              value={imgN}
+              onChange={(v) => setImgN(v ?? 1)}
+            />
+          </div>
           <Button type="primary" icon={<SendOutlined />} loading={imgBusy} disabled={!imgPrompt.trim()} onClick={runImage}>
             生成图像
           </Button>
@@ -1174,14 +1275,7 @@ export default function PlaygroundPage() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
               {(imgResult.data ?? []).map((d, i) => {
                 const src = d.url ?? (d.b64_json ? `data:image/png;base64,${d.b64_json}` : '')
-                return src ? (
-                  <img
-                    key={i}
-                    src={src}
-                    alt={`generated-${i}`}
-                    style={{ width: '100%', borderRadius: 8, border: '1px solid #ebebeb' }}
-                  />
-                ) : null
+                return src ? <GeneratedImage key={i} src={src} index={i} /> : null
               })}
             </div>
           </>
