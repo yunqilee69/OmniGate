@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Button, Form, Input, InputNumber, Modal, Popconfirm, Progress, Select, Space, Table,
   Tabs, Tooltip, Typography, message,
@@ -34,6 +34,18 @@ interface Route {
 interface Model { id: number; name: string; provider_id: number; protocol: string; type: string }
 interface Provider { id: number; name: string }
 interface MCPBackend { id: number; name: string; target_url: string; status: string }
+const ENDPOINT_META: Record<string, { path: string; hint?: string }> = {
+  completions: { path: '/v1/chat/completions', hint: 'OpenAI' },
+  messages: { path: '/v1/messages', hint: 'Anthropic' },
+  responses: { path: '/v1/responses', hint: 'OpenAI' },
+  embedding: { path: '/v1/embeddings', hint: '向量化' },
+  rerank: { path: '/v1/rerank', hint: '重排' },
+  image: { path: '/v1/images/generations', hint: '生图' },
+  mcp: { path: '/v1/mcp/{route_name}', hint: 'MCP 工具聚合' },
+}
+const ENDPOINT_ORDER = Object.keys(ENDPOINT_META)
+const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
 
 export default function RoutesPage() {
   const [rows, setRows] = useState<Route[]>([])
@@ -43,6 +55,7 @@ export default function RoutesPage() {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Route | null>(null)
   const [exampleRoute, setExampleRoute] = useState<Route | null>(null)
+  const [endpoint, setEndpoint] = useState('completions')
   const [form] = Form.useForm()
 
   const load = async () => {
@@ -57,13 +70,13 @@ export default function RoutesPage() {
       setModels(ms)
       setProviders(ps)
       setMcpBackends(mbs)
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e) {
+      message.error(errorMessage(e))
     }
   }
   useEffect(() => { load() }, [])
 
-  const openForm = (r?: Route) => {
+  const openForm = (r?: Route, ep?: string) => {
     setEditing(r ?? null)
     form.resetFields()
     if (r) {
@@ -74,6 +87,8 @@ export default function RoutesPage() {
         targets: r.targets?.map((t) => ({ model_id: t.model_id, weight: t.weight })) || [],
         mcp_targets: r.mcp_targets?.map((t) => ({ mcp_backend_id: t.mcp_backend_id })) || [],
       })
+    } else if (ep) {
+      form.setFieldsValue({ endpoint: ep })
     }
     setOpen(true)
   }
@@ -105,8 +120,8 @@ export default function RoutesPage() {
       message.success('已保存（即时生效）')
       setOpen(false)
       load()
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e) {
+      message.error(errorMessage(e))
     }
   }
 
@@ -122,52 +137,91 @@ export default function RoutesPage() {
     return sum > 0 ? Math.round((t.weight / sum) * 1000) / 10 : 0
   }
 
-  return (
-    <div>
-      <Button type="primary" onClick={() => openForm()} style={{ marginBottom: 16 }}>新增路由</Button>
-      <Table<Route> rowKey="id" dataSource={rows} expandable={{
-        expandedRowRender: (r) => {
-          if (r.endpoint === 'mcp') {
-            return (
-              <Table<McpTarget> rowKey="id" dataSource={r.mcp_targets} pagination={false} size="small">
-                <Table.Column title="MCP" dataIndex="backend_name" />
-                <Table.Column title="目标 URL" dataIndex="target_url" ellipsis />
-                <Table.Column title="状态" dataIndex="status" width={80} render={(v) => (
-                  <span style={{ color: v === 'active' ? '#52c41a' : '#999' }}>{v === 'active' ? '启用' : '禁用'}</span>
-                )} />
-              </Table>
-            )
-          }
+  // 按端点类型分组，供 Tabs 分栏展示
+  const grouped = useMemo(() => {
+    const g: Record<string, Route[]> = {}
+    for (const r of rows) {
+      const k = r.endpoint || 'completions'
+      if (!g[k]) g[k] = []
+      g[k].push(r)
+    }
+    return g
+  }, [rows])
+
+  // 端点类型全量成栏（暂无路由的类型也保留，方便直接在该类型下新增）；历史遗留的未知端点追加在后
+  const tabKeys = useMemo(() => {
+    const unknown = Object.keys(grouped).filter((k) => !ENDPOINT_ORDER.includes(k)).sort()
+    return [...ENDPOINT_ORDER, ...unknown]
+  }, [grouped])
+
+  const activeKey = tabKeys.includes(endpoint) ? endpoint : ENDPOINT_ORDER[0]
+
+  const renderTable = (key: string, list: Route[]) => (
+    <Table<Route> rowKey="id" dataSource={list} expandable={{
+      expandedRowRender: (r) => {
+        if (r.endpoint === 'mcp') {
           return (
-            <Table<Target> rowKey="id" dataSource={r.targets} pagination={false} size="small">
-              <Table.Column title="目标模型" render={(_, t: Target) => `${t.provider_name} / ${t.model_name}`} />
-              <Table.Column title="权重" dataIndex="weight" width={80} />
-              <Table.Column title="流量占比" width={200} render={(_, t: Target) => (
-                <Progress percent={targetPercent(t, r.targets)} size="small" />
+            <Table<McpTarget> rowKey="id" dataSource={r.mcp_targets} pagination={false} size="small">
+              <Table.Column title="MCP" dataIndex="backend_name" />
+              <Table.Column title="目标 URL" dataIndex="target_url" ellipsis />
+              <Table.Column title="状态" dataIndex="status" width={80} render={(v) => (
+                <span style={{ color: v === 'active' ? '#52c41a' : '#999' }}>{v === 'active' ? '启用' : '禁用'}</span>
               )} />
             </Table>
           )
-        },
-      }}>
-        <Table.Column title="ID" dataIndex="id" width={60} />
-        <Table.Column title="模型别名" dataIndex="name" render={(v) => <code>{v}</code>} />
-        <Table.Column title="端点类型" dataIndex="endpoint" width={120} />
-        <Table.Column title="目标数" render={(_, r: Route) => r.endpoint === 'mcp' ? r.mcp_targets?.length || 0 : r.targets?.length || 0} width={80} />
-        <Table.Column title="备注" dataIndex="remark" ellipsis />
-        <Table.Column title="操作" width={230} render={(_, r: Route) => (
-          <Space>
-            <Tooltip title="获取请求命令，改模型名即可直接调用">
-              <Button size="small" icon={<CodeOutlined />} onClick={() => setExampleRoute(r)}>请求示例</Button>
-            </Tooltip>
-            <Button size="small" onClick={() => openForm(r)}>编辑</Button>
-            <Popconfirm title="确认删除该路由？" onConfirm={async () => {
-              try { await api('DELETE', `/api/routes/${r.id}`); load() } catch (e: any) { message.error(e.message) }
-            }}>
-              <Button size="small" danger>删除</Button>
-            </Popconfirm>
-          </Space>
-        )} />
-      </Table>
+        }
+        return (
+          <Table<Target> rowKey="id" dataSource={r.targets} pagination={false} size="small">
+            <Table.Column title="目标模型" render={(_, t: Target) => `${t.provider_name} / ${t.model_name}`} />
+            <Table.Column title="权重" dataIndex="weight" width={80} />
+            <Table.Column title="流量占比" width={200} render={(_, t: Target) => (
+              <Progress percent={targetPercent(t, r.targets)} size="small" />
+            )} />
+          </Table>
+        )
+      },
+    }} locale={{ emptyText: (
+      <Typography.Text type="secondary">
+        暂无 {key} 端点路由（{ENDPOINT_META[key]?.path ?? '未知端点'}），点击右上角「新增路由」创建
+      </Typography.Text>
+    ) }}>
+      <Table.Column title="ID" dataIndex="id" width={60} />
+      <Table.Column title="模型别名" dataIndex="name" render={(v) => <code>{v}</code>} />
+      <Table.Column title="映射路径" render={(_, r: Route) => <code>{routePath(r)}</code>} width={200} />
+      <Table.Column title="目标数" render={(_, r: Route) => r.endpoint === 'mcp' ? r.mcp_targets?.length || 0 : r.targets?.length || 0} width={80} />
+      <Table.Column title="备注" dataIndex="remark" ellipsis />
+      <Table.Column title="操作" width={230} render={(_, r: Route) => (
+        <Space>
+          <Tooltip title="获取请求命令，改模型名即可直接调用">
+            <Button size="small" icon={<CodeOutlined />} onClick={() => setExampleRoute(r)}>请求示例</Button>
+          </Tooltip>
+          <Button size="small" onClick={() => openForm(r)}>编辑</Button>
+          <Popconfirm title="确认删除该路由？" onConfirm={async () => {
+            try { await api('DELETE', `/api/routes/${r.id}`); load() } catch (e) { message.error(errorMessage(e)) }
+          }}>
+            <Button size="small" danger>删除</Button>
+          </Popconfirm>
+        </Space>
+      )} />
+    </Table>
+  )
+
+  return (
+    <div>
+      <Tabs
+        activeKey={activeKey}
+        onChange={setEndpoint}
+        items={tabKeys.map((k) => ({
+          key: k,
+          label: k,
+          children: renderTable(k, grouped[k] ?? []),
+        }))}
+        tabBarExtraContent={{
+          right: (
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm(undefined, activeKey)}>新增路由</Button>
+          ),
+        }}
+      />
 
       <RequestExample route={exampleRoute} onClose={() => setExampleRoute(null)} />
 
@@ -184,15 +238,10 @@ export default function RoutesPage() {
             extra="决定代理路径与协议：completions/messages/responses用于LLM，embedding/rerank/image用于专用模型，mcp用于MCP工具聚合"
           >
             <Select
-              options={[
-                { value: 'completions', label: 'completions — /v1/chat/completions（OpenAI）' },
-                { value: 'messages', label: 'messages — /v1/messages（Anthropic）' },
-                { value: 'responses', label: 'responses — /v1/responses（OpenAI）' },
-                { value: 'embedding', label: 'embedding — /v1/embeddings（向量化）' },
-                { value: 'rerank', label: 'rerank — /v1/rerank（重排）' },
-                { value: 'image', label: 'image — /v1/images/generations（生图）' },
-                { value: 'mcp', label: 'mcp — /v1/mcp/{route_name}（MCP 工具聚合）' },
-              ]}
+              options={ENDPOINT_ORDER.map((k) => ({
+                value: k,
+                label: `${k} — ${ENDPOINT_META[k].path}${ENDPOINT_META[k].hint ? `（${ENDPOINT_META[k].hint}）` : ''}`,
+              }))}
             />
           </Form.Item>
           <Form.Item name="remark" label="备注"><Input /></Form.Item>
@@ -307,7 +356,12 @@ export default function RoutesPage() {
 }
 
 function endpointPath(ep: string): string {
-  return ep === 'messages' ? '/v1/messages' : ep === 'responses' ? '/v1/responses' : ep === 'embedding' ? '/v1/embeddings' : ep === 'rerank' ? '/v1/rerank' : ep === 'image' ? '/v1/images/generations' : '/v1/chat/completions'
+  return ENDPOINT_META[ep]?.path ?? ENDPOINT_META.completions.path
+}
+
+// 路由 → 实际代理路径（mcp 路径含 {route_name} 占位，用别名替换）
+function routePath(route: { name: string; endpoint?: string }): string {
+  return endpointPath(route.endpoint || 'completions').replace('{route_name}', route.name)
 }
 
 const VK_KEY = 'vk-你的虚拟密钥'
@@ -461,7 +515,7 @@ function RequestExample({ route, onClose }: { route: Route | null; onClose: () =
   if (!route) return null
   const base = window.location.origin
   const ep = route.endpoint || 'completions'
-  const epPath = endpointPath(ep)
+  const epPath = routePath(route)
   return (
     <Modal
       title={`请求示例 — ${route.name}`}

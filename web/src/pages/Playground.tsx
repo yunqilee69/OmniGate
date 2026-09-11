@@ -104,6 +104,230 @@ interface McpToolWire {
 
 const MCP_PROTOCOL_VERSION = '2024-11-05'
 
+// ---------- 本地草稿 ----------
+// 测试配置与结果临时存于 localStorage：切走菜单或刷新后回来，仍可继续使用与查看。
+// 虚拟密钥明文（vkKey）与图片 base64（参考图、生图结果）体积大或敏感，不落盘。
+const DRAFT_KEY = 'omnigate.playground.draft.v1'
+const DRAFT_TABS = ['chat', 'embedding', 'rerank', 'image']
+
+interface Draft {
+  tab: string
+  chatRoute?: string
+  vkId?: number
+  mcpRoutes: string[]
+  systemPrompt: string
+  temperature: number | null
+  maxRounds: number
+  msgs: Msg[]
+  input: string
+  embRoute?: string
+  embText: string
+  embMs: number | null
+  embResult: EmbeddingResp | null
+  rrkRoute?: string
+  rrkQuery: string
+  rrkDocs: string
+  rrkTopN: number | null
+  rrkMs: number | null
+  rrkDocArr: string[]
+  rrkResult: RerankResp | null
+  imgRoute?: string
+  imgPrompt: string
+  imgSize: string
+  imgRatio: string
+  imgN: number
+  imgMs: number | null
+}
+
+const draftStr = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback)
+const draftOptStr = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined)
+const draftNum = (v: unknown, fallback: number): number =>
+  typeof v === 'number' && Number.isFinite(v) ? v : fallback
+const draftOptNum = (v: unknown): number | null =>
+  typeof v === 'number' && Number.isFinite(v) ? v : null
+const draftList = (v: unknown): unknown[] => (Array.isArray(v) ? v : [])
+const draftStrList = (v: unknown): string[] =>
+  draftList(v).filter((s): s is string => typeof s === 'string')
+
+function draftUsage(v: unknown): Usage | undefined {
+  if (!isRecord(v)) return undefined
+  const usage: Usage = {}
+  const prompt = draftOptNum(v.prompt_tokens)
+  const completion = draftOptNum(v.completion_tokens)
+  const total = draftOptNum(v.total_tokens)
+  if (prompt !== null) usage.prompt_tokens = prompt
+  if (completion !== null) usage.completion_tokens = completion
+  if (total !== null) usage.total_tokens = total
+  return usage
+}
+
+// 草稿逐字段校验：草稿可能来自旧版本或被手工改动，任何损坏都退化为可渲染的最小值，
+// 避免脏数据在渲染期抛错把整个页面打崩。
+function draftToolCalls(v: unknown): ToolCall[] | undefined {
+  const calls: ToolCall[] = []
+  for (const c of draftList(v)) {
+    if (!isRecord(c) || typeof c.id !== 'string' || !isRecord(c.function)) continue
+    const name = c.function.name
+    const args = c.function.arguments
+    if (typeof name !== 'string' || typeof args !== 'string') continue
+    calls.push({ id: c.id, type: 'function', function: { name, arguments: args } })
+  }
+  return calls.length ? calls : undefined
+}
+
+function draftMsgs(v: unknown): Msg[] {
+  const msgs: Msg[] = []
+  for (const m of draftList(v)) {
+    if (!isRecord(m) || typeof m.content !== 'string') continue
+    if (m.role === 'user') {
+      msgs.push({ role: 'user', content: m.content })
+    } else if (m.role === 'assistant') {
+      const msg: Extract<Msg, { role: 'assistant' }> = { role: 'assistant', content: m.content }
+      if (typeof m.reasoning === 'string') msg.reasoning = m.reasoning
+      const calls = draftToolCalls(m.tool_calls)
+      if (calls) msg.tool_calls = calls
+      const usage = draftUsage(m.usage)
+      if (usage) msg.usage = usage
+      if (typeof m.latency_ms === 'number') msg.latency_ms = m.latency_ms
+      if (m.aborted === true) msg.aborted = true
+      msgs.push(msg)
+    } else if (m.role === 'tool' && typeof m.tool_call_id === 'string') {
+      const msg: Extract<Msg, { role: 'tool' }> = {
+        role: 'tool',
+        tool_call_id: m.tool_call_id,
+        name: draftStr(m.name),
+        content: m.content,
+      }
+      if (m.is_error === true) msg.is_error = true
+      if (typeof m.latency_ms === 'number') msg.latency_ms = m.latency_ms
+      msgs.push(msg)
+    }
+  }
+  return msgs
+}
+
+function draftEmbeddingResult(v: unknown): EmbeddingResp | null {
+  if (!isRecord(v)) return null
+  const data = draftList(v.data).flatMap((item) => {
+    if (!isRecord(item) || typeof item.index !== 'number') return []
+    const embedding = draftList(item.embedding).filter((n): n is number => typeof n === 'number')
+    return [{ index: item.index, embedding }]
+  })
+  const usage = draftUsage(v.usage)
+  return {
+    data,
+    usage: usage ? { prompt_tokens: usage.prompt_tokens, total_tokens: usage.total_tokens } : undefined,
+  }
+}
+
+function draftRerankResult(v: unknown): RerankResp | null {
+  if (!isRecord(v)) return null
+  const results = draftList(v.results).flatMap((r) =>
+    isRecord(r) && typeof r.index === 'number'
+      ? [{ index: r.index, relevance_score: draftNum(r.relevance_score, NaN) }]
+      : [],
+  )
+  return { results }
+}
+
+function loadDraft(): Draft {
+  let raw: Record<string, unknown> = {}
+  try {
+    const stored = localStorage.getItem(DRAFT_KEY)
+    const parsed: unknown = stored === null ? null : JSON.parse(stored)
+    if (isRecord(parsed)) raw = parsed
+  } catch {
+    /* 草稿缺失或损坏：按空草稿处理 */
+  }
+  const tab = draftStr(raw.tab, 'chat')
+  return {
+    tab: DRAFT_TABS.includes(tab) ? tab : 'chat',
+    chatRoute: draftOptStr(raw.chatRoute),
+    vkId: draftOptNum(raw.vkId) ?? undefined,
+    mcpRoutes: draftStrList(raw.mcpRoutes),
+    systemPrompt: draftStr(raw.systemPrompt),
+    temperature: draftOptNum(raw.temperature),
+    maxRounds: draftNum(raw.maxRounds, 5),
+    msgs: draftMsgs(raw.msgs),
+    input: draftStr(raw.input),
+    embRoute: draftOptStr(raw.embRoute),
+    embText: draftStr(raw.embText),
+    embMs: draftOptNum(raw.embMs),
+    embResult: draftEmbeddingResult(raw.embResult),
+    rrkRoute: draftOptStr(raw.rrkRoute),
+    rrkQuery: draftStr(raw.rrkQuery),
+    rrkDocs: draftStr(raw.rrkDocs),
+    rrkTopN: draftOptNum(raw.rrkTopN),
+    rrkMs: draftOptNum(raw.rrkMs),
+    rrkDocArr: draftStrList(raw.rrkDocArr),
+    rrkResult: draftRerankResult(raw.rrkResult),
+    imgRoute: draftOptStr(raw.imgRoute),
+    imgPrompt: draftStr(raw.imgPrompt),
+    imgSize: draftStr(raw.imgSize, '1K'),
+    imgRatio: draftStr(raw.imgRatio, '1:1'),
+    imgN: draftNum(raw.imgN, 1),
+    imgMs: draftOptNum(raw.imgMs),
+  }
+}
+
+// 写入节流：流式输出期间 msgs 每 50ms 变一次，避免每个 chunk 都序列化整份草稿。
+let draftTimer: number | null = null
+let draftPending: Draft | null = null
+let draftSession = 0
+let draftWarned = false
+
+// 页面挂载时领取会话号；重新挂载后换号，让仍在后台跑的流停止写草稿，避免覆盖新数据。
+
+function queueDraftSave(draft: Draft, session: number): void {
+  if (session !== draftSession) return
+  draftPending = draft
+  if (draftTimer !== null) return
+  draftTimer = window.setTimeout(() => {
+    draftTimer = null
+    flushDraftSave()
+  }, 400)
+}
+
+// 立即落盘（组件卸载等关键点调用，避免节流窗口内的改动丢失）。
+function flushDraftSave(): void {
+  if (draftTimer !== null) {
+    window.clearTimeout(draftTimer)
+    draftTimer = null
+  }
+  const draft = draftPending
+  draftPending = null
+  if (!draft) return
+  try {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
+    return
+  } catch {
+    /* 配额超限或存储不可用：下面退化为精简草稿再试 */
+  }
+  try {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({
+        ...draft,
+        embResult: null,
+        embMs: null,
+        rrkResult: null,
+        rrkMs: null,
+        rrkDocArr: [],
+        imgMs: null,
+      }),
+    )
+    if (!draftWarned) {
+      draftWarned = true
+      message.warning('本地草稿超出浏览器存储配额，已省略测试结果')
+    }
+  } catch {
+    if (!draftWarned) {
+      draftWarned = true
+      message.warning('本地草稿过大或浏览器存储不可用，本次未能保存')
+    }
+  }
+}
+
 
 function errText(e: unknown): string {
   if (e instanceof Error && e.message) return e.message
@@ -294,57 +518,102 @@ function VkSelect({ vks, value, onChange }: {
 }
 
 export default function PlaygroundPage() {
+  // 首屏水合本地草稿；之后以各 state 为准，草稿在每次渲染后节流回写
+  const [saved] = useState(loadDraft)
+  const [baseLoaded, setBaseLoaded] = useState(false)
   const [routes, setRoutes] = useState<Route[]>([])
   const [vks, setVks] = useState<VirtualKey[]>([])
   const [models, setModels] = useState<ModelInfo[]>([])
-  const [chatRoute, setChatRoute] = useState<string>()
-  const [vkId, setVkId] = useState<number>()
+  const [chatRoute, setChatRoute] = useState<string | undefined>(saved.chatRoute)
+  const [vkId, setVkId] = useState<number | undefined>(saved.vkId)
   const [vkKey, setVkKey] = useState('')
-  const [mcpRoutes, setMcpRoutes] = useState<string[]>([])
+  const [mcpRoutes, setMcpRoutes] = useState<string[]>(saved.mcpRoutes)
   const [tools, setTools] = useState<McpToolInfo[]>([])
   const [toolsLoading, setToolsLoading] = useState(false)
 
-  const [tab, setTab] = useState('chat')
+  const [tab, setTab] = useState(saved.tab)
 
   // Embedding 测试
-  const [embRoute, setEmbRoute] = useState<string>()
-  const [embText, setEmbText] = useState('')
+  const [embRoute, setEmbRoute] = useState<string | undefined>(saved.embRoute)
+  const [embText, setEmbText] = useState(saved.embText)
   const [embBusy, setEmbBusy] = useState(false)
-  const [embMs, setEmbMs] = useState<number | null>(null)
-  const [embResult, setEmbResult] = useState<EmbeddingResp | null>(null)
+  const [embMs, setEmbMs] = useState<number | null>(saved.embMs)
+  const [embResult, setEmbResult] = useState<EmbeddingResp | null>(saved.embResult)
 
   // Rerank 测试
-  const [rrkRoute, setRrkRoute] = useState<string>()
-  const [rrkQuery, setRrkQuery] = useState('')
-  const [rrkDocs, setRrkDocs] = useState('')
-  const [rrkTopN, setRrkTopN] = useState<number | null>(null)
+  const [rrkRoute, setRrkRoute] = useState<string | undefined>(saved.rrkRoute)
+  const [rrkQuery, setRrkQuery] = useState(saved.rrkQuery)
+  const [rrkDocs, setRrkDocs] = useState(saved.rrkDocs)
+  const [rrkTopN, setRrkTopN] = useState<number | null>(saved.rrkTopN)
   const [rrkBusy, setRrkBusy] = useState(false)
-  const [rrkMs, setRrkMs] = useState<number | null>(null)
-  const [rrkDocArr, setRrkDocArr] = useState<string[]>([])
-  const [rrkResult, setRrkResult] = useState<RerankResp | null>(null)
+  const [rrkMs, setRrkMs] = useState<number | null>(saved.rrkMs)
+  const [rrkDocArr, setRrkDocArr] = useState<string[]>(saved.rrkDocArr)
+  const [rrkResult, setRrkResult] = useState<RerankResp | null>(saved.rrkResult)
 
   // 生图测试
-  const [imgRoute, setImgRoute] = useState<string>()
-  const [imgPrompt, setImgPrompt] = useState('')
-  const [imgSize, setImgSize] = useState<string>('1K')
-  const [imgRatio, setImgRatio] = useState<string>('1:1')
+  const [imgRoute, setImgRoute] = useState<string | undefined>(saved.imgRoute)
+  const [imgPrompt, setImgPrompt] = useState(saved.imgPrompt)
+  const [imgSize, setImgSize] = useState(saved.imgSize)
+  const [imgRatio, setImgRatio] = useState(saved.imgRatio)
   const [imgImages, setImgImages] = useState<string[]>([])
-  const [imgN, setImgN] = useState(1)
+  const [imgN, setImgN] = useState(saved.imgN)
   const [imgBusy, setImgBusy] = useState(false)
-  const [imgMs, setImgMs] = useState<number | null>(null)
+  const [imgMs, setImgMs] = useState<number | null>(saved.imgMs)
   const [imgResult, setImgResult] = useState<ImageResp | null>(null)
 
-  const [systemPrompt, setSystemPrompt] = useState('')
-  const [temperature, setTemperature] = useState<number | null>(null)
-  const [maxRounds, setMaxRounds] = useState(5)
+  const [systemPrompt, setSystemPrompt] = useState(saved.systemPrompt)
+  const [temperature, setTemperature] = useState<number | null>(saved.temperature)
+  const [maxRounds, setMaxRounds] = useState(saved.maxRounds)
 
-  const [msgs, setMsgs] = useState<Msg[]>([])
+  const [msgs, setMsgs] = useState<Msg[]>(saved.msgs)
   // 每条 assistant 消息的思考面板展开状态；流式中的最后一条强制展开，完成后回落到用户选择
   const [reasoningKeys, setReasoningKeys] = useState<Record<number, string[]>>({})
-  const [input, setInput] = useState('')
+  const [input, setInput] = useState(saved.input)
   const [sending, setSending] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
+
+  // ---------- 本地草稿回写 ----------
+  const draft: Draft = {
+    tab,
+    chatRoute,
+    vkId,
+    mcpRoutes,
+    systemPrompt,
+    temperature,
+    maxRounds,
+    msgs,
+    input,
+    embRoute,
+    embText,
+    embMs,
+    embResult,
+    rrkRoute,
+    rrkQuery,
+    rrkDocs,
+    rrkTopN,
+    rrkMs,
+    rrkDocArr,
+    rrkResult,
+    imgRoute,
+    imgPrompt,
+    imgSize,
+    imgRatio,
+    imgN,
+    imgMs,
+  }
+  const draftRef = useRef(draft)
+  const sessionRef = useRef(0)
+  // 认领会话号，并在卸载（切菜单/关页）时立即落盘
+  useEffect(() => {
+    sessionRef.current = ++draftSession
+    return () => flushDraftSave()
+  }, [])
+  // 每次渲染后排队回写；节流合并，流式期间的高频 setMsgs 不会频繁序列化
+  useEffect(() => {
+    draftRef.current = draft
+    queueDraftSave(draft, sessionRef.current)
+  })
 
   // MCP 路由 → 会话 ID（initialize 响应头 MCP-Session-Id）；动态增删故用 Map
   const mcpSessions = useRef<Map<string, string>>(new Map())
@@ -394,18 +663,29 @@ export default function PlaygroundPage() {
         setRoutes(rs)
         setVks(ks)
         setModels(ms)
+        // 草稿里的选择可能已失效（路由/密钥被删）：清掉，避免 reveal 报错与选择器空显
+        const routeNames = new Set(rs.map((r) => r.name))
+        const validRoute = (cur?: string) => (cur && routeNames.has(cur) ? cur : undefined)
+        setChatRoute(validRoute)
+        setEmbRoute(validRoute)
+        setRrkRoute(validRoute)
+        setImgRoute(validRoute)
+        setMcpRoutes((cur) => cur.filter((name) => routeNames.has(name)))
+        setVkId((cur) => (cur !== undefined && ks.some((k) => k.id === cur) ? cur : undefined))
+        setBaseLoaded(true)
       })
       .catch((e: unknown) => message.error(errText(e)))
   }, [])
 
   // 切换虚拟 key 时按需 reveal 明文（仅驻留内存，不落 localStorage）
+  // 首屏是草稿水合出的 key：等基础数据到位并校验通过后才发请求
   useEffect(() => {
     setVkKey('')
-    if (!vkId) return
+    if (!baseLoaded || !vkId) return
     api<{ key_value: string }>('GET', `/api/virtual-keys/${vkId}/reveal-key`)
       .then((d) => setVkKey(d.key_value))
       .catch((e: unknown) => message.error(errText(e)))
-  }, [vkId])
+  }, [baseLoaded, vkId])
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight })
@@ -576,6 +856,8 @@ export default function PlaygroundPage() {
           assistant.content = acc.content
           if (acc.reasoning) assistant.reasoning = acc.reasoning
           setMsgs([...convo])
+          // 组件已卸载（切走菜单）时 setMsgs 不再生效，这里直接把结果写进草稿，后台完成的回答不丢
+          queueDraftSave({ ...draftRef.current, msgs: convo }, sessionRef.current)
           lastFlush = now
         }
         await readSSE(res.body, (evt) => {

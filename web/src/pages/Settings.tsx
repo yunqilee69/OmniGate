@@ -6,6 +6,7 @@ import { formatCounts } from '../utils/format'
 
 type Settings = Record<string, any>
 type Model = { id: number; name: string; type: string; protocol: string; provider_id: number; status: string }
+type Provider = { id: number; name: string }
 
 const LADDER_PRESETS = ['10s', '30s', '1m', '3m', '5m', '15m', '30m']
 
@@ -23,7 +24,6 @@ const numericRanges: Record<string, [number, number]> = {
   'capture.retention_days': [1, 365],
   'log.retention_days': [0, 3650],
   'affinity.ttl_s': [10, 86400],
-  'fallback.model_id': [0, 9999999],
 }
 
 type Section = 
@@ -49,9 +49,19 @@ const sectionLabels: Record<Section, string> = {
   danger: '危险操作',
 }
 
+// FALLBACK_SLOTS 每个端点类型各配一个兜底模型；match 与后端选择口径保持一致。
+const FALLBACK_SLOTS: { key: string; label: string; path: string; match: (m: Model) => boolean }[] = [
+  { key: 'fallback.completions_model_id', label: 'Chat Completions 兜底', path: '/v1/chat/completions', match: (m) => (m.type || 'chat') === 'chat' },
+  { key: 'fallback.messages_model_id', label: 'Messages 兜底', path: '/v1/messages', match: (m) => (m.type || 'chat') === 'chat' && m.protocol === 'messages' },
+  { key: 'fallback.responses_model_id', label: 'Responses 兜底', path: '/v1/responses', match: (m) => (m.type || 'chat') === 'chat' && m.protocol === 'responses' },
+  { key: 'fallback.embedding_model_id', label: 'Embedding 兜底', path: '/v1/embeddings', match: (m) => m.type === 'embedding' },
+  { key: 'fallback.rerank_model_id', label: 'Rerank 兜底', path: '/v1/rerank', match: (m) => m.type === 'rerank' },
+]
+
 export default function Settings() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [models, setModels] = useState<Model[]>([])
+  const [providers, setProviders] = useState<Provider[]>([])
   const [form] = Form.useForm()
   const [activeSection, setActiveSection] = useState<Section>('breaker')
   const captureOn = Form.useWatch('capture.enabled', form)
@@ -59,18 +69,30 @@ export default function Settings() {
 
   const load = async () => {
     try {
-      const [s, m] = await Promise.all([
+      const [s, m, p] = await Promise.all([
         api('GET', '/api/settings'),
-        api<Model[]>('GET', '/api/models')
+        api<Model[]>('GET', '/api/models'),
+        api<Provider[]>('GET', '/api/providers'),
       ])
       setSettings(s)
       setModels(m)
+      setProviders(p)
       form.setFieldsValue(s)
     } catch (e: any) {
       message.error(e.message)
     }
   }
   useEffect(() => { load() }, [])
+
+  const providerName = (id: number) => providers.find((p) => p.id === id)?.name ?? `#${id}`
+
+  const fallbackOptions = (slot: typeof FALLBACK_SLOTS[number]) =>
+    models
+      .filter((m) => m.status === 'active' && slot.match(m))
+      .map((m) => ({
+        value: m.id,
+        label: `${providerName(m.provider_id)} / ${m.name} (${m.type || 'chat'} / ${m.protocol})`,
+      }))
 
   const save = async () => {
     const values = await form.validateFields()
@@ -336,27 +358,37 @@ export default function Settings() {
                       type="info"
                       showIcon
                       style={{ marginBottom: 16 }}
-                      message="兜底模型是最后的保险，建议选择稳定且成本较低的模型（如 gpt-3.5-turbo）"
+                      message="每种端点可各配一个兜底模型：路由下所有模型与密钥都不可用时，使用对应端点的兜底模型（单次尝试，不重试）。建议选择稳定且成本较低的模型。"
                     />
-                    <Form.Item
-                      label={<span>兜底模型<HelpIcon tip="当所有配置模型失败后，将使用此模型（需确保模型状态为 active 且有可用 key）" /></span>}
-                      name="fallback.model_id"
-                    >
-                      <Select
-                        showSearch
-                        placeholder="选择兜底模型"
-                        optionFilterProp="children"
-                        filterOption={(input, option) =>
-                          (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
-                        }
-                        options={models
-                          .filter(m => m.status === 'active')
-                          .map(m => ({
-                            value: m.id,
-                            label: `${m.name} (${m.type} / ${m.protocol})`,
-                          }))}
-                      />
-                    </Form.Item>
+                    {FALLBACK_SLOTS.map((slot) => {
+                      const options = fallbackOptions(slot)
+                      // 已配置的模型可能因禁用/协议变更不再匹配，补进选项保证回显名称而非裸 ID。
+                      const current = form.getFieldValue(slot.key)
+                      if (current && !options.some((o) => o.value === current)) {
+                        const m = models.find((x) => x.id === current)
+                        if (m) options.unshift({
+                          value: m.id,
+                          label: `${providerName(m.provider_id)} / ${m.name} (${m.type || 'chat'} / ${m.protocol})`,
+                        })
+                      }
+                      return (
+                        <Form.Item
+                          key={slot.key}
+                          label={<span>{slot.label}<HelpIcon tip={`${slot.path} 请求全部失败时使用此模型（需有可用密钥）`} /></span>}
+                          name={slot.key}
+                        >
+                          <Select
+                            showSearch
+                            placeholder={options.length === 0 ? '无可用的匹配模型' : `选择 ${slot.path} 的兜底模型`}
+                            optionFilterProp="label"
+                            filterOption={(input, option) =>
+                              (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+                            }
+                            options={[{ value: 0, label: '不启用' }, ...options]}
+                          />
+                        </Form.Item>
+                      )
+                    })}
                   </>
                 )}
               </>

@@ -32,6 +32,8 @@ interface Attempt {
   model: string
   provider: string
   key_id: number
+  key_name?: string
+  key_value_masked?: string
   status: string
   http_status: number
   error_code: string
@@ -53,6 +55,7 @@ interface DetailResp {
 interface ContentResp {
   client_request_headers: string
   client_request_body: string
+  request_url: string
   request_headers: string
   request_body: string
   response_headers: string
@@ -149,16 +152,27 @@ export default function LogDetail() {
             <Table.Column title="#" dataIndex="attempt" width={60} />
             <Table.Column title="模型" dataIndex="model" width={200} ellipsis
               render={(_, a) => `${a.provider}/${a.model}`} />
-            <Table.Column title="密钥" dataIndex="key_id" width={160}
-              render={(keyId) => <span className="mono">#{keyId}</span>} />
+            <Table.Column title="密钥" width={180} ellipsis
+              render={(_, a: Attempt) => (
+                <Tooltip title={a.key_name || a.key_value_masked || ''}>
+                  <code style={{ fontSize: 11, color: '#8f8f8f' }}>
+                    {a.key_name || a.key_value_masked || (a.key_id ? `key#${a.key_id}` : '-')}
+                  </code>
+                </Tooltip>
+              )} />
             <Table.Column title="状态" dataIndex="status" width={90} render={statusTag} />
             <Table.Column title="HTTP" dataIndex="http_status" width={70} />
             <Table.Column title="错误码" dataIndex="error_code" width={90} />
             <Table.Column title="首字/耗时" width={120} render={(_, a) => `${a.ttft_ms}/${a.latency_ms}ms`} />
             <Table.Column
               title="Tokens"
-              width={110}
-              render={(_, a) => `↑ ${a.prompt_tokens} / ↓ ${a.completion_tokens}`}
+              width={96}
+              render={(_, a) => (
+                <div style={{ lineHeight: '18px', color: '#666' }}>
+                  <div>↑ {a.prompt_tokens}</div>
+                  <div>↓ {a.completion_tokens}</div>
+                </div>
+              )}
             />
             <Table.Column
               title="错误体"
@@ -200,15 +214,22 @@ const sectionLabelStyle: React.CSSProperties = {
   fontSize: 12, color: '#8f8f8f', marginBottom: 8, fontWeight: 500,
 }
 
-function ContentPane({ headers, body, headLabel, bodyLabel }: {
+function ContentPane({ headers, body, headLabel, bodyLabel, url }: {
   headers: string
   body: string
   headLabel: string
   bodyLabel: string
+  url?: string
 }) {
   return (
     <div>
-      <div style={sectionLabelStyle}>{headLabel}</div>
+      {url !== undefined ? (
+        <>
+          <div style={sectionLabelStyle}>请求地址</div>
+          <pre style={{ ...preStyle, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 'none' }}>{url || '（未记录，旧日志或捕获关闭）'}</pre>
+        </>
+      ) : null}
+      <div style={{ ...sectionLabelStyle, marginTop: url !== undefined ? 16 : 0 }}>{headLabel}</div>
       <pre style={preStyle}>{headers || '（无）'}</pre>
       <div style={{ ...sectionLabelStyle, marginTop: 16 }}>{bodyLabel}</div>
       <pre style={preStyle}>{body ? prettyBody(body) : '（无）'}</pre>
@@ -226,7 +247,7 @@ function ContentTabs({ content }: { content: ContentResp }) {
     {
       key: 'upstream_req',
       label: '上游请求',
-      children: <ContentPane headers={content.request_headers} body={content.request_body} headLabel="请求头" bodyLabel="请求体" />,
+      children: <ContentPane headers={content.request_headers} body={content.request_body} url={content.request_url} headLabel="请求头" bodyLabel="请求体" />,
     },
     {
       key: 'upstream_resp',
