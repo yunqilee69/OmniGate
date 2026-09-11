@@ -29,9 +29,14 @@ func Open(path string) (*Store, error) {
 	if err := migratePoolsAway(db); err != nil {
 		return nil, fmt.Errorf("migrate key pools away: %w", err)
 	}
+	// content_log 走手工迁移：GORM AutoMigrate 对 SQLite 改列会整表重建，
+	// 正文表 + 大 WAL 会把启动卡死（start.sh 15s 健康检查失败）。
+	if err := migrateContentLog(db); err != nil {
+		return nil, fmt.Errorf("migrate content_log: %w", err)
+	}
 	if err := db.AutoMigrate(
 		&Provider{}, &ApiKey{}, &Model{}, &ModelKey{}, &ModelKeyBan{},
-		&Route{}, &RouteTarget{}, &AppConfig{}, &RequestLog{}, &RequestAttempt{}, &ContentLog{},
+		&Route{}, &RouteTarget{}, &AppConfig{}, &RequestLog{}, &RequestAttempt{},
 		&RequestLogDaily{},
 		&VirtualKey{}, &VKRateLimit{},
 		&MCPBackend{}, &RouteMcpTarget{},
@@ -148,4 +153,44 @@ func migratePoolsAway(db *gorm.DB) error {
 		}
 	}
 	return db.Exec(`DROP TABLE key_pool`).Error
+}
+
+// migrateContentLog 建表或给旧表补列。不加进 AutoMigrate：
+// glebarez/sqlite 改列会 recreateTable，content_log 正文大、WAL 大时启动会卡死。
+func migrateContentLog(db *gorm.DB) error {
+	if !db.Migrator().HasTable(&ContentLog{}) {
+		if err := db.Exec(`
+CREATE TABLE content_log (
+  request_id TEXT PRIMARY KEY,
+  route TEXT NOT NULL,
+  client_request_headers TEXT NOT NULL DEFAULT '',
+  client_request_body TEXT NOT NULL DEFAULT '',
+  request_headers TEXT NOT NULL DEFAULT '',
+  request_body TEXT NOT NULL DEFAULT '',
+  response_headers TEXT NOT NULL DEFAULT '',
+  response_body TEXT NOT NULL DEFAULT '',
+  created_at INTEGER
+)`).Error; err != nil {
+			return err
+		}
+		return db.Exec(`CREATE INDEX IF NOT EXISTS idx_cl_time ON content_log(created_at)`).Error
+	}
+	type col struct {
+		name string
+		ddl  string
+	}
+	for _, c := range []col{
+		{"request_headers", `ALTER TABLE content_log ADD COLUMN request_headers TEXT NOT NULL DEFAULT ''`},
+		{"response_headers", `ALTER TABLE content_log ADD COLUMN response_headers TEXT NOT NULL DEFAULT ''`},
+		{"client_request_headers", `ALTER TABLE content_log ADD COLUMN client_request_headers TEXT NOT NULL DEFAULT ''`},
+		{"client_request_body", `ALTER TABLE content_log ADD COLUMN client_request_body TEXT NOT NULL DEFAULT ''`},
+	} {
+		if db.Migrator().HasColumn(&ContentLog{}, c.name) {
+			continue
+		}
+		if err := db.Exec(c.ddl).Error; err != nil {
+			return err
+		}
+	}
+	return db.Exec(`CREATE INDEX IF NOT EXISTS idx_cl_time ON content_log(created_at)`).Error
 }

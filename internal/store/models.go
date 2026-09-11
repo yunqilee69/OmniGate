@@ -262,17 +262,20 @@ type RequestLog struct {
 }
 
 // ContentLog 内容日志（可选；全局与路由白名单开关均开启时才写入）。
-// 四个字段均记录 OmniGate 与上游之间的往返：请求侧是网关实际发出的出站请求
-// （协议转换/model 替换/请求头设置之后的最终形态），响应侧是上游返回。
-// 头按 "Key: value" 多行文本存储，敏感头值脱敏；重试多次时记录最终落点的那次 attempt。
+// 覆盖三次往返：客户端入站请求（ClientRequest*，客户端 → OmniGate 原始数据）、
+// 出站请求（Request*，OmniGate 协议转换/模型替换/请求头设置之后的最终形态）、
+// 上游响应（Response*，上游返回）。头按 "Key: value" 多行文本存储，敏感头值脱敏；
+// 重试多次时记录最终落点的那次 attempt。
 type ContentLog struct {
-	RequestID       string `json:"request_id" gorm:"primaryKey;column:request_id;size:64"`
-	Route           string `json:"route" gorm:"size:191;not null"`
-	RequestHeaders  string `json:"request_headers" gorm:"type:text;not null;default:''"` // 出站请求头（OmniGate → 上游）
-	RequestBody     string `json:"request_body" gorm:"type:text;not null"`              // 出站请求体（转换后实际发送）
-	ResponseHeaders string `json:"response_headers" gorm:"type:text;not null;default:''"`
-	ResponseBody    string `json:"response_body" gorm:"type:text;not null"`
-	CreatedAt       int64  `json:"created_at" gorm:"autoCreateTime;index"` // 保留期清理按时间扫描
+	RequestID            string `json:"request_id" gorm:"primaryKey;column:request_id;size:64"`
+	Route                string `json:"route" gorm:"size:191;not null"`
+	ClientRequestHeaders string `json:"client_request_headers" gorm:"type:text;not null;default:''"` // 入站请求头（客户端 → OmniGate，未修改）
+	ClientRequestBody    string `json:"client_request_body" gorm:"type:text;not null;default:''"`    // 入站请求体（客户端原始提交，未修改）
+	RequestHeaders       string `json:"request_headers" gorm:"type:text;not null;default:''"`        // 出站请求头（OmniGate → 上游）
+	RequestBody          string `json:"request_body" gorm:"type:text;not null"`                      // 出站请求体（转换后实际发送）
+	ResponseHeaders      string `json:"response_headers" gorm:"type:text;not null;default:''"`
+	ResponseBody         string `json:"response_body" gorm:"type:text;not null"`
+	CreatedAt            int64  `json:"created_at" gorm:"autoCreateTime;index"` // 保留期清理按时间扫描
 }
 
 // RequestAttempt 单次尝试的明细记录（含中间失败与最终成功）。request_log 仍记最终结果与总重试次数，

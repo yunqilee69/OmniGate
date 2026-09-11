@@ -43,7 +43,8 @@ func TestContentCaptureOffByDefault(t *testing.T) {
 }
 
 // TestContentCaptureOnRecordsRequestAndResponse：开启全局开关后 content_log 必须记录
-// 出站请求体（协议转换/model 替换后实际发送的 JSON）和上游响应体。
+// 入站请求体（客户端原始提交，model 仍为逻辑路由名）与出站请求体（协议转换/model 替换后实际发送的 JSON）
+// 以及上游响应体。
 func TestContentCaptureOnRecordsRequestAndResponse(t *testing.T) {
 	st, rtm := newStackWithRTM(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -82,6 +83,13 @@ func TestContentCaptureOnRecordsRequestAndResponse(t *testing.T) {
 	if cl.Route != "glm-pool" {
 		t.Fatalf("route: got %q", cl.Route)
 	}
+	// 入站请求体：客户端提交的原始 JSON，model 仍为逻辑路由名
+	if !strings.Contains(cl.ClientRequestBody, `"model":"glm-pool"`) || !strings.Contains(cl.ClientRequestBody, `"content":"hello"`) {
+		t.Fatalf("client_request_body missing inbound fields: %s", cl.ClientRequestBody)
+	}
+	if strings.Contains(cl.ClientRequestBody, `"model":"m"`) {
+		t.Fatalf("client_request_body must not contain rewritten physical model: %s", cl.ClientRequestBody)
+	}
 	// 出站请求体：逻辑路由名 glm-pool 已替换为物理模型名 m
 	if !strings.Contains(cl.RequestBody, `"model":"m"`) || !strings.Contains(cl.RequestBody, `"content":"hello"`) {
 		t.Fatalf("outbound request_body missing fields: %s", cl.RequestBody)
@@ -91,7 +99,8 @@ func TestContentCaptureOnRecordsRequestAndResponse(t *testing.T) {
 	}
 }
 
-// TestContentCaptureRecordsHeaders：内容捕获需记录出站请求头（OmniGate → 上游，含认证头但脱敏）
+// TestContentCaptureRecordsHeaders：内容捕获需同时记录
+// 入站请求头（客户端 → OmniGate，未修改）、出站请求头（OmniGate → 上游，含认证头但脱敏）
 // 与上游响应头。
 func TestContentCaptureRecordsHeaders(t *testing.T) {
 	st, rtm := newStackWithRTM(t)
@@ -129,6 +138,19 @@ func TestContentCaptureRecordsHeaders(t *testing.T) {
 	st.DB.Order("created_at DESC").First(&cl)
 	if cl.RequestID == "" {
 		t.Fatalf("content_log row missing")
+	}
+	// 入站请求头：客户端实际提交（Content-Type + Authorization），未经网关改写
+	if !strings.Contains(cl.ClientRequestHeaders, "Content-Type: application/json") {
+		t.Fatalf("client_request_headers missing Content-Type: %q", cl.ClientRequestHeaders)
+	}
+	if !strings.Contains(cl.ClientRequestHeaders, "Authorization: Bearer v****") {
+		t.Fatalf("client_request_headers Authorization should be masked: %q", cl.ClientRequestHeaders)
+	}
+	if strings.Contains(cl.ClientRequestHeaders, "vk-secret-token-abcdefgh") {
+		t.Fatalf("client_request_headers must not contain raw credentials: %q", cl.ClientRequestHeaders)
+	}
+	if strings.Contains(cl.ClientRequestHeaders, "User-Agent: hdr-cli/1") {
+		t.Fatalf("client_request_headers must not contain outbound header profile: %q", cl.ClientRequestHeaders)
 	}
 	// 出站请求头：网关自构（Content-Type + 上游认证头），而非客户端入站头
 	if !strings.Contains(cl.RequestHeaders, "Content-Type: application/json") {

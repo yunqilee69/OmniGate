@@ -168,6 +168,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 	if captureOn {
 		cw = newCaptureWriter(w, 1<<20)
 		w = cw
+		cw.setClientReq(r.Header, body)
 	}
 
 	snap, found, err := h.sel.LoadSnapshot(routeName)

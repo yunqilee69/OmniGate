@@ -304,6 +304,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if captureOn {
 		cw = newCaptureWriter(w, 1<<20)
 		w = cw
+		cw.setClientReq(r.Header, body)
 	}
 
 	var affKey string
@@ -961,14 +962,16 @@ func containsStr(s []string, v string) bool {
 }
 
 type captureWriter struct {
-	w           http.ResponseWriter
-	mu          sync.Mutex
-	buf         []byte
-	limit       int
-	overflow    bool
-	reqHeaders  string // 出站请求头快照（OmniGate → 上游，格式化+脱敏）；最终 attempt 完成后回填
-	reqBody     string // 出站请求体快照（最终 attempt 实际发送的内容）；随响应体一并落 content_log
-	respHeaders string // 上游响应头快照（格式化+脱敏）；attempt 完成后回填
+	w                http.ResponseWriter
+	mu               sync.Mutex
+	buf              []byte
+	limit            int
+	overflow         bool
+	clientReqHeaders string // 入站请求头快照（客户端 → OmniGate，格式化+脱敏）
+	clientReqBody    string // 入站请求体快照（客户端原始提交，未修改）
+	reqHeaders       string // 出站请求头快照（OmniGate → 上游，格式化+脱敏）；最终 attempt 完成后回填
+	reqBody          string // 出站请求体快照（最终 attempt 实际发送的内容）；随响应体一并落 content_log
+	respHeaders      string // 上游响应头快照（格式化+脱敏）；attempt 完成后回填
 }
 
 func newCaptureWriter(w http.ResponseWriter, limit int) *captureWriter {
@@ -983,6 +986,15 @@ func (cw *captureWriter) setAttempt(res attemptResult) {
 	cw.reqHeaders = res.reqHeaders
 	cw.reqBody = string(res.reqBody)
 	cw.respHeaders = formatHeaders(res.respHeaders)
+}
+
+// setClientReq 回填客户端入站请求快照（客户端 → OmniGate 的原始数据，未做任何修改）。
+func (cw *captureWriter) setClientReq(h http.Header, body []byte) {
+	if cw == nil {
+		return
+	}
+	cw.clientReqHeaders = formatHeaders(h)
+	cw.clientReqBody = string(body)
 }
 
 func (cw *captureWriter) Header() http.Header { return cw.w.Header() }
@@ -1055,23 +1067,25 @@ func formatHeaders(h http.Header) string {
 	return b.String()
 }
 
-// maybeCapture 落 content_log：出站请求头/体（OmniGate → 上游）与上游响应头/体。
+// maybeCapture 落 content_log：客户端入站请求、出站请求（OmniGate → 上游）与上游响应。
 func (h *Handler) maybeCapture(requestID, route string, cw *captureWriter) {
 	if cw == nil {
 		return
 	}
 	respBody := cw.Body()
 	err := h.db.DB.Exec(`
-INSERT INTO content_log (request_id, route, request_headers, request_body, response_headers, response_body, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO content_log (request_id, route, client_request_headers, client_request_body, request_headers, request_body, response_headers, response_body, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(request_id) DO UPDATE SET
   route=excluded.route,
+  client_request_headers=excluded.client_request_headers,
+  client_request_body=excluded.client_request_body,
   request_headers=excluded.request_headers,
   request_body=excluded.request_body,
   response_headers=excluded.response_headers,
   response_body=excluded.response_body,
   created_at=excluded.created_at`,
-		requestID, route, cw.reqHeaders, cw.reqBody, cw.respHeaders, respBody, time.Now().Unix(),
+		requestID, route, cw.clientReqHeaders, cw.clientReqBody, cw.reqHeaders, cw.reqBody, cw.respHeaders, respBody, time.Now().Unix(),
 	).Error
 	if err != nil {
 		slog.Warn("write content_log failed", "err", err, "request_id", requestID)
@@ -1126,6 +1140,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 	if captureOn {
 		cw = newCaptureWriter(w, 1<<20)
 		w = cw
+		cw.setClientReq(r.Header, body)
 	}
 
 	snap, found, err := h.sel.LoadSnapshot(routeName)

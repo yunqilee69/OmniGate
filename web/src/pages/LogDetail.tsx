@@ -51,6 +51,8 @@ interface DetailResp {
 }
 
 interface ContentResp {
+  client_request_headers: string
+  client_request_body: string
   request_headers: string
   request_body: string
   response_headers: string
@@ -192,20 +194,45 @@ const preStyle: React.CSSProperties = {
   padding: 16, borderRadius: 12, maxHeight: 480, overflow: 'auto', fontSize: 12, margin: 0,
 }
 
+const sectionLabelStyle: React.CSSProperties = {
+  fontSize: 12, color: '#8f8f8f', marginBottom: 8, fontWeight: 500,
+}
+
+function ContentPane({ headers, body, headLabel, bodyLabel }: {
+  headers: string
+  body: string
+  headLabel: string
+  bodyLabel: string
+}) {
+  return (
+    <div>
+      <div style={sectionLabelStyle}>{headLabel}</div>
+      <pre style={preStyle}>{headers || '（无）'}</pre>
+      <div style={{ ...sectionLabelStyle, marginTop: 16 }}>{bodyLabel}</div>
+      <pre style={preStyle}>{body ? prettyBody(body) : '（无）'}</pre>
+    </div>
+  )
+}
+
 function ContentTabs({ content }: { content: ContentResp }) {
   const items = [
-    { key: 'req_headers', label: '上游请求头', children: <pre style={preStyle}>{content.request_headers || '（无）'}</pre> },
     {
-      key: 'req_body', label: '上游请求体',
-      children: <pre style={preStyle}>{content.request_body ? prettyBody(content.request_body) : '（无）'}</pre>,
+      key: 'client',
+      label: '客户端请求',
+      children: <ContentPane headers={content.client_request_headers} body={content.client_request_body} headLabel="请求头" bodyLabel="请求体" />,
     },
-    { key: 'resp_headers', label: '上游响应头', children: <pre style={preStyle}>{content.response_headers || '（无）'}</pre> },
     {
-      key: 'resp_body', label: '上游响应体',
-      children: <pre style={preStyle}>{content.response_body ? prettyBody(content.response_body) : '（无）'}</pre>,
+      key: 'upstream_req',
+      label: '上游请求',
+      children: <ContentPane headers={content.request_headers} body={content.request_body} headLabel="请求头" bodyLabel="请求体" />,
+    },
+    {
+      key: 'upstream_resp',
+      label: '上游响应',
+      children: <ContentPane headers={content.response_headers} body={content.response_body} headLabel="响应头" bodyLabel="响应体" />,
     },
   ]
-  return <Tabs defaultActiveKey="req_headers" items={items} />
+  return <Tabs defaultActiveKey="client" items={items} />
 }
 
 function statusTag(s: string) {
