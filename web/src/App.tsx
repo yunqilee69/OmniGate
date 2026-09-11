@@ -43,10 +43,18 @@ type Gate = 'checking' | 'ok' | 'login'
 export default function App() {
   const loc = useLocation()
   const [gate, setGate] = useState<Gate>('checking')
+  const [authMode, setAuthMode] = useState<'' | 'open' | 'password'>('')
   const selected = '/' + (loc.pathname.split('/')[1] || 'dashboard')
 
   useEffect(() => {
     api('GET', '/api/health').then(() => setGate('ok')).catch(() => setGate('login'))
+  }, [])
+
+  // 免登录模式（未配置 admin 账号密码）下无会话可注销，隐藏退出入口
+  useEffect(() => {
+    api<{ mode: 'open' | 'password' }>('GET', '/api/auth-info')
+      .then((r) => setAuthMode(r.mode))
+      .catch(() => setAuthMode(''))
   }, [])
 
   if (gate === 'checking') {
@@ -95,11 +103,13 @@ export default function App() {
           items={items}
           style={{ flex: 1, minWidth: 0, borderBottom: 'none', background: 'transparent' }}
         />
-        <LogoutOutlined
-          title="退出登录"
-          onClick={logout}
-          style={{ fontSize: 16, color: '#4d4d4d', cursor: 'pointer', flexShrink: 0 }}
-        />
+        {authMode === 'password' && (
+          <LogoutOutlined
+            title="退出登录"
+            onClick={logout}
+            style={{ fontSize: 16, color: '#4d4d4d', cursor: 'pointer', flexShrink: 0 }}
+          />
+        )}
       </Layout.Header>
       <Layout.Content style={{ padding: 24 }}>
         <Routes>
