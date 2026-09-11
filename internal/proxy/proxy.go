@@ -118,6 +118,7 @@ type attemptResult struct {
 	streamBroke bool
 	errorBody   string      // 上游错误响应体摘要（< 2KB）；仅错误路径填充
 	respHeaders http.Header // 上游响应头快照；内容捕获开启时随 content_log 落库
+	reqURL      string      // 出站请求完整 URL（含 path 与 query，query 密钥参数已脱敏）；内容捕获开启时随 content_log 落库
 	reqHeaders  string      // 出站请求头快照（OmniGate → 上游，格式化+脱敏）；内容捕获开启时随 content_log 落库
 	reqBody     []byte      // 出站请求体（协议转换/model 替换后实际发送的字节）；内容捕获开启时随 content_log 落库
 }
@@ -330,22 +331,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		att, ok := h.sel.Pick(snap, tried, time.Now(), affModel)
 		if !ok {
 			if attempt == 0 {
-				if rt.FallbackEnabled && rt.FallbackModelID > 0 {
-					fallbackAtt, fallbackOK := h.sel.PickFallback(rt.FallbackModelID, time.Now())
-					if fallbackOK {
-						slog.Info("using fallback model", "route", routeName, "fallback_model_id", rt.FallbackModelID)
-						attemptStart := time.Now()
-						res := h.attempt(w, r, req, fallbackAtt, isStream, rt)
-						res.latencyMs = time.Since(attemptStart).Milliseconds()
-						h.record(res, rt)
-						attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
-						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
-							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
-						cw.setAttempt(res)
-						h.maybeCapture(requestID, routeName, cw)
-						return
+				if rt.FallbackEnabled {
+					if fbID := rt.FallbackModels["completions"]; fbID > 0 {
+						fallbackAtt, fallbackOK := h.sel.PickFallback(fbID, time.Now())
+						if fallbackOK {
+							slog.Info("using fallback model", "route", routeName, "fallback_model_id", fbID)
+							attemptStart := time.Now()
+							res := h.attempt(w, r, req, fallbackAtt, isStream, rt)
+							res.latencyMs = time.Since(attemptStart).Milliseconds()
+							h.record(res, rt)
+							attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
+							h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
+								res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
+							cw.setAttempt(res)
+							h.maybeCapture(requestID, routeName, cw)
+							return
+						}
+						slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", fbID)
 					}
-					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID)
 				}
 
 				// all_backends 错误：没有可用模型，仍需记录尝试
@@ -491,6 +494,7 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 	}
 
 	// 出站快照：内容捕获（content_log）记录的是 OmniGate → 上游的实际请求（头已含模拟/认证头）
+	res.reqURL = captureURL(upReq.URL)
 	res.reqHeaders = formatHeaders(upReq.Header)
 	res.reqBody = outBody
 
@@ -951,6 +955,7 @@ type captureWriter struct {
 	overflow         bool
 	clientReqHeaders string // 入站请求头快照（客户端 → OmniGate，格式化+脱敏）
 	clientReqBody    string // 入站请求体快照（客户端原始提交，未修改）
+	reqURL           string // 出站请求完整 URL（OmniGate → 上游，query 密钥参数脱敏）；最终 attempt 完成后回填
 	reqHeaders       string // 出站请求头快照（OmniGate → 上游，格式化+脱敏）；最终 attempt 完成后回填
 	reqBody          string // 出站请求体快照（最终 attempt 实际发送的内容）；随响应体一并落 content_log
 	respHeaders      string // 上游响应头快照（格式化+脱敏）；attempt 完成后回填
@@ -965,6 +970,7 @@ func (cw *captureWriter) setAttempt(res attemptResult) {
 	if cw == nil {
 		return
 	}
+	cw.reqURL = res.reqURL
 	cw.reqHeaders = res.reqHeaders
 	cw.reqBody = string(res.reqBody)
 	cw.respHeaders = formatHeaders(res.respHeaders)
@@ -986,18 +992,19 @@ func (h *Handler) maybeCapture(requestID, route string, cw *captureWriter) {
 	}
 	respBody := cw.Body()
 	err := h.db.DB.Exec(`
-INSERT INTO content_log (request_id, route, client_request_headers, client_request_body, request_headers, request_body, response_headers, response_body, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO content_log (request_id, route, client_request_headers, client_request_body, request_url, request_headers, request_body, response_headers, response_body, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(request_id) DO UPDATE SET
   route=excluded.route,
   client_request_headers=excluded.client_request_headers,
   client_request_body=excluded.client_request_body,
+  request_url=excluded.request_url,
   request_headers=excluded.request_headers,
   request_body=excluded.request_body,
   response_headers=excluded.response_headers,
   response_body=excluded.response_body,
   created_at=excluded.created_at`,
-		requestID, route, cw.clientReqHeaders, cw.clientReqBody, cw.reqHeaders, cw.reqBody, cw.respHeaders, respBody, time.Now().Unix(),
+		requestID, route, cw.clientReqHeaders, cw.clientReqBody, cw.reqURL, cw.reqHeaders, cw.reqBody, cw.respHeaders, respBody, time.Now().Unix(),
 	).Error
 	if err != nil {
 		slog.Warn("write content_log failed", "err", err, "request_id", requestID)
@@ -1048,6 +1055,37 @@ func maskHeaderValue(v string) string {
 		return "****"
 	}
 	return v[:8] + "****"
+}
+
+// captureURL 出站请求的完整 URL（scheme://host/path?query），供内容捕获展示"请求发往哪里"。
+// query 命中敏感片段（key/token/auth 等，与请求头同一口径）的参数值脱敏：
+// 部分提供商把凭据放在查询串（?api-key=xxx），落库不得出现明文密钥。
+func captureURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	if u.RawQuery == "" {
+		return u.String()
+	}
+	// 逐参数改写原始查询串：只替换敏感参数的值，其余部分原样保留（不重排顺序、不重新转义）。
+	parts := strings.Split(u.RawQuery, "&")
+	for i, p := range parts {
+		k, v, ok := strings.Cut(p, "=")
+		if !ok {
+			continue
+		}
+		name := k
+		if dec, err := url.QueryUnescape(k); err == nil {
+			name = dec
+		}
+		if !isSensitiveHeader(name) {
+			continue
+		}
+		parts[i] = k + "=" + maskHeaderValue(v)
+	}
+	clone := *u
+	clone.RawQuery = strings.Join(parts, "&")
+	return clone.String()
 }
 
 // formatHeaders 将 HTTP 头格式化为 "Key: value" 多行文本（键排序保证稳定输出）。
@@ -1171,22 +1209,24 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 		att, ok := h.sel.Pick(snap, tried, time.Now(), 0)
 		if !ok {
 			if attempt == 0 {
-				if rt.FallbackEnabled && rt.FallbackModelID > 0 {
-					fallbackAtt, fallbackOK := h.sel.PickFallback(rt.FallbackModelID, time.Now())
-					if fallbackOK {
-						slog.Info("using fallback model", "route", routeName, "fallback_model_id", rt.FallbackModelID, "endpoint", endpoint)
-						attemptStart := time.Now()
-						res := h.nativeAttempt(w, r, body, fallbackAtt, isStream, rt, endpoint)
-						res.latencyMs = time.Since(attemptStart).Milliseconds()
-						h.record(res, rt)
-						attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
-						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
-							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
-						cw.setAttempt(res)
-						h.maybeCapture(requestID, routeName, cw)
-						return
+				if rt.FallbackEnabled {
+					if fbID := rt.FallbackModels[endpoint]; fbID > 0 {
+						fallbackAtt, fallbackOK := h.sel.PickFallback(fbID, time.Now())
+						if fallbackOK {
+							slog.Info("using fallback model", "route", routeName, "fallback_model_id", fbID, "endpoint", endpoint)
+							attemptStart := time.Now()
+							res := h.nativeAttempt(w, r, body, fallbackAtt, isStream, rt, endpoint)
+							res.latencyMs = time.Since(attemptStart).Milliseconds()
+							h.record(res, rt)
+							attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
+							h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
+								res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
+							cw.setAttempt(res)
+							h.maybeCapture(requestID, routeName, cw)
+							return
+						}
+						slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", fbID, "endpoint", endpoint)
 					}
-					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID, "endpoint", endpoint)
 				}
 
 				statuses := h.sel.BackendStatuses(snap, time.Now())
@@ -1275,6 +1315,7 @@ func (h *Handler) nativeAttempt(w http.ResponseWriter, r *http.Request, reqBody 
 		upReq.Header.Set("Accept", "text/event-stream")
 	}
 	// 出站快照：内容捕获（content_log）记录的是 OmniGate → 上游的实际请求（头已含模拟/认证头）
+	res.reqURL = captureURL(upReq.URL)
 	res.reqHeaders = formatHeaders(upReq.Header)
 	res.reqBody = reqBody
 

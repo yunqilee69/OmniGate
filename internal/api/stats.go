@@ -625,14 +625,10 @@ func (s *Server) getLogByID(w http.ResponseWriter, r *http.Request) {
 			keyName = k.Name
 		}
 	}
-	var attempts []store.RequestAttempt
-	if err := s.store.DB.Where("request_id = ?", requestID).
-		Order("attempt asc, id asc").Find(&attempts).Error; err != nil {
+	attempts, err := s.loadAttempts(requestID)
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
-	}
-	if attempts == nil {
-		attempts = []store.RequestAttempt{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"log":              log,
@@ -644,16 +640,48 @@ func (s *Server) getLogByID(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getLogAttempts(w http.ResponseWriter, r *http.Request) {
 	requestID := chi.URLParam(r, "request_id")
-	var rows []store.RequestAttempt
-	if err := s.store.DB.Where("request_id = ?", requestID).
-		Order("attempt asc, id asc").Find(&rows).Error; err != nil {
+	rows, err := s.loadAttempts(requestID)
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	if rows == nil {
-		rows = []store.RequestAttempt{}
-	}
 	writeJSON(w, http.StatusOK, rows)
+}
+
+// attemptRow 尝试明细行 + 经 LEFT JOIN 带出的密钥名称与原始密钥值（密钥删除后仍返回该尝试行）。
+type attemptRow struct {
+	store.RequestAttempt
+	RawKey  string `gorm:"column:raw_key"`
+	KeyName string `gorm:"column:key_name"`
+}
+
+// attemptItem 尝试明细的 API 输出：内嵌落库字段，附密钥名称与脱敏值，与日志列表的密钥展示口径一致
+// （逐跳可能命中不同密钥，必须按 key_id 各自取名而非用请求终态的密钥）。
+type attemptItem struct {
+	store.RequestAttempt
+	KeyValueMasked string `json:"key_value_masked"`
+	KeyName        string `json:"key_name"`
+}
+
+// loadAttempts 读取某请求的全部尝试明细，并按 key_id 补齐密钥名称/脱敏值。
+func (s *Server) loadAttempts(requestID string) ([]attemptItem, error) {
+	var rows []attemptRow
+	if err := s.store.DB.Table("request_attempt a").
+		Select("a.*, COALESCE(k.key_value, '') AS raw_key, COALESCE(k.name, '') AS key_name").
+		Joins("LEFT JOIN api_key k ON a.key_id = k.id").
+		Where("a.request_id = ?", requestID).
+		Order("a.attempt asc, a.id asc").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	items := make([]attemptItem, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, attemptItem{
+			RequestAttempt: r.RequestAttempt,
+			KeyValueMasked: maskKey(r.RawKey),
+			KeyName:        r.KeyName,
+		})
+	}
+	return items, nil
 }
 
 // VKStatsResponse 虚拟密钥统计响应

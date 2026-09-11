@@ -214,8 +214,12 @@ func isUniqueErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
-// maskKey 密钥脱敏展示：保留前 5 后 4。
+// maskKey 密钥脱敏展示：保留前 5 后 4。空值返回空串，调用方据此回退展示（密钥已删除或本请求未用密钥），
+// 避免把"没有密钥"渲染成 "****"。
 func maskKey(kv string) string {
+	if kv == "" {
+		return ""
+	}
 	if len(kv) <= 8 {
 		return "****"
 	}

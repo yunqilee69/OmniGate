@@ -94,6 +94,10 @@ func TestContentCaptureOnRecordsRequestAndResponse(t *testing.T) {
 	if !strings.Contains(cl.RequestBody, `"model":"m"`) || !strings.Contains(cl.RequestBody, `"content":"hello"`) {
 		t.Fatalf("outbound request_body missing fields: %s", cl.RequestBody)
 	}
+	// 出站请求 URL：完整可回放（scheme+host+path），供详情页"上游请求"展示请求发往哪里
+	if cl.RequestURL != up.URL+"/chat/completions" {
+		t.Fatalf("outbound request_url wrong: got %q, want %q", cl.RequestURL, up.URL+"/chat/completions")
+	}
 	if !strings.Contains(cl.ResponseBody, `"captured-reply"`) {
 		t.Fatalf("response_body missing upstream reply: %s", cl.ResponseBody)
 	}

@@ -49,11 +49,10 @@ VALUES ('old-1', 'glm', 'Content-Type: application/json', '{"model":"glm"}', '',
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	if !st.DB.Migrator().HasColumn(&ContentLog{}, "client_request_headers") {
-		t.Fatal("client_request_headers missing after Open")
-	}
-	if !st.DB.Migrator().HasColumn(&ContentLog{}, "client_request_body") {
-		t.Fatal("client_request_body missing after Open")
+	for _, col := range []string{"client_request_headers", "client_request_body", "request_url"} {
+		if !st.DB.Migrator().HasColumn(&ContentLog{}, col) {
+			t.Fatalf("column %s missing after Open", col)
+		}
 	}
 
 	var cl ContentLog
@@ -134,7 +133,7 @@ func TestOpenCreatesContentLogOnFreshDB(t *testing.T) {
 	if !st.DB.Migrator().HasTable(&ContentLog{}) {
 		t.Fatal("content_log missing on fresh db")
 	}
-	for _, col := range []string{"client_request_headers", "client_request_body", "request_headers", "request_body", "response_headers", "response_body"} {
+	for _, col := range []string{"client_request_headers", "client_request_body", "request_url", "request_headers", "request_body", "response_headers", "response_body"} {
 		if !st.DB.Migrator().HasColumn(&ContentLog{}, col) {
 			t.Fatalf("column %s missing on fresh db", col)
 		}

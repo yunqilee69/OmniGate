@@ -235,11 +235,16 @@ CREATE TABLE request_log_daily (
 
 -- 内容日志（可选；全局+路由开关均开启时才写入；独立短保留期）
 CREATE TABLE content_log (
-  request_id    TEXT PRIMARY KEY,
-  route         TEXT NOT NULL,
-  request_body  TEXT NOT NULL,
-  response_body TEXT NOT NULL,                    -- 非流式=完整body；流式=拼接的文本增量
-  created_at    INTEGER NOT NULL
+  request_id             TEXT PRIMARY KEY,
+  route                  TEXT NOT NULL,
+  client_request_headers TEXT NOT NULL DEFAULT '',
+  client_request_body    TEXT NOT NULL DEFAULT '',
+  request_url            TEXT NOT NULL DEFAULT '',   -- 出站请求完整 URL（含 path/query；query 密钥参数值脱敏）
+  request_headers        TEXT NOT NULL DEFAULT '',
+  request_body           TEXT NOT NULL,
+  response_headers       TEXT NOT NULL DEFAULT '',
+  response_body          TEXT NOT NULL,              -- 非流式=完整body；流式=拼接的文本增量
+  created_at             INTEGER NOT NULL
 );
 CREATE INDEX idx_cl_time ON content_log(created_at);
 ```
@@ -433,7 +438,7 @@ GET  /api/stats/breakdown?dim=&from=&to=     # 按维度分组聚合（含错误
 
 # 请求日志
 GET  /api/logs?route=&model=&status=&from=&to=&page=&size=
-GET  /api/logs/{request_id}/content           # 内容捕获开启时查看请求/响应体
+GET  /api/logs/{request_id}/content           # 内容捕获开启时查看请求/响应体与出站请求 URL（request_url）
 
 # 配置
 GET/PUT  /api/settings                        # §9 全部配置项；保存即热生效
@@ -471,7 +476,7 @@ POST /api/maintenance/clear-stats             # body {"confirm":true}；清空�
 - `request_log` **表结构上不存在任何请求/响应正文**——错误场景仅落 `error_code` + `error_body`（上游错误体截断至 2KB），默认物理上无法泄露
 - 内容捕获需 **全局开关 且（路由未配置白名单 或 路由在白名单内）** 双重条件，写入独立 `content_log` 表
 - 内容日志独立保留期（`capture.retention_days` 默认 3 天，独立于 `log.retention_days`）；保留期由后台任务每小时自动清理落实（启动 30 秒后先跑一轮），也可经 `POST /api/maintenance/cleanup` 手动触发
-- key 值仅存 `api_key` 表，日志与统计中只出现 `key_id`
+- key 值仅存 `api_key` 表，日志与统计中只出现 `key_id`；内容捕获的出站请求 URL（`request_url`）同理——query 中命中 key/token/auth 等片段的参数值脱敏后再落库
 
 ---
 

@@ -182,6 +182,7 @@ CREATE TABLE content_log (
   route TEXT NOT NULL,
   client_request_headers TEXT NOT NULL DEFAULT '',
   client_request_body TEXT NOT NULL DEFAULT '',
+  request_url TEXT NOT NULL DEFAULT '',
   request_headers TEXT NOT NULL DEFAULT '',
   request_body TEXT NOT NULL DEFAULT '',
   response_headers TEXT NOT NULL DEFAULT '',
@@ -197,6 +198,7 @@ CREATE TABLE content_log (
 		ddl  string
 	}
 	for _, c := range []col{
+		{"request_url", `ALTER TABLE content_log ADD COLUMN request_url TEXT NOT NULL DEFAULT ''`},
 		{"request_headers", `ALTER TABLE content_log ADD COLUMN request_headers TEXT NOT NULL DEFAULT ''`},
 		{"response_headers", `ALTER TABLE content_log ADD COLUMN response_headers TEXT NOT NULL DEFAULT ''`},
 		{"client_request_headers", `ALTER TABLE content_log ADD COLUMN client_request_headers TEXT NOT NULL DEFAULT ''`},

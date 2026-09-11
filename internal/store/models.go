@@ -264,6 +264,7 @@ type ContentLog struct {
 	Route                string `json:"route" gorm:"size:191;not null"`
 	ClientRequestHeaders string `json:"client_request_headers" gorm:"type:text;not null;default:''"` // 入站请求头（客户端 → OmniGate，未修改）
 	ClientRequestBody    string `json:"client_request_body" gorm:"type:text;not null;default:''"`    // 入站请求体（客户端原始提交，未修改）
+	RequestURL           string `json:"request_url" gorm:"size:512;not null;default:''"`             // 出站请求完整 URL（OmniGate → 上游，含 path 与 query；query 中的密钥参数值脱敏）
 	RequestHeaders       string `json:"request_headers" gorm:"type:text;not null;default:''"`        // 出站请求头（OmniGate → 上游）
 	RequestBody          string `json:"request_body" gorm:"type:text;not null"`                      // 出站请求体（转换后实际发送）
 	ResponseHeaders      string `json:"response_headers" gorm:"type:text;not null;default:''"`
