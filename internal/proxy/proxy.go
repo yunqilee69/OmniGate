@@ -118,6 +118,8 @@ type attemptResult struct {
 	streamBroke bool
 	errorBody   string      // 上游错误响应体摘要（< 2KB）；仅错误路径填充
 	respHeaders http.Header // 上游响应头快照；内容捕获开启时随 content_log 落库
+	reqHeaders  string      // 出站请求头快照（OmniGate → 上游，格式化+脱敏）；内容捕获开启时随 content_log 落库
+	reqBody     []byte      // 出站请求体（协议转换/model 替换后实际发送的字节）；内容捕获开启时随 content_log 落库
 }
 
 func openAIError(w http.ResponseWriter, status int, code, msg string, detail any) {
@@ -299,10 +301,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rt := h.rt.Snapshot()
 	captureOn := rt.CaptureEnabled && (len(rt.CaptureRoutes) == 0 || containsStr(rt.CaptureRoutes, routeName))
 	var cw *captureWriter
-	var reqSnap string
 	if captureOn {
-		reqSnap = string(body)
-		cw = newCaptureWriter(w, 1<<20, formatHeaders(r.Header))
+		cw = newCaptureWriter(w, 1<<20)
 		w = cw
 	}
 
@@ -339,10 +339,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						h.writeAttempt(requestID, routeName, 0, fallbackAtt, res, attemptStart)
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
 							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
-						if cw != nil {
-							cw.setRespHeaders(formatHeaders(res.respHeaders))
-						}
-						h.maybeCapture(requestID, routeName, reqSnap, cw)
+						cw.setAttempt(res)
+						h.maybeCapture(requestID, routeName, cw)
 						return
 					}
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID)
@@ -358,7 +356,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
-				h.maybeCapture(requestID, routeName, reqSnap, cw)
+				h.maybeCapture(requestID, routeName, cw)
 				return
 			}
 			break
@@ -416,10 +414,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.Info("all attempts exhausted", "route", routeName,
 			"attempts", len(errCodes), "errors", errCodes)
 	}
-	if cw != nil && last.att.Model.ID != 0 {
-		cw.setRespHeaders(formatHeaders(last.respHeaders))
+	if last.att.Model.ID != 0 {
+		cw.setAttempt(last)
 	}
-	h.maybeCapture(requestID, routeName, reqSnap, cw)
+	h.maybeCapture(requestID, routeName, cw)
 }
 
 func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string]any,
@@ -499,6 +497,10 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 	if isStream {
 		upReq.Header.Set("Accept", "text/event-stream")
 	}
+
+	// 出站快照：内容捕获（content_log）记录的是 OmniGate → 上游的实际请求（头已含模拟/认证头）
+	res.reqHeaders = formatHeaders(upReq.Header)
+	res.reqBody = outBody
 
 	// Debug: 记录请求头（脱敏）
 	if rt.DebugStreamLog {
@@ -964,16 +966,24 @@ type captureWriter struct {
 	buf         []byte
 	limit       int
 	overflow    bool
-	reqHeaders  string // 请求头快照（已格式化+脱敏），随响应体一并落 content_log
-	respHeaders string // 上游响应头快照（已格式化+脱敏）；attempt 完成后回填
+	reqHeaders  string // 出站请求头快照（OmniGate → 上游，格式化+脱敏）；最终 attempt 完成后回填
+	reqBody     string // 出站请求体快照（最终 attempt 实际发送的内容）；随响应体一并落 content_log
+	respHeaders string // 上游响应头快照（格式化+脱敏）；attempt 完成后回填
 }
 
-func newCaptureWriter(w http.ResponseWriter, limit int, reqHeaders string) *captureWriter {
-	return &captureWriter{w: w, limit: limit, reqHeaders: reqHeaders}
+func newCaptureWriter(w http.ResponseWriter, limit int) *captureWriter {
+	return &captureWriter{w: w, limit: limit}
 }
 
-// setRespHeaders 回填上游响应头（格式化+脱敏后的文本）。在 maybeCapture 之前调用。
-func (cw *captureWriter) setRespHeaders(s string) { cw.respHeaders = s }
+// setAttempt 回填该次 attempt 的出站请求快照与上游响应头；重试多次时后调用者覆盖（记录最终落点）。
+func (cw *captureWriter) setAttempt(res attemptResult) {
+	if cw == nil {
+		return
+	}
+	cw.reqHeaders = res.reqHeaders
+	cw.reqBody = string(res.reqBody)
+	cw.respHeaders = formatHeaders(res.respHeaders)
+}
 
 func (cw *captureWriter) Header() http.Header { return cw.w.Header() }
 
@@ -1045,7 +1055,8 @@ func formatHeaders(h http.Header) string {
 	return b.String()
 }
 
-func (h *Handler) maybeCapture(requestID, route, reqBody string, cw *captureWriter) {
+// maybeCapture 落 content_log：出站请求头/体（OmniGate → 上游）与上游响应头/体。
+func (h *Handler) maybeCapture(requestID, route string, cw *captureWriter) {
 	if cw == nil {
 		return
 	}
@@ -1060,7 +1071,7 @@ ON CONFLICT(request_id) DO UPDATE SET
   response_headers=excluded.response_headers,
   response_body=excluded.response_body,
   created_at=excluded.created_at`,
-		requestID, route, cw.reqHeaders, reqBody, cw.respHeaders, respBody, time.Now().Unix(),
+		requestID, route, cw.reqHeaders, cw.reqBody, cw.respHeaders, respBody, time.Now().Unix(),
 	).Error
 	if err != nil {
 		slog.Warn("write content_log failed", "err", err, "request_id", requestID)
@@ -1112,10 +1123,8 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 	rt := h.rt.Snapshot()
 	captureOn := rt.CaptureEnabled && (len(rt.CaptureRoutes) == 0 || containsStr(rt.CaptureRoutes, routeName))
 	var cw *captureWriter
-	var reqSnap string
 	if captureOn {
-		reqSnap = string(body)
-		cw = newCaptureWriter(w, 1<<20, formatHeaders(r.Header))
+		cw = newCaptureWriter(w, 1<<20)
 		w = cw
 	}
 
@@ -1123,20 +1132,20 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 	if err != nil {
 		slog.Error("load snapshot failed", "err", err, "route", routeName, "endpoint", endpoint)
 		openAIError(w, 500, "internal_error", "failed to load routing config", nil)
-		h.maybeCapture(requestID, routeName, reqSnap, cw)
+		h.maybeCapture(requestID, routeName, cw)
 		return
 	}
 	if !found {
 		openAIError(w, http.StatusNotFound, "model_not_found",
 			fmt.Sprintf("the model '%s' does not exist", routeName), nil)
-		h.maybeCapture(requestID, routeName, reqSnap, cw)
+		h.maybeCapture(requestID, routeName, cw)
 		return
 	}
 
 	if snap.Route.Endpoint != endpoint {
 		openAIError(w, http.StatusBadRequest, "endpoint_mismatch",
 			fmt.Sprintf("route '%s' is configured for endpoint '%s', but you called '%s'", routeName, snap.Route.Endpoint, endpoint), nil)
-		h.maybeCapture(requestID, routeName, reqSnap, cw)
+		h.maybeCapture(requestID, routeName, cw)
 		return
 	}
 
@@ -1149,7 +1158,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 			} else {
 				openAIError(w, 500, "route_check_error", err.Error(), nil)
 			}
-			h.maybeCapture(requestID, routeName, reqSnap, cw)
+			h.maybeCapture(requestID, routeName, cw)
 			return
 		}
 	}
@@ -1175,10 +1184,8 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 						h.writeAttempt(requestID, routeName, 0, fallbackAtt, res, attemptStart)
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
 							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
-						if cw != nil {
-							cw.setRespHeaders(formatHeaders(res.respHeaders))
-						}
-						h.maybeCapture(requestID, routeName, reqSnap, cw)
+						cw.setAttempt(res)
+						h.maybeCapture(requestID, routeName, cw)
 						return
 					}
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID, "endpoint", endpoint)
@@ -1189,7 +1196,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
-				h.maybeCapture(requestID, routeName, reqSnap, cw)
+				h.maybeCapture(requestID, routeName, cw)
 				return
 			}
 			// all_backends 错误：没有可用模型，仍需记录尝试
@@ -1227,13 +1234,13 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 	if !last.committed {
 		openAIError(w, http.StatusBadGateway, "all_attempts_failed",
 			fmt.Sprintf("all attempts failed after %d retries (error sequence: %s)", priorFails, strings.Join(errCodes, " → ")), nil)
-		h.maybeCapture(requestID, routeName, reqSnap, cw)
+		h.maybeCapture(requestID, routeName, cw)
 		return
 	}
-	if cw != nil && last.att.Model.ID != 0 {
-		cw.setRespHeaders(formatHeaders(last.respHeaders))
+	if last.att.Model.ID != 0 {
+		cw.setAttempt(last)
 	}
-	h.maybeCapture(requestID, routeName, reqSnap, cw)
+	h.maybeCapture(requestID, routeName, cw)
 }
 
 // nativeAttempt 原生协议的单次转发尝试（请求体直通，不做协议转换）。
@@ -1269,6 +1276,9 @@ func (h *Handler) nativeAttempt(w http.ResponseWriter, r *http.Request, reqBody 
 	if isStream {
 		upReq.Header.Set("Accept", "text/event-stream")
 	}
+	// 出站快照：内容捕获（content_log）记录的是 OmniGate → 上游的实际请求（头已含模拟/认证头）
+	res.reqHeaders = formatHeaders(upReq.Header)
+	res.reqBody = reqBody
 
 	resp, err := h.clientForProvider(att.Provider.ID).Do(upReq)
 	if err != nil {

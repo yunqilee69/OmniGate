@@ -17,14 +17,13 @@ type Provider struct {
 	ProxyURL  string `json:"proxy_url" gorm:"column:proxy_url;size:512;not null;default:''"`
 	TimeoutMs int    `json:"timeout_ms" gorm:"not null;default:120000"`
 	Remark    string `json:"remark" gorm:"size:1024;not null;default:''"`
-	// 客户端模拟请求头组（JSON 数组）与当前生效组名；空 ActiveProfile = 不模拟，透传客户端自带头。
-	HeaderProfiles string `json:"header_profiles" gorm:"type:text;not null;default:''"`
-	ActiveProfile  string `json:"active_profile" gorm:"size:191;not null;default:''"`
-	CreatedAt      int64  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt      int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	// 客户端模拟请求头（JSON 对象 {"User-Agent":"..."}）；空 = 不模拟，透传客户端自带头。
+	HeaderProfile string `json:"header_profile" gorm:"type:text;not null;default:''"`
+	CreatedAt     int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt     int64  `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
-// HeaderProfile 一组客户端模拟请求头（模拟某个客户端发出的完整头集合）。
+// HeaderProfile 模板库中的命名请求头组（模拟某个客户端发出的完整头集合）。
 type HeaderProfile struct {
 	Name    string            `json:"name"`
 	Headers map[string]string `json:"headers"`
@@ -41,7 +40,7 @@ var ReservedHeaderKeys = map[string]bool{
 	"accept-encoding": true,
 }
 
-// ParseHeaderProfiles 解析提供商/模板库上的请求头组 JSON 文本。
+// ParseHeaderProfiles 解析模板库上的请求头组 JSON 文本。
 // raw 为空 → (nil, nil)；JSON 非法、组名为空、组名重复、header key 为空 → 报错（错误信息含具体 name/key）。
 func ParseHeaderProfiles(raw string) ([]HeaderProfile, error) {
 	raw = strings.TrimSpace(raw)
@@ -68,6 +67,25 @@ func ParseHeaderProfiles(raw string) ([]HeaderProfile, error) {
 		}
 	}
 	return profiles, nil
+}
+
+// ParseHeaderProfile 解析提供商上的单个客户端模拟请求头 JSON 对象文本。
+// raw 为空 → (nil, nil)；JSON 非法或 key 为空 → 报错。保留头由 API 层校验拒绝。
+func ParseHeaderProfile(raw string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var headers map[string]string
+	if err := json.Unmarshal([]byte(raw), &headers); err != nil {
+		return nil, fmt.Errorf("header_profile JSON 非法: %w", err)
+	}
+	for k := range headers {
+		if strings.TrimSpace(k) == "" {
+			return nil, fmt.Errorf("header_profile 存在空 header key")
+		}
+	}
+	return headers, nil
 }
 
 // ApiKey 密钥：直接归属某提供商，由模型通过 ModelKey 多对多绑定。KeyValue 带 json:"-"，
@@ -219,10 +237,10 @@ func (AppConfig) TableName() string   { return "app_config" }
 // Endpoint 记录请求进入的端点类型（completions/messages/responses/embedding/rerank/image），
 // 在入口创建 pending 行时写入；路由删除后日志仍自包含。
 type RequestLog struct {
-	ID               int64  `json:"id" gorm:"primaryKey;autoIncrement"`
-	CreatedAt        int64  `json:"created_at" gorm:"autoCreateTime;index:idx_rl_time_route,priority:1;index:idx_rl_time_provider,priority:1"`
-	Status           string `json:"status" gorm:"size:32;not null"`
-	Endpoint         string `json:"endpoint" gorm:"size:32;not null;default:''"`
+	ID               int64   `json:"id" gorm:"primaryKey;autoIncrement"`
+	CreatedAt        int64   `json:"created_at" gorm:"autoCreateTime;index:idx_rl_time_route,priority:1;index:idx_rl_time_provider,priority:1"`
+	Status           string  `json:"status" gorm:"size:32;not null"`
+	Endpoint         string  `json:"endpoint" gorm:"size:32;not null;default:''"`
 	Route            string  `json:"route" gorm:"size:191;not null;index:idx_rl_route;index:idx_rl_time_route,priority:2"`
 	Provider         string  `json:"provider" gorm:"size:191;not null;index:idx_rl_provider;index:idx_rl_time_provider,priority:2"`
 	Model            string  `json:"model" gorm:"size:191;not null"`
@@ -244,12 +262,14 @@ type RequestLog struct {
 }
 
 // ContentLog 内容日志（可选；全局与路由白名单开关均开启时才写入）。
-// 请求头/响应头按 "Key: value" 多行文本存储，敏感头值脱敏。
+// 四个字段均记录 OmniGate 与上游之间的往返：请求侧是网关实际发出的出站请求
+// （协议转换/model 替换/请求头设置之后的最终形态），响应侧是上游返回。
+// 头按 "Key: value" 多行文本存储，敏感头值脱敏；重试多次时记录最终落点的那次 attempt。
 type ContentLog struct {
 	RequestID       string `json:"request_id" gorm:"primaryKey;column:request_id;size:64"`
 	Route           string `json:"route" gorm:"size:191;not null"`
-	RequestHeaders  string `json:"request_headers" gorm:"type:text;not null;default:''"`
-	RequestBody     string `json:"request_body" gorm:"type:text;not null"`
+	RequestHeaders  string `json:"request_headers" gorm:"type:text;not null;default:''"` // 出站请求头（OmniGate → 上游）
+	RequestBody     string `json:"request_body" gorm:"type:text;not null"`              // 出站请求体（转换后实际发送）
 	ResponseHeaders string `json:"response_headers" gorm:"type:text;not null;default:''"`
 	ResponseBody    string `json:"response_body" gorm:"type:text;not null"`
 	CreatedAt       int64  `json:"created_at" gorm:"autoCreateTime;index"` // 保留期清理按时间扫描

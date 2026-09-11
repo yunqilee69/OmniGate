@@ -21,11 +21,10 @@ type fetchModelItem struct {
 }
 
 type fetchModelsReq struct {
-	BaseURL        string `json:"base_url"`
-	APIKey         string `json:"api_key"`
-	ProxyURL       string `json:"proxy_url"`
-	HeaderProfiles string `json:"header_profiles"`
-	ActiveProfile  string `json:"active_profile"`
+	BaseURL       string `json:"base_url"`
+	APIKey        string `json:"api_key"`
+	ProxyURL      string `json:"proxy_url"`
+	HeaderProfile string `json:"header_profile"`
 }
 type fetchModelsResp struct {
 	Models []fetchModelItem `json:"models"`
@@ -48,7 +47,7 @@ func (s *Server) fetchProviderModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	models, err := callProviderModels(req.BaseURL, req.APIKey, req.ProxyURL, req.HeaderProfiles, req.ActiveProfile)
+	models, err := callProviderModels(req.BaseURL, req.APIKey, req.ProxyURL, req.HeaderProfile)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "fetch_failed", err.Error())
 		return
@@ -58,9 +57,9 @@ func (s *Server) fetchProviderModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // callProviderModels 向提供商发起 GET {baseURL}/v1/models 请求并解析返回的模型列表。
-// headerProfiles/activeProfile 来自前端提供商表单当前编辑值：生效组存在时应用组头，否则保留 OmniGate/1.0 UA。
-func callProviderModels(baseURL, apiKey, proxyURL, headerProfiles, activeProfile string) ([]fetchModelItem, error) {
-	ident := store.Provider{Name: "fetch-models", HeaderProfiles: headerProfiles, ActiveProfile: activeProfile}
+// headerProfile 来自前端提供商表单当前编辑值：非空时应用模拟头，否则保留 OmniGate/1.0 UA。
+func callProviderModels(baseURL, apiKey, proxyURL, headerProfile string) ([]fetchModelItem, error) {
+	ident := store.Provider{Name: "fetch-models", HeaderProfile: headerProfile}
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	// 智能拼接路径，避免重复 /v1

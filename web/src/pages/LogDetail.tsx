@@ -194,14 +194,14 @@ const preStyle: React.CSSProperties = {
 
 function ContentTabs({ content }: { content: ContentResp }) {
   const items = [
-    { key: 'req_headers', label: '请求头', children: <pre style={preStyle}>{content.request_headers || '（无）'}</pre> },
+    { key: 'req_headers', label: '上游请求头', children: <pre style={preStyle}>{content.request_headers || '（无）'}</pre> },
     {
-      key: 'req_body', label: '请求体',
+      key: 'req_body', label: '上游请求体',
       children: <pre style={preStyle}>{content.request_body ? prettyBody(content.request_body) : '（无）'}</pre>,
     },
-    { key: 'resp_headers', label: '响应头', children: <pre style={preStyle}>{content.response_headers || '（无）'}</pre> },
+    { key: 'resp_headers', label: '上游响应头', children: <pre style={preStyle}>{content.response_headers || '（无）'}</pre> },
     {
-      key: 'resp_body', label: '响应体',
+      key: 'resp_body', label: '上游响应体',
       children: <pre style={preStyle}>{content.response_body ? prettyBody(content.response_body) : '（无）'}</pre>,
     },
   ]

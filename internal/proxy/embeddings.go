@@ -165,23 +165,21 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 	rt := h.rt.Snapshot()
 	captureOn := rt.CaptureEnabled && (len(rt.CaptureRoutes) == 0 || containsStr(rt.CaptureRoutes, routeName))
 	var cw *captureWriter
-	var reqSnap string
 	if captureOn {
-		reqSnap = string(body)
-		cw = newCaptureWriter(w, 1<<20, formatHeaders(r.Header))
+		cw = newCaptureWriter(w, 1<<20)
 		w = cw
 	}
 
 	snap, found, err := h.sel.LoadSnapshot(routeName)
 	if err != nil {
 		openAIError(w, 500, "internal_error", "failed to load routing config", nil)
-		h.maybeCapture(requestID, routeName, reqSnap, cw)
+		h.maybeCapture(requestID, routeName, cw)
 		return
 	}
 	if !found {
 		openAIError(w, http.StatusNotFound, "model_not_found",
 			"the model '"+routeName+"' does not exist", nil)
-		h.maybeCapture(requestID, routeName, reqSnap, cw)
+		h.maybeCapture(requestID, routeName, cw)
 		return
 	}
 
@@ -194,7 +192,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 			} else {
 				openAIError(w, 500, "route_check_error", err.Error(), nil)
 			}
-			h.maybeCapture(requestID, routeName, reqSnap, cw)
+			h.maybeCapture(requestID, routeName, cw)
 			return
 		}
 	}
@@ -221,10 +219,8 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 						h.writeAttempt(requestID, routeName, 0, fallbackAtt, res, attemptStart)
 						h.writeLog(start, requestID, routeName, fallbackAtt, false,
 							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID)
-						if cw != nil {
-							cw.setRespHeaders(formatHeaders(res.respHeaders))
-						}
-						h.maybeCapture(requestID, routeName, reqSnap, cw)
+						cw.setAttempt(res)
+						h.maybeCapture(requestID, routeName, cw)
 						return
 					}
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", rt.FallbackModelID, "type", kind.modelType)
@@ -240,7 +236,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID)
 				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
 					"route '"+routeName+"' has no available "+kind.modelType+" type backends", statuses)
-				h.maybeCapture(requestID, routeName, reqSnap, cw)
+				h.maybeCapture(requestID, routeName, cw)
 				return
 			}
 			break
@@ -270,13 +266,13 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 	if !last.committed {
 		openAIError(w, http.StatusBadGateway, "all_attempts_failed",
 			"all attempts failed after "+strconv.Itoa(priorFails)+" retries (error sequence: "+strings.Join(errCodes, " → ")+")", nil)
-		h.maybeCapture(requestID, routeName, reqSnap, cw)
+		h.maybeCapture(requestID, routeName, cw)
 		return
 	}
-	if cw != nil && last.att.Model.ID != 0 {
-		cw.setRespHeaders(formatHeaders(last.respHeaders))
+	if last.att.Model.ID != 0 {
+		cw.setAttempt(last)
 	}
-	h.maybeCapture(requestID, routeName, reqSnap, cw)
+	h.maybeCapture(requestID, routeName, cw)
 }
 
 // typedAttempt 单次转发：出站固定 OpenAI 风格 Bearer 头 + kind.path 路径，
@@ -320,6 +316,9 @@ func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[s
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("Authorization", "Bearer "+att.Key.KeyValue)
 	ApplyUpstreamIdentity(upReq, att.Provider, r)
+	// 出站快照：内容捕获（content_log）记录的是 OmniGate → 上游的实际请求（头已含模拟/认证头）
+	res.reqHeaders = formatHeaders(upReq.Header)
+	res.reqBody = outBody
 
 	resp, err := h.clientForProvider(att.Provider.ID).Do(upReq)
 	if err != nil {

@@ -54,18 +54,20 @@ interface Usage {
 
 // 流式累加器：content 逐字追加；tool_calls 按 delta.index 分片拼装
 interface StreamAcc {
+  reasoning: string
   content: string
   calls: Map<number, { id?: string; name?: string; args: string }>
   finish: string
   usage?: Usage
 }
 
-// 对话消息：assistant 消息可携带 tool_calls 与统计信息；tool 消息为 MCP 执行结果。
+// 对话消息：assistant 消息可携带 reasoning（思考过程）、tool_calls 与统计信息；tool 消息为 MCP 执行结果。
 type Msg =
   | { role: 'user'; content: string }
   | {
       role: 'assistant'
       content: string
+      reasoning?: string
       tool_calls?: ToolCall[]
       usage?: Usage
       latency_ms?: number
@@ -119,15 +121,17 @@ function asMcpTools(v: unknown): McpToolWire[] {
 }
 
 function newStreamAcc(): StreamAcc {
-  return { content: '', calls: new Map(), finish: '' }
+  return { reasoning: '', content: '', calls: new Map(), finish: '' }
 }
 
-// 应用一个 SSE 事件（OpenAI chunk 格式）：delta.content 追加、delta.tool_calls 按 index 拼装
+// 应用一个 SSE 事件（OpenAI chunk 格式）：delta.reasoning_content / delta.content 追加、delta.tool_calls 按 index 拼装。
+// reasoning_content 为 GLM/DeepSeek/Claude 等推理模型的非官方扩展字段，思考过程与正文分开渲染。
 function applyStreamEvent(evt: unknown, acc: StreamAcc): void {
   if (!isRecord(evt) || !Array.isArray(evt.choices)) return
   const choice = evt.choices[0]
   if (!isRecord(choice)) return
   const delta = isRecord(choice.delta) ? choice.delta : {}
+  if (typeof delta.reasoning_content === 'string') acc.reasoning += delta.reasoning_content
   if (typeof delta.content === 'string') acc.content += delta.content
   if (Array.isArray(delta.tool_calls)) {
     for (const tc of delta.tool_calls) {
@@ -333,6 +337,8 @@ export default function PlaygroundPage() {
   const [maxRounds, setMaxRounds] = useState(5)
 
   const [msgs, setMsgs] = useState<Msg[]>([])
+  // 每条 assistant 消息的思考面板展开状态；流式中的最后一条强制展开，完成后回落到用户选择
+  const [reasoningKeys, setReasoningKeys] = useState<Record<number, string[]>>({})
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
@@ -566,6 +572,7 @@ export default function PlaygroundPage() {
           const now = performance.now()
           if (!force && now - lastFlush < 50) return
           assistant.content = acc.content
+          if (acc.reasoning) assistant.reasoning = acc.reasoning
           setMsgs([...convo])
           lastFlush = now
         }
@@ -574,7 +581,6 @@ export default function PlaygroundPage() {
           flush()
         })
         flush(true)
-        assistant.latency_ms = Math.round(performance.now() - t0)
         assistant.usage = acc.usage
 
         const calls = assembleToolCalls(acc)
@@ -617,6 +623,7 @@ export default function PlaygroundPage() {
   const clearChat = () => {
     abortRef.current?.abort()
     setMsgs([])
+    setReasoningKeys({})
     setInput('')
     for (const [route, sid] of mcpSessions.current) {
       fetch(`/v1/mcp/${encodeURIComponent(route)}`, {
@@ -634,6 +641,7 @@ export default function PlaygroundPage() {
     }
     return undefined
   }
+
   // ---------- Embedding ----------
   const runEmbedding = async () => {
     const inputs = embText.split('\n').map((s) => s.trim()).filter(Boolean)
@@ -911,6 +919,23 @@ export default function PlaygroundPage() {
             return (
               <div key={i} style={{ display: 'flex', justifyContent: 'flex-start' }}>
                 <div style={{ maxWidth: '85%', minWidth: 0 }}>
+                  {m.reasoning && (
+                    <Collapse
+                      size="small"
+                      style={{ marginBottom: 8, background: '#fff' }}
+                      activeKey={sending && i === msgs.length - 1 ? ['r'] : (reasoningKeys[i] ?? [])}
+                      onChange={(k) => setReasoningKeys((prev) => ({ ...prev, [i]: k as string[] }))}
+                      items={[{
+                        key: 'r',
+                        label: <Typography.Text type="secondary" style={{ fontSize: 12 }}>思考过程</Typography.Text>,
+                        children: (
+                          <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#8f8f8f', fontSize: 12 }}>
+                            {m.reasoning}
+                          </div>
+                        ),
+                      }]}
+                    />
+                  )}
                   {showContent !== undefined && showContent !== '' && (
                     <div
                       style={{

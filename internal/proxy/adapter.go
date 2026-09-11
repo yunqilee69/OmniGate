@@ -64,6 +64,15 @@ func textChunk(content string) string {
 	})
 }
 
+// reasoningChunk 构造一条 delta.reasoning_content 流式块（思考内容，GLM/DeepSeek/Claude thinking 等推理模型的非官方扩展字段）。
+func reasoningChunk(content string) string {
+	return marshalChunk(openai.ChatCompletionStreamResponse{
+		Choices: []openai.ChatCompletionStreamChoice{{
+			Index: 0, Delta: openai.ChatCompletionStreamChoiceDelta{ReasoningContent: content},
+		}},
+	})
+}
+
 // toolCallChunk 构造一条 delta.tool_calls 流式块（Index 指针指向块序号）
 func toolCallChunk(index int, tc openai.ToolCall) string {
 	idx := index
@@ -274,6 +283,7 @@ func (a *anthropicAdapter) convertBuffered(body []byte) ([]byte, usageInfo, erro
 		return nil, usageInfo{}, err
 	}
 	var sb strings.Builder
+	var reasoning strings.Builder
 	var toolCalls []openai.ToolCall
 	for _, block := range msg.Content {
 		if block.Type == "tool_use" {
@@ -287,9 +297,13 @@ func (a *anthropicAdapter) convertBuffered(body []byte) ([]byte, usageInfo, erro
 			})
 			continue
 		}
+		if block.Type == "thinking" {
+			reasoning.WriteString(block.AsThinking().Thinking)
+			continue
+		}
 		sb.WriteString(block.AsText().Text)
 	}
-	assistant := openai.ChatCompletionMessage{Role: "assistant", Content: sb.String()}
+	assistant := openai.ChatCompletionMessage{Role: "assistant", Content: sb.String(), ReasoningContent: reasoning.String()}
 	if len(toolCalls) > 0 {
 		assistant.ToolCalls = toolCalls
 	}
@@ -346,6 +360,9 @@ func (a *anthropicAdapter) convertStreamChunk(payload []byte) []string {
 	case "content_block_delta":
 		if evt.Delta.Type == "text_delta" && evt.Delta.Text != "" {
 			return []string{textChunk(evt.Delta.Text)}
+		}
+		if evt.Delta.Type == "thinking_delta" && evt.Delta.Thinking != "" {
+			return []string{reasoningChunk(evt.Delta.Thinking)}
 		}
 		if evt.Delta.Type == "input_json_delta" && evt.Delta.PartialJSON != "" {
 			return []string{toolCallChunk(int(evt.Index), openai.ToolCall{

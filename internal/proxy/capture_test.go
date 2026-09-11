@@ -43,7 +43,7 @@ func TestContentCaptureOffByDefault(t *testing.T) {
 }
 
 // TestContentCaptureOnRecordsRequestAndResponse：开启全局开关后 content_log 必须记录
-// 请求体（原始 JSON）和响应体（上游回复）。
+// 出站请求体（协议转换/model 替换后实际发送的 JSON）和上游响应体。
 func TestContentCaptureOnRecordsRequestAndResponse(t *testing.T) {
 	st, rtm := newStackWithRTM(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -82,15 +82,17 @@ func TestContentCaptureOnRecordsRequestAndResponse(t *testing.T) {
 	if cl.Route != "glm-pool" {
 		t.Fatalf("route: got %q", cl.Route)
 	}
-	if !strings.Contains(cl.RequestBody, `"model":"glm-pool"`) || !strings.Contains(cl.RequestBody, `"content":"hello"`) {
-		t.Fatalf("request_body missing fields: %s", cl.RequestBody)
+	// 出站请求体：逻辑路由名 glm-pool 已替换为物理模型名 m
+	if !strings.Contains(cl.RequestBody, `"model":"m"`) || !strings.Contains(cl.RequestBody, `"content":"hello"`) {
+		t.Fatalf("outbound request_body missing fields: %s", cl.RequestBody)
 	}
 	if !strings.Contains(cl.ResponseBody, `"captured-reply"`) {
 		t.Fatalf("response_body missing upstream reply: %s", cl.ResponseBody)
 	}
 }
 
-// TestContentCaptureRecordsHeaders：内容捕获需记录请求头与上游响应头；敏感头值（Authorization 等）脱敏。
+// TestContentCaptureRecordsHeaders：内容捕获需记录出站请求头（OmniGate → 上游，含认证头但脱敏）
+// 与上游响应头。
 func TestContentCaptureRecordsHeaders(t *testing.T) {
 	st, rtm := newStackWithRTM(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -100,7 +102,7 @@ func TestContentCaptureRecordsHeaders(t *testing.T) {
 	}))
 	defer up.Close()
 
-	p := store.Provider{Name: "hdr-prov", BaseURL: up.URL}
+	p := store.Provider{Name: "hdr-prov", BaseURL: up.URL, HeaderProfile: `{"User-Agent":"hdr-cli/1"}`}
 	st.DB.Create(&p)
 	m := store.Model{ProviderID: p.ID, Name: "m"}
 	st.DB.Create(&m)
@@ -117,7 +119,7 @@ func TestContentCaptureRecordsHeaders(t *testing.T) {
 		t.Fatalf("enable capture: %v", err)
 	}
 
-	// 带 Authorization 头调用（该栈无 VK 中间件，头原样到达处理器被捕获）
+	// 客户端带自定义身份头调用；出站侧应替换为提供商请求头设置里的值
 	resp := postWithAuth(t, hWithRTM(st, rtm), chatBody(false), "vk-secret-token-abcdefgh")
 	if resp.StatusCode != 200 {
 		t.Fatalf("call should succeed, got %d", resp.StatusCode)
@@ -128,16 +130,20 @@ func TestContentCaptureRecordsHeaders(t *testing.T) {
 	if cl.RequestID == "" {
 		t.Fatalf("content_log row missing")
 	}
-	// 请求头：普通头原样保留
+	// 出站请求头：网关自构（Content-Type + 上游认证头），而非客户端入站头
 	if !strings.Contains(cl.RequestHeaders, "Content-Type: application/json") {
-		t.Fatalf("request_headers missing Content-Type: %q", cl.RequestHeaders)
+		t.Fatalf("outbound request_headers missing Content-Type: %q", cl.RequestHeaders)
 	}
-	// 请求头：Authorization 脱敏为前 8 字符 + ****
-	if !strings.Contains(cl.RequestHeaders, "Authorization: Bearer v****") {
-		t.Fatalf("request_headers Authorization should be masked: %q", cl.RequestHeaders)
+	// 出站请求头：上游密钥脱敏为前 8 字符 + ****
+	if !strings.Contains(cl.RequestHeaders, "Authorization: Bearer s****") {
+		t.Fatalf("outbound request_headers Authorization should be masked: %q", cl.RequestHeaders)
 	}
-	if strings.Contains(cl.RequestHeaders, "vk-secret-token-abcdefgh") {
-		t.Fatalf("request_headers must not contain raw credential: %q", cl.RequestHeaders)
+	if strings.Contains(cl.RequestHeaders, "sk-1") || strings.Contains(cl.RequestHeaders, "vk-secret-token-abcdefgh") {
+		t.Fatalf("outbound request_headers must not contain raw credentials: %q", cl.RequestHeaders)
+	}
+	// 出站请求头：提供商请求头设置生效（客户端入站身份头被覆盖）
+	if !strings.Contains(cl.RequestHeaders, "User-Agent: hdr-cli/1") {
+		t.Fatalf("outbound request_headers missing provider header profile: %q", cl.RequestHeaders)
 	}
 	// 响应头：来自上游（而非网关自构头）
 	if !strings.Contains(cl.ResponseHeaders, "X-Upstream-Trace: trace-abc-123") {

@@ -20,10 +20,10 @@ func newEchoUpstream(t *testing.T, got *http.Header) *httptest.Server {
 	}))
 }
 
-// seedProfileStack 与 setupSingleUpstream 同构，提供商额外带 header profile 字段。
-func seedProfileStack(t *testing.T, st *store.Store, url, headerProfiles, activeProfile string) {
+// seedProfileStack 与 setupSingleUpstream 同构，提供商额外带客户端模拟请求头字段。
+func seedProfileStack(t *testing.T, st *store.Store, url, headerProfile string) {
 	t.Helper()
-	p := store.Provider{Name: "zhipu", BaseURL: url, TimeoutMs: 5000, HeaderProfiles: headerProfiles, ActiveProfile: activeProfile}
+	p := store.Provider{Name: "zhipu", BaseURL: url, TimeoutMs: 5000, HeaderProfile: headerProfile}
 	if err := st.DB.Create(&p).Error; err != nil {
 		t.Fatalf("seed provider: %v", err)
 	}
@@ -54,15 +54,14 @@ func postCustomHeaders(t *testing.T, h http.Handler, vkToken string, extra func(
 	return rec.Result()
 }
 
-// 生效组：上游收到组内头；保留头 Authorization 被跳过（保留适配器认证值）。
-func TestActiveProfileOverridesUpstreamHeaders(t *testing.T) {
+// 已配置模拟头：上游收到模拟头；保留头 Authorization 被跳过（保留适配器认证值）。
+func TestHeaderProfileOverridesUpstreamHeaders(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	var got http.Header
 	up := newEchoUpstream(t, &got)
 	defer up.Close()
 	seedProfileStack(t, st, up.URL,
-		`[{"name":"fake-cli","headers":{"User-Agent":"fake-cli/1.0","X-App":"cli","Authorization":"Bearer spoof"}}]`,
-		"fake-cli")
+		`{"User-Agent":"fake-cli/1.0","X-App":"cli","Authorization":"Bearer spoof"}`)
 
 	resp := postCustomHeaders(t, h, vkToken, nil)
 	if resp.StatusCode != http.StatusOK {
@@ -85,7 +84,7 @@ func TestInboundIdentityAllowlistPassthrough(t *testing.T) {
 	var got http.Header
 	up := newEchoUpstream(t, &got)
 	defer up.Close()
-	seedProfileStack(t, st, up.URL, "", "")
+	seedProfileStack(t, st, up.URL, "")
 
 	resp := postCustomHeaders(t, h, vkToken, func(req *http.Request) {
 		req.Header.Set("User-Agent", "test-cli/1")
@@ -115,7 +114,7 @@ func TestNoProfileNoInboundIdentityKeepsDefaultUA(t *testing.T) {
 	var got http.Header
 	up := newEchoUpstream(t, &got)
 	defer up.Close()
-	seedProfileStack(t, st, up.URL, "", "")
+	seedProfileStack(t, st, up.URL, "")
 
 	resp := postCustomHeaders(t, h, vkToken, func(req *http.Request) {
 		req.Header.Del("User-Agent")
@@ -128,13 +127,13 @@ func TestNoProfileNoInboundIdentityKeepsDefaultUA(t *testing.T) {
 	}
 }
 
-// ActiveProfile 指向不存在的组：静默回退透传，不报错。
-func TestUnknownActiveProfileFallsBackToPassthrough(t *testing.T) {
+// header_profile JSON 非法：告警后静默回退透传，不报错。
+func TestMalformedProfileFallsBackToPassthrough(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	var got http.Header
 	up := newEchoUpstream(t, &got)
 	defer up.Close()
-	seedProfileStack(t, st, up.URL, `[{"name":"fake-cli","headers":{"User-Agent":"fake-cli/1.0"}}]`, "nope")
+	seedProfileStack(t, st, up.URL, `{"User-Agent": oops`)
 
 	resp := postCustomHeaders(t, h, vkToken, func(req *http.Request) {
 		req.Header.Set("User-Agent", "test-cli/1")

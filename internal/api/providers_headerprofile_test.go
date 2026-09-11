@@ -5,90 +5,81 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	"github.com/cloudomni/omnigate/internal/store"
 )
 
-// TestProviderHeaderProfilesCreateValidation 创建时对非法 JSON/保留头/生效组不匹配各断言 400。
-func TestProviderHeaderProfilesCreateValidation(t *testing.T) {
+// TestProviderHeaderProfileCreateValidation 创建时对非法 JSON/空 key/保留头各断言 400。
+func TestProviderHeaderProfileCreateValidation(t *testing.T) {
 	h, _, _ := newTestServerWithStore(t)
 	const token = "test-token"
 
 	cases := []struct {
-		name     string
-		profiles string
-		active   string
-		want     int
-		wantMsg  string
+		name    string
+		profile string
+		want    int
+		errPart string
 	}{
-		{"invalid json", "not-json", "", http.StatusBadRequest, "JSON 非法"},
-		{"reserved key", `[{"name":"g","headers":{"Authorization":"Bearer x"}}]`, "", http.StatusBadRequest, "reserved"},
-		{"active not found", `[{"name":"g","headers":{"User-Agent":"u"}}]`, "other", http.StatusBadRequest, "active_profile"},
-		{"valid", `[{"name":"g","headers":{"User-Agent":"u"}}]`, "g", http.StatusCreated, ""},
+		{"invalid json", `{"User-Agent":`, http.StatusBadRequest, "JSON"},
+		{"reserved key", `{"Authorization":"Bearer x"}`, http.StatusBadRequest, "reserved"},
+		{"valid", `{"User-Agent":"u"}`, http.StatusCreated, ""},
+		{"empty", ``, http.StatusCreated, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := do(t, h, "POST", "/api/providers", map[string]any{
+			payload := map[string]any{
 				"name": "hp-create", "base_url": "https://x",
-				"header_profiles": tc.profiles, "active_profile": tc.active,
-			}, token)
+				"header_profile": tc.profile,
+			}
+			if tc.name == "empty" {
+				payload = map[string]any{"name": "hp-create-2", "base_url": "https://x"}
+			}
+			rec := do(t, h, "POST", "/api/providers", payload, token)
 			if rec.Code != tc.want {
 				t.Fatalf("create code = %d, want %d (body=%s)", rec.Code, tc.want, rec.Body.String())
 			}
-			if tc.wantMsg != "" && !strings.Contains(rec.Body.String(), tc.wantMsg) {
-				t.Fatalf("body %q does not contain %q", rec.Body.String(), tc.wantMsg)
+			if tc.errPart != "" && !strings.Contains(rec.Body.String(), tc.errPart) {
+				t.Fatalf("error body should contain %q, got %s", tc.errPart, rec.Body.String())
 			}
 		})
 	}
 }
 
-// TestProviderHeaderProfilesUpdate 合并校验与最终态落库：单改生效组、清空组、合法更新各路径。
-func TestProviderHeaderProfilesUpdate(t *testing.T) {
+// TestProviderHeaderProfileUpdate 校验与最终态落库：非法更新 400、清空合法、合法更新持久化。
+func TestProviderHeaderProfileUpdate(t *testing.T) {
 	h, st, _ := newTestServerWithStore(t)
 	const token = "test-token"
 
 	rec := do(t, h, "POST", "/api/providers", map[string]any{
 		"name": "hp-upd", "base_url": "https://x",
-		"header_profiles": `[{"name":"g1","headers":{"User-Agent":"u/1"}}]`, "active_profile": "g1",
+		"header_profile": `{"User-Agent":"u/1"}`,
 	}, token)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: %d (body=%s)", rec.Code, rec.Body.String())
 	}
-	provID := idOf(t, decodeObj(t, rec))
+	provID := int64(decodeObj(t, rec)["id"].(float64))
 
-	// 单改 active_profile 为不存在的组 → 400
-	rec = do(t, h, "PUT", fmt.Sprintf("/api/providers/%d", provID), map[string]any{"active_profile": "zzz"}, token)
+	// 保留头 → 400
+	rec = do(t, h, "PUT", fmt.Sprintf("/api/providers/%d", provID),
+		map[string]any{"header_profile": `{"X-Api-Key":"k"}`}, token)
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("update active to missing group: %d (body=%s)", rec.Code, rec.Body.String())
+		t.Fatalf("update reserved key: %d (body=%s)", rec.Code, rec.Body.String())
 	}
 
-	// 清除生效组（合法）→ 200
-	rec = do(t, h, "PUT", fmt.Sprintf("/api/providers/%d", provID), map[string]any{"active_profile": ""}, token)
+	// 清空（合法，回到透传）→ 200
+	rec = do(t, h, "PUT", fmt.Sprintf("/api/providers/%d", provID),
+		map[string]any{"header_profile": ""}, token)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("clear active: %d (body=%s)", rec.Code, rec.Body.String())
+		t.Fatalf("clear profile: %d (body=%s)", rec.Code, rec.Body.String())
 	}
 
-	// 清空组但 active_profile 仍指向旧组 → 400（合并校验）
-	rec = do(t, h, "PUT", fmt.Sprintf("/api/providers/%d", provID), map[string]any{
-		"active_profile": "g1", "header_profiles": "",
-	}, token)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("clear groups with dangling active: %d (body=%s)", rec.Code, rec.Body.String())
-	}
-
-	// 合法更新：新组 + 生效组
-	rec = do(t, h, "PUT", fmt.Sprintf("/api/providers/%d", provID), map[string]any{
-		"header_profiles": `[{"name":"g2","headers":{"X-App":"cli"}}]`, "active_profile": "g2",
-	}, token)
+	// 合法更新 → 200 且响应携带终态
+	rec = do(t, h, "PUT", fmt.Sprintf("/api/providers/%d", provID),
+		map[string]any{"header_profile": `{"X-App":"cli"}`}, token)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("valid update: %d (body=%s)", rec.Code, rec.Body.String())
 	}
-
-	var p store.Provider
-	if err := st.DB.First(&p, provID).Error; err != nil {
-		t.Fatal(err)
+	obj := decodeObj(t, rec)
+	if obj["header_profile"] != `{"X-App":"cli"}` {
+		t.Fatalf("persisted header_profile=%v", obj["header_profile"])
 	}
-	if p.HeaderProfiles != `[{"name":"g2","headers":{"X-App":"cli"}}]` || p.ActiveProfile != "g2" {
-		t.Fatalf("persisted header_profiles=%q active_profile=%q", p.HeaderProfiles, p.ActiveProfile)
-	}
+	_ = st
 }

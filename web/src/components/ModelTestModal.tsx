@@ -51,7 +51,8 @@ function KeyResultTable({ result, onSetBan }: {
     <Table<KeyProbeResult> rowKey="key_id" dataSource={result.keys} size="small" pagination={false} tableLayout="fixed">
       <Table.Column
         title="密钥"
-        width={220}
+        width={170}
+        ellipsis
         render={(_, k: KeyProbeResult) => (
           <Space size={4}>
             <span>{k.key_name || `key#${k.key_id}`}</span>
@@ -59,10 +60,10 @@ function KeyResultTable({ result, onSetBan }: {
           </Space>
         )}
       />
-      <Table.Column title="当前状态" width={100} render={(_, k: KeyProbeResult) => keyStatusTag(k.key_status)} />
+      <Table.Column title="状态" width={88} render={(_, k: KeyProbeResult) => keyStatusTag(k.key_status)} />
       <Table.Column
         title="测试结果"
-        width={100}
+        width={88}
         render={(_, k: KeyProbeResult) => (k.ok
           ? <StatusTag tone="ok">成功</StatusTag>
           : (
@@ -71,11 +72,11 @@ function KeyResultTable({ result, onSetBan }: {
             </Tooltip>
           ))}
       />
-      <Table.Column title="HTTP" dataIndex="http_status" width={70} render={(v) => v || '-'} />
-      <Table.Column title="耗时" dataIndex="latency_ms" width={90} render={(v) => `${v}ms`} />
+      <Table.Column title="HTTP" dataIndex="http_status" width={64} render={(v) => v || '-'} />
+      <Table.Column title="耗时" dataIndex="latency_ms" width={80} render={(v) => `${v}ms`} />
       <Table.Column
         title="Tokens(入/出)"
-        width={110}
+        width={100}
         render={(_, k: KeyProbeResult) => ((k.prompt_tokens || k.completion_tokens) ? `${k.prompt_tokens}/${k.completion_tokens}` : '-')}
       />
       <Table.Column
@@ -91,7 +92,7 @@ function KeyResultTable({ result, onSetBan }: {
       />
       <Table.Column
         title="操作"
-        width={90}
+        width={80}
         render={(_, k: KeyProbeResult) => (k.banned
           ? <Button size="small" onClick={() => onSetBan(k.key_id, false)}>解禁</Button>
           : <Button size="small" danger ghost onClick={() => onSetBan(k.key_id, true)}>禁用</Button>)}

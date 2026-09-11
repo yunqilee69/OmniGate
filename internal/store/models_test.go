@@ -56,6 +56,46 @@ func TestParseHeaderProfiles(t *testing.T) {
 	}
 }
 
+func TestParseHeaderProfile(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    map[string]string
+		wantErr string
+	}{
+		{"empty string", "", nil, ""},
+		{"whitespace only", "  \n ", nil, ""},
+		{"single profile", `{"User-Agent":"cli/1","X-App":"web"}`, map[string]string{"User-Agent": "cli/1", "X-App": "web"}, ""},
+		{"empty object", `{}`, map[string]string{}, ""},
+		{"invalid json", `{bad`, nil, "JSON 非法"},
+		{"json not object", `["x"]`, nil, "JSON 非法"},
+		{"empty header key", `{"":"v"}`, nil, "空 header key"},
+		{"blank header key", `{"  ":"v"}`, nil, "空 header key"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseHeaderProfile(tt.raw)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ParseHeaderProfile(%q) error = %v, want contains %q", tt.raw, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseHeaderProfile(%q) unexpected error: %v", tt.raw, err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d headers, want %d", len(got), len(tt.want))
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("headers[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
 func TestReservedHeaderKeysCoverAuthAndTransport(t *testing.T) {
 	for _, k := range []string{"authorization", "x-api-key", "host", "content-length", "content-type", "accept-encoding"} {
 		if !ReservedHeaderKeys[k] {

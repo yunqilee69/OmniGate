@@ -34,7 +34,7 @@ type Runtime struct {
 	FallbackEnabled         bool
 	FallbackModelID         int64
 	DebugStreamLog          bool
-	// HeaderProfilePresets 请求头组模板库（JSON 数组文本，与 Provider.HeaderProfiles 同构）。
+	// HeaderProfilePresets 客户端模拟请求头模板库（JSON 数组文本，命名组供提供商表单一键插入）。
 	HeaderProfilePresets string
 }
 
@@ -160,7 +160,7 @@ func headerArr(v any) error {
 	return nil
 }
 
-// headerProfilePresets 校验请求头组模板库（与 Provider.HeaderProfiles 同构的 JSON 数组）：
+// headerProfilePresets 校验请求头模板库（命名组 JSON 数组，供提供商表单插入拷贝）：
 // 结构合法性复用 store.ParseHeaderProfiles；保留头同样拒绝（与提供商侧校验文案一致）。
 func headerProfilePresets(v any) error {
 	b, err := json.Marshal(v)

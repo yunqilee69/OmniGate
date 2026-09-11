@@ -230,3 +230,78 @@ func TestResponsesStreamConversion(t *testing.T) {
 		t.Fatalf("stream log usage wrong: %+v", ls[0])
 	}
 }
+
+// anthropicThinkingUpstream 回带 thinking 块的 Anthropic mock：流式（thinking_delta）与缓冲（thinking 块）两条路径。
+func anthropicThinkingUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = decodeJSONBody(r, &body)
+		if _, stream := body["stream"]; stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fl := w.(http.Flusher)
+			for _, s := range []string{
+				`event: message_start` + "\n" + `data: {"type":"message_start","message":{"id":"msg_t","model":"claude-sonnet-4","usage":{"input_tokens":25,"output_tokens":1}}}`,
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"先想"}}`,
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"后想"}}`,
+				`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"正答"}}`,
+				`data: {"type":"message_delta","delta":{"type":"message_delta","stop_reason":"end_turn"},"usage":{"output_tokens":9}}`,
+				`data: {"type":"message_stop"}`,
+			} {
+				fmt.Fprintln(w, s)
+				fmt.Fprintln(w)
+				fl.Flush()
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_t","type":"message","role":"assistant","model":"claude-sonnet-4","content":[{"type":"thinking","thinking":"思考内容","signature":"sig"},{"type":"text","text":"anthropic 回答"}],"stop_reason":"end_turn","usage":{"input_tokens":25,"output_tokens":9}}`)
+	}))
+}
+
+func TestAnthropicThinkingConversion(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	up := anthropicThinkingUpstream(t)
+	defer up.Close()
+	seedProtocolModel(t, st, up.URL, "claude-think", "messages")
+
+	// 流式：thinking_delta → delta.reasoning_content，thinking 原始事件不得泄漏
+	resp := postWithAuth(t, h, map[string]any{
+		"model": "claude-think-route", "stream": true,
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}, vkToken)
+	if resp.StatusCode != 200 {
+		t.Fatalf("stream status %d", resp.StatusCode)
+	}
+	body := readAll(t, resp)
+	for _, want := range []string{
+		`"reasoning_content":"先想"`, `"reasoning_content":"后想"`, `"content":"正答"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream thinking conversion missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "thinking_delta") || strings.Contains(body, `"thinking"`) {
+		t.Fatalf("raw anthropic thinking events leaked to client:\n%s", body)
+	}
+
+	// 缓冲：thinking 块 → message.reasoning_content
+	resp2 := postWithAuth(t, h, map[string]any{
+		"model":    "claude-think-route",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}, vkToken)
+	if resp2.StatusCode != 200 {
+		t.Fatalf("buffered status %d", resp2.StatusCode)
+	}
+	body2 := readAll(t, resp2)
+	for _, want := range []string{`"reasoning_content":"思考内容"`, `"content":"anthropic 回答"`} {
+		if !strings.Contains(body2, want) {
+			t.Fatalf("buffered thinking conversion missing %q:\n%s", want, body2)
+		}
+	}
+	if strings.Contains(body2, "signature") {
+		t.Fatalf("thinking signature leaked to client:\n%s", body2)
+	}
+	_ = st
+}
