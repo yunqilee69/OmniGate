@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"gorm.io/gorm"
@@ -53,10 +54,14 @@ func (s *Server) listModels(w http.ResponseWriter, _ *http.Request) {
 	for _, mk := range mks {
 		byModel[mk.ModelID] = append(byModel[mk.ModelID], mk.KeyID)
 	}
+	now := time.Now().Unix()
 	bansByModel := map[int64]map[int64]string{}
 	var bans []store.ModelKeyBan
 	if err := s.store.DB.Find(&bans).Error; err == nil {
 		for _, b := range bans {
+			if b.Status == "temp_banned" && b.BannedUntil <= now {
+				continue // 过期 temp_banned 半开可用，不算禁用
+			}
 			m := bansByModel[b.ModelID]
 			if m == nil {
 				m = map[int64]string{}
@@ -418,7 +423,7 @@ func (s *Server) deleteModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
-// enableModel 手动解禁：重置熔断状态机。
+// enableModel 手动解禁：清除该模型全部组合禁用。
 func (s *Server) enableModel(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -434,16 +439,14 @@ func (s *Server) enableModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	if err := s.store.DB.Model(&m).Updates(map[string]any{
-		"status": "active", "fail_count": 0, "cooldown_until": 0, "disable_reason": "",
-	}).Error; err != nil {
+	if err := breaker.New(s.store).UnbanAllModelKeys(m.ID); err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	_ = s.store.DB.First(&m, id).Error
-	writeJSON(w, http.StatusOK, m)
+	writeJSON(w, http.StatusOK, map[string]string{"message": "model unbanned"})
 }
 
+// disableModel 手动禁用：禁用该模型全部组合（perm_banned，永不过期）。
 func (s *Server) disableModel(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -459,14 +462,11 @@ func (s *Server) disableModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	if err := s.store.DB.Model(&m).Updates(map[string]any{
-		"status": "disabled", "disable_reason": "manually disabled via admin API",
-	}).Error; err != nil {
+	if err := breaker.New(s.store).BanAllModelKeys(m.ID, "manually disabled via admin API"); err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	_ = s.store.DB.First(&m, id).Error
-	writeJSON(w, http.StatusOK, m)
+	writeJSON(w, http.StatusOK, map[string]string{"message": "model disabled"})
 }
 
 // modelKeyPair 解析并校验路径中的模型 id 与密钥 id（存在性），失败时已写入错误响应。
@@ -541,4 +541,91 @@ func (s *Server) banModelKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "model-key combination banned"})
+}
+
+// modelKeyBanItem 某模型下单个密钥组合的禁用明细（轻量查询，不探测上游）。
+type modelKeyBanItem struct {
+	KeyID       int64  `json:"key_id"`
+	KeyName     string `json:"key_name"`
+	KeyMasked   string `json:"key_masked"`
+	Status      string `json:"status"` // active | temp_banned | perm_banned
+	BannedUntil int64  `json:"banned_until"`
+	FailCount   int    `json:"fail_count"`
+	BanReason   string `json:"ban_reason,omitempty"`
+	LastError   string `json:"last_error,omitempty"`
+}
+
+// getModelKeyBans 返回模型下全部绑定密钥的组合禁用明细。
+func (s *Server) getModelKeyBans(w http.ResponseWriter, r *http.Request) {
+	modelID, ok := pathID(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "invalid_id", "invalid model id")
+		return
+	}
+	var m store.Model
+	if err := s.store.DB.First(&m, modelID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			writeErr(w, http.StatusNotFound, "not_found", "model not found")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	var mks []store.ModelKey
+	if err := s.store.DB.Where("model_id = ?", modelID).Find(&mks).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	keyByID := map[int64]store.ApiKey{}
+	if len(mks) > 0 {
+		ids := make([]int64, 0, len(mks))
+		for _, mk := range mks {
+			ids = append(ids, mk.KeyID)
+		}
+		var keys []store.ApiKey
+		if err := s.store.DB.Where("id IN ?", ids).Find(&keys).Error; err != nil {
+			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+		for _, k := range keys {
+			keyByID[k.ID] = k
+		}
+	}
+	banByKey := map[int64]store.ModelKeyBan{}
+	var bans []store.ModelKeyBan
+	if err := s.store.DB.Where("model_id = ?", modelID).Find(&bans).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	for _, b := range bans {
+		banByKey[b.KeyID] = b
+	}
+	now := time.Now().Unix()
+	items := make([]modelKeyBanItem, 0, len(mks))
+	for _, mk := range mks {
+		item := modelKeyBanItem{KeyID: mk.KeyID}
+		if k, ok := keyByID[mk.KeyID]; ok {
+			item.KeyName = k.Name
+			item.KeyMasked = maskKey(k.KeyValue)
+		}
+		if b, ok := banByKey[mk.KeyID]; ok {
+			item.FailCount = b.FailCount
+			item.LastError = b.LastError
+			switch {
+			case b.Status == "perm_banned":
+				item.Status = "perm_banned"
+				item.BanReason = b.BanReason
+			case b.Status == "temp_banned" && b.BannedUntil > now:
+				item.Status = "temp_banned"
+				item.BannedUntil = b.BannedUntil
+				item.BanReason = b.BanReason
+			default:
+				item.Status = "active" // 过期 temp_banned 半开可用
+			}
+		} else {
+			item.Status = "active"
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, items)
 }

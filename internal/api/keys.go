@@ -103,7 +103,6 @@ func (s *Server) createKeys(w http.ResponseWriter, r *http.Request) {
 type keyUpdateReq struct {
 	KeyValue *string `json:"key_value"`
 	Name     *string `json:"name"`
-	Status   *string `json:"status"`
 }
 
 func (s *Server) updateKey(w http.ResponseWriter, r *http.Request) {
@@ -164,20 +163,6 @@ func (s *Server) updateKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updates["name"] = name
-	}
-	if req.Status != nil {
-		switch *req.Status {
-		case "active": // 手动启用：清空限流冷却（密钥级禁用已移除，禁用粒度下沉到模型×密钥组合）
-			updates["status"] = "active"
-			updates["cooldown_until"] = 0
-			updates["disable_reason"] = ""
-		case "disabled":
-			writeErr(w, http.StatusBadRequest, "bad_request", "key-level disable removed; disable the key on the model instead (see model-key bans)")
-			return
-		default:
-			writeErr(w, http.StatusBadRequest, "bad_request", "status must be active")
-			return
-		}
 	}
 	if len(updates) == 0 {
 		writeErr(w, http.StatusBadRequest, "bad_request", "no fields to update")

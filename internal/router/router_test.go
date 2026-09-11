@@ -58,6 +58,23 @@ func seed(t *testing.T, st *store.Store) (route string) {
 	return rt.Name
 }
 
+// banCombos 给模型全部绑定组合打禁用记录（测试用：替代已退役的模型级状态机）。
+func banCombos(t *testing.T, st *store.Store, modelID int64, status string, bannedUntil int64) {
+	t.Helper()
+	var mks []store.ModelKey
+	if err := st.DB.Where("model_id = ?", modelID).Find(&mks).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, mk := range mks {
+		if err := st.DB.Create(&store.ModelKeyBan{
+			ModelID: mk.ModelID, KeyID: mk.KeyID,
+			Status: status, BannedUntil: bannedUntil,
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestWeightedDistribution(t *testing.T) {
 	st := newStore(t)
 	route := seed(t, st)
@@ -142,14 +159,16 @@ func TestExhaustionAndSkip(t *testing.T) {
 		t.Fatal("all keys tried: pick must fail")
 	}
 
-	st.DB.Model(&m).Updates(map[string]any{"status": "cooldown", "cooldown_until": now.Unix() + 60})
-	st.DB.Model(&flash).Updates(map[string]any{"status": "disabled", "disable_reason": "test"})
+	// 组合级禁用：glm-4.6 全部组合冷却中 + flash 全部组合永久禁用 → 无候选
+	banCombos(t, st, m.ID, "temp_banned", now.Unix()+60)
+	banCombos(t, st, flash.ID, "perm_banned", 0)
 	snap2, _, _ := sel.LoadSnapshot(route)
 	if _, ok := sel.Pick(snap2, map[int64]bool{}, now, 0); ok {
-		t.Fatal("cooldown + disabled models must yield no candidate")
+		t.Fatal("cooldown + disabled combos must yield no candidate")
 	}
 
-	st.DB.Model(&m).Updates(map[string]any{"status": "cooldown", "cooldown_until": now.Unix() - 1})
+	// 冷却到期（半开）：glm-4.6 组合恢复可选
+	st.DB.Model(&store.ModelKeyBan{}).Where("model_id = ?", m.ID).Update("banned_until", now.Unix()-1)
 	snap3, _, _ := sel.LoadSnapshot(route)
 	if att, ok := sel.Pick(snap3, map[int64]bool{}, now, 0); !ok || att.Model.Name != "glm-4.6" {
 		t.Fatal("expired cooldown (half-open) must be selectable again")
@@ -222,8 +241,8 @@ func TestPickPrefersAffinityModel(t *testing.T) {
 		}
 	}
 
-	// 首选模型熔断冷却：无感降级为加权随机
-	st.DB.Model(&flash).Updates(map[string]any{"status": "cooldown", "cooldown_until": now.Unix() + 60})
+	// 首选模型全部组合冷却：无感降级为加权随机
+	banCombos(t, st, flash.ID, "temp_banned", now.Unix()+60)
 	snap2, _, _ := sel.LoadSnapshot(route)
 	att, ok := sel.Pick(snap2, map[int64]bool{}, now, flash.ID)
 	if !ok || att.Model.ID == flash.ID {
@@ -231,7 +250,7 @@ func TestPickPrefersAffinityModel(t *testing.T) {
 	}
 
 	// 冷却到期（半开）：首选恢复锁定
-	st.DB.Model(&flash).Updates(map[string]any{"status": "cooldown", "cooldown_until": now.Unix() - 1})
+	st.DB.Model(&store.ModelKeyBan{}).Where("model_id = ?", flash.ID).Update("banned_until", now.Unix()-1)
 	snap3, _, _ := sel.LoadSnapshot(route)
 	if att, ok := sel.Pick(snap3, map[int64]bool{}, now, flash.ID); !ok || att.Model.ID != flash.ID {
 		t.Fatal("half-open preferred model must win again")

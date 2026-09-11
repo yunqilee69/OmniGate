@@ -95,7 +95,7 @@ type ApiKey struct {
 	ProviderID     int64  `json:"provider_id" gorm:"not null;index"`
 	KeyValue       string `json:"-" gorm:"column:key_value;size:512;not null"`
 	Name           string `json:"name" gorm:"size:191;not null;default:''"`
-	Status         string `json:"status" gorm:"size:32;not null;default:active"` // active | cooldown | disabled
+	Status         string `json:"status" gorm:"size:32;not null;default:active"` // 保留字段；密钥级状态机已退役，恒 active
 	CooldownUntil  int64  `json:"cooldown_until" gorm:"not null;default:0"`
 	RateLimitCount int    `json:"rate_limited_count" gorm:"column:rate_limited_count;not null;default:0"`
 	DisableReason  string `json:"disable_reason" gorm:"size:512;not null;default:''"`
@@ -105,7 +105,7 @@ type ApiKey struct {
 	UpdatedAt      int64  `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
-// Model 真实模型。阶梯熔断状态机挂在这一层（跨路由共享的物理事实）。
+// Model 真实模型。禁用/熔断状态机已退役，粒度下沉为模型×密钥组合（ModelKeyBan）。
 // Protocol 决定上游调用格式：completions(/chat/completions) | responses(/responses) | messages(/messages)。
 // Type 决定端点家族：chat(/v1/chat/completions) | embedding(/v1/embeddings) | rerank(/v1/rerank) | image(/v1/images/generations)；
 // 非 chat 家族仅支持 protocol=completions（按各自业界事实格式直通，不做跨厂商协议转换）。
@@ -120,13 +120,14 @@ type Model struct {
 	InputPrice    float64 `json:"input_price" gorm:"not null;default:0"`                // 每 1M prompt token 价格
 	OutputPrice   float64 `json:"output_price" gorm:"not null;default:0"`               // 每 1M completion token 价格
 	PriceCurrency string  `json:"price_currency" gorm:"size:8;not null;default:'USD'"`  // 价格币种：USD | CNY；计费时统一折算为 USD 入库
-	Status        string  `json:"status" gorm:"size:32;not null;default:active"`        // active | cooldown | disabled
-	FailCount     int     `json:"fail_count" gorm:"not null;default:0"`
-	CooldownUntil int64   `json:"cooldown_until" gorm:"not null;default:0"`
-	DisableReason string  `json:"disable_reason" gorm:"size:512;not null;default:''"`
-	LastError     string  `json:"last_error" gorm:"size:512;not null;default:''"`
-	CreatedAt     int64   `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt     int64   `json:"updated_at" gorm:"autoUpdateTime"`
+	// （保留字段，熔断状态机已退役，不再被写入/读取——禁用粒度见 ModelKeyBan）
+	Status        string `json:"status" gorm:"size:32;not null;default:active"`
+	FailCount     int    `json:"fail_count" gorm:"not null;default:0"`
+	CooldownUntil int64  `json:"cooldown_until" gorm:"not null;default:0"`
+	DisableReason string `json:"disable_reason" gorm:"size:512;not null;default:''"`
+	LastError     string `json:"last_error" gorm:"size:512;not null;default:''"`
+	CreatedAt     int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt     int64  `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 // ModelKey 模型 × 密钥 多对多关联。

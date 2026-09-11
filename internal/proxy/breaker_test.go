@@ -47,6 +47,15 @@ func seedTwoKeys(t *testing.T, st *store.Store, url string) {
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
 }
 
+func comboBan(t *testing.T, st *store.Store, modelID, keyID int64) store.ModelKeyBan {
+	t.Helper()
+	var ban store.ModelKeyBan
+	if err := st.DB.Where("model_id = ? AND key_id = ?", modelID, keyID).First(&ban).Error; err != nil {
+		t.Fatalf("combo ban not found: %v", err)
+	}
+	return ban
+}
+
 func TestKeyComboBannedOn401ThroughProxy(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	up := authKeyServer(t, map[string]int{"Bearer sk-bad": 401}, "")
@@ -64,8 +73,7 @@ func TestKeyComboBannedOn401ThroughProxy(t *testing.T) {
 	}
 	var m store.Model
 	st.DB.First(&m)
-	var ban store.ModelKeyBan
-	st.DB.Where("model_id = ? AND key_id = ?", m.ID, bad.ID).First(&ban)
+	ban := comboBan(t, st, m.ID, bad.ID)
 	if ban.Status != "perm_banned" || ban.BanReason == "" {
 		t.Fatalf("401 should perm-ban model-key combo: %+v", ban)
 	}
@@ -102,7 +110,7 @@ func TestKeyComboBannedOn401ThroughProxy(t *testing.T) {
 	}
 }
 
-func TestKeyCooldownOn429ThroughProxy(t *testing.T) {
+func TestKeyComboCooldownOn429ThroughProxy(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	up := authKeyServer(t, map[string]int{"Bearer sk-bad": 429}, "7")
 	defer up.Close()
@@ -114,21 +122,24 @@ func TestKeyCooldownOn429ThroughProxy(t *testing.T) {
 	}
 	var bad store.ApiKey
 	st.DB.Where("key_value = ?", "sk-bad").First(&bad)
-	if bad.Status != "cooldown" || bad.RateLimitCount != 1 {
-		t.Fatalf("429 key should cooldown: %+v", bad)
-	}
-	remain := bad.CooldownUntil - time.Now().Unix()
-	if remain < 4 || remain > 8 {
-		t.Fatalf("Retry-After=7 should be honored, remain=%d", remain)
+	if bad.Status != "active" {
+		t.Fatalf("429 must not mutate key row: %+v", bad)
 	}
 	var m store.Model
 	st.DB.First(&m)
-	if m.FailCount != 0 || m.Status != "active" {
-		t.Fatalf("429 must NOT count toward model breaker: %+v", m)
+	ban := comboBan(t, st, m.ID, bad.ID)
+	if ban.Status != "temp_banned" {
+		t.Fatalf("429 should temp-ban combo: %+v", ban)
+	}
+	if remain := ban.BannedUntil - time.Now().Unix(); remain < 4 || remain > 8 {
+		t.Fatalf("Retry-After=7 should be honored, remain=%d", remain)
+	}
+	if ban.FailCount != 0 {
+		t.Fatalf("429 must NOT count toward breaker: %+v", ban)
 	}
 }
 
-func TestModelBreakerEscalationThroughProxy(t *testing.T) {
+func TestComboBreakerEscalationThroughProxy(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	up := authKeyServer(t, map[string]int{}, "")
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -152,18 +163,18 @@ func TestModelBreakerEscalationThroughProxy(t *testing.T) {
 	if resp := postWithAuth(t, h, chatBody(false), vkToken); resp.StatusCode != 502 {
 		t.Fatalf("single-broken-backend expected 502, got %d", resp.StatusCode)
 	}
-	st.DB.First(&mBad, mBad.ID)
-	if mBad.FailCount != 1 || mBad.Status != "cooldown" {
-		t.Fatalf("fail1 ladder: %+v", mBad)
+	ban := comboBan(t, st, mBad.ID, kBad.ID)
+	if ban.FailCount != 1 || ban.Status != "temp_banned" {
+		t.Fatalf("fail1 ladder: %+v", ban)
 	}
-	remain := mBad.CooldownUntil - time.Now().Unix()
+	remain := ban.BannedUntil - time.Now().Unix()
 	if remain < 25 || remain > 31 {
 		t.Fatalf("first ladder step should be ~30s, got %d", remain)
 	}
 
-	// 冷却中：无其他后端 → 503 all_backends（证明被跳过）
+	// 冷却中：无其他后端 → 503 all_backends（证明组合被跳过）
 	if resp := postWithAuth(t, h, chatBody(false), vkToken); resp.StatusCode != 503 {
-		t.Fatalf("cooldown model must be skipped (503), got %d", resp.StatusCode)
+		t.Fatalf("cooldown combo must be skipped (503), got %d", resp.StatusCode)
 	}
 	ls := logs(t, st)
 	if ls[1].ErrorCode != "all_backends" {
@@ -171,41 +182,25 @@ func TestModelBreakerEscalationThroughProxy(t *testing.T) {
 	}
 
 	// 半开探测失败 → 升级第 2 档（60s）
-	st.DB.Model(&mBad).Update("cooldown_until", time.Now().Unix()-1)
+	st.DB.Model(&store.ModelKeyBan{}).Where("model_id = ? AND key_id = ?", mBad.ID, kBad.ID).
+		Update("banned_until", time.Now().Unix()-1)
 	postWithAuth(t, h, chatBody(false), vkToken)
-	st.DB.First(&mBad, mBad.ID)
-	if mBad.FailCount != 2 {
-		t.Fatalf("half-open probe failure should escalate: %+v", mBad)
+	ban = comboBan(t, st, mBad.ID, kBad.ID)
+	if ban.FailCount != 2 {
+		t.Fatalf("half-open probe failure should escalate: %+v", ban)
 	}
-	remain = mBad.CooldownUntil - time.Now().Unix()
+	remain = ban.BannedUntil - time.Now().Unix()
 	if remain < 55 || remain > 62 {
 		t.Fatalf("second ladder step should be ~60s, got %d", remain)
 	}
 
-	// 第 3 次失败 → 禁用 + 原因
-	st.DB.Model(&mBad).Update("cooldown_until", time.Now().Unix()-1)
+	// 第 3 次失败 → 永久禁用 + 原因
+	st.DB.Model(&store.ModelKeyBan{}).Where("model_id = ? AND key_id = ?", mBad.ID, kBad.ID).
+		Update("banned_until", time.Now().Unix()-1)
 	postWithAuth(t, h, chatBody(false), vkToken)
-	st.DB.First(&mBad, mBad.ID)
-	if mBad.Status != "disabled" || mBad.DisableReason == "" {
-		t.Fatalf("threshold=3 should disable: %+v", mBad)
-	}
-
-	// 半开成功 → 清零回归：指到好上游再探测
-	st.DB.Model(&mBad).Updates(map[string]any{
-		"status": "cooldown", "cooldown_until": time.Now().Unix() - 1, "fail_count": 2,
-	})
-	pGood := store.Provider{Name: "goodp", BaseURL: up.URL}
-	st.DB.Create(&pGood)
-	kGood := store.ApiKey{ProviderID: pGood.ID, KeyValue: "sk-y", Status: "active"}
-	st.DB.Create(&kGood)
-	st.DB.Model(&mBad).Update("provider_id", pGood.ID)
-	st.DB.Create(&store.ModelKey{ModelID: mBad.ID, KeyID: kGood.ID})
-	if resp := postWithAuth(t, h, chatBody(false), vkToken); resp.StatusCode != 200 {
-		t.Fatalf("probe request failed: %d", resp.StatusCode)
-	}
-	st.DB.First(&mBad, mBad.ID)
-	if mBad.FailCount != 0 || mBad.Status != "active" {
-		t.Fatalf("probe success should reset: %+v", mBad)
+	ban = comboBan(t, st, mBad.ID, kBad.ID)
+	if ban.Status != "perm_banned" || ban.BanReason == "" {
+		t.Fatalf("threshold=3 should perm-ban: %+v", ban)
 	}
 }
 
@@ -236,19 +231,22 @@ func TestHalfOpenProbeSuccessFlow(t *testing.T) {
 	if resp := postWithAuth(t, h, chatBody(false), vkToken); resp.StatusCode != 502 {
 		t.Fatalf("all-fail expected 502, got %d", resp.StatusCode)
 	}
-	st.DB.First(&m, m.ID)
-	if m.FailCount == 0 {
-		t.Fatal("model failures must be recorded")
+	ban := comboBan(t, st, m.ID, k.ID)
+	if ban.FailCount == 0 {
+		t.Fatal("combo failures must be recorded")
 	}
 
+	// 半开探测成功 → 组合禁用被清除
 	fail = false
-	st.DB.Model(&m).Update("cooldown_until", time.Now().Unix()-1)
+	st.DB.Model(&store.ModelKeyBan{}).Where("model_id = ? AND key_id = ?", m.ID, k.ID).
+		Update("banned_until", time.Now().Unix()-1)
 	if resp := postWithAuth(t, h, chatBody(false), vkToken); resp.StatusCode != 200 {
 		t.Fatalf("probe should succeed, got %d", resp.StatusCode)
 	}
-	st.DB.First(&m, m.ID)
-	if m.FailCount != 0 || m.Status != "active" {
-		t.Fatalf("successful probe must reset breaker: %+v", m)
+	var n int64
+	st.DB.Model(&store.ModelKeyBan{}).Where("model_id = ? AND key_id = ?", m.ID, k.ID).Count(&n)
+	if n != 0 {
+		t.Fatalf("successful probe must clear combo ban: %d rows", n)
 	}
 }
 
@@ -272,10 +270,9 @@ func TestClientErrorNoBreakerRecord(t *testing.T) {
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
 
 	postWithAuth(t, h, chatBody(false), vkToken)
-	st.DB.First(&m, m.ID)
-	var k store.ApiKey
-	st.DB.First(&k)
-	if m.FailCount != 0 || m.Status != "active" || k.Status != "active" {
-		t.Fatalf("client errors must not touch breaker: m=%+v k=%+v", m, k)
+	var n int64
+	st.DB.Model(&store.ModelKeyBan{}).Where("model_id = ? AND key_id = ?", m.ID, kN.ID).Count(&n)
+	if n != 0 {
+		t.Fatalf("client errors must not touch breaker, got %d bans", n)
 	}
 }

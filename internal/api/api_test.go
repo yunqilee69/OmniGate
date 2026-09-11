@@ -877,6 +877,44 @@ func TestModelTestKeysEndpoint(t *testing.T) {
 	if rec = do(t, h, "POST", "/api/models/99999/test-keys", nil, "test-token"); rec.Code != http.StatusNotFound {
 		t.Fatalf("missing model should 404, got %d", rec.Code)
 	}
+
+	// 组合禁用明细：初始全 active → 手动禁用单个 → 明细反映 perm_banned → 解禁后恢复
+	bans := decodeArr(t, do(t, h, "GET", fmt.Sprintf("/api/models/%d/bans", modelID), nil, "test-token"))
+	if len(bans) != 2 {
+		t.Fatalf("expect 2 ban rows, got %d", len(bans))
+	}
+	for _, b := range bans {
+		if b.(map[string]any)["status"] != "active" {
+			t.Fatalf("expect all active initially: %v", b)
+		}
+	}
+	if rec = do(t, h, "POST", fmt.Sprintf("/api/models/%d/bans/%d", modelID, badID), nil, "test-token"); rec.Code != http.StatusOK {
+		t.Fatalf("ban combo: %d — %s", rec.Code, rec.Body.String())
+	}
+	bans = decodeArr(t, do(t, h, "GET", fmt.Sprintf("/api/models/%d/bans", modelID), nil, "test-token"))
+	byID = map[int64]map[string]any{}
+	for _, b := range bans {
+		bm := b.(map[string]any)
+		byID[int64(bm["key_id"].(float64))] = bm
+	}
+	if byID[badID]["status"] != "perm_banned" || byID[badID]["ban_reason"] == "" {
+		t.Fatalf("banned combo detail wrong: %v", byID[badID])
+	}
+	if byID[goodID]["status"] != "active" {
+		t.Fatalf("good combo should stay active: %v", byID[goodID])
+	}
+	if rec = do(t, h, "DELETE", fmt.Sprintf("/api/models/%d/bans/%d", modelID, badID), nil, "test-token"); rec.Code != http.StatusOK {
+		t.Fatalf("unban combo: %d — %s", rec.Code, rec.Body.String())
+	}
+	bans = decodeArr(t, do(t, h, "GET", fmt.Sprintf("/api/models/%d/bans", modelID), nil, "test-token"))
+	for _, b := range bans {
+		if b.(map[string]any)["status"] != "active" {
+			t.Fatalf("expect active after unban: %v", b)
+		}
+	}
+	if rec = do(t, h, "GET", "/api/models/99999/bans", nil, "test-token"); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing model bans should 404, got %d", rec.Code)
+	}
 }
 
 func TestFirstLevelNamespaces(t *testing.T) {

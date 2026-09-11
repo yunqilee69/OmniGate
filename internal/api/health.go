@@ -41,55 +41,53 @@ type healthResp struct {
 	Keys   []healthKey   `json:"keys"`
 }
 
-// effectiveModelStatus 根据模型熔断状态 + 绑定密钥可用性计算的真实可达性。
-// 设计要点：仅显示“active”是不够的——所有 key 都处于 429 限流冷却中时，
-// 模型也无法响应，应明确标记 cooldown/no_key 给运维。
-// 密钥级“disabled”已移除：密钥禁用粒度下沉为模型×密钥组合（bans: keyID → ban）。
-func effectiveModelStatus(now int64, m store.Model, boundKeys []store.ApiKey, bans map[int64]store.ModelKeyBan) (status, reason string, stats keyStats) {
+// effectiveModelStatus 基于模型×密钥组合禁用状态聚合出模型真实可达性。
+// 密钥级与模型级状态机已退役：禁用粒度仅为组合（bans: keyID → ban）。
+// 返回模型状态、原因、密钥分布统计，以及聚合的连续失败数/最早冷却到期/最近错误。
+func effectiveModelStatus(now int64, boundKeys []store.ApiKey, bans map[int64]store.ModelKeyBan) (status, reason string, stats keyStats, failCount int, cooldownUntil int64, lastError string) {
 	stats.Total = len(boundKeys)
 
-	// 先统计所有密钥状态分布（组合禁用 > 密钥自身状态）
 	avail, cooling, banned := 0, 0, 0
 	for _, k := range boundKeys {
-		if ban, ok := bans[k.ID]; ok {
-			if ban.Status == "perm_banned" || (ban.Status == "temp_banned" && ban.BannedUntil > now) {
-				banned++
-				stats.Disabled++
-				continue
-			}
-		}
-		switch {
-		case k.Status == "active" || (k.Status == "cooldown" && k.CooldownUntil <= now):
+		ban, ok := bans[k.ID]
+		if !ok {
 			avail++
 			stats.Active++
-		case k.Status == "cooldown":
+			continue
+		}
+		if ban.FailCount > failCount {
+			failCount = ban.FailCount
+			lastError = ban.LastError
+		}
+		switch {
+		case ban.Status == "perm_banned":
+			banned++
+			stats.Disabled++
+		case ban.Status == "temp_banned" && ban.BannedUntil > now:
 			cooling++
 			stats.Cooldown++
+			if cooldownUntil == 0 || ban.BannedUntil < cooldownUntil {
+				cooldownUntil = ban.BannedUntil
+			}
+		default: // temp_banned 已到期 → 半开可用
+			avail++
+			stats.Active++
 		}
 	}
 
-	// 模型本身非活跃时直接返回模型状态
-	status = m.Status
-	reason = m.DisableReason
-	if status != "active" {
-		return
-	}
-
-	// 模型活跃，但根据密钥可用性计算实际可达性
-	if len(boundKeys) == 0 {
-		return "no_key", "未绑定密钥", stats
-	}
-	if avail > 0 {
-		return "active", "", stats
-	}
 	switch {
+	case len(boundKeys) == 0:
+		status, reason = "no_key", "未绑定密钥"
+	case avail > 0:
+		status = "active"
 	case banned == len(boundKeys):
-		return "no_key", "全部密钥已禁用（组合禁用）", stats
+		status, reason = "disabled", "全部密钥已禁用（组合禁用）"
 	case cooling == len(boundKeys):
-		return "cooldown", "全部密钥限流冷却中", stats
+		status, reason = "cooldown", "全部密钥冷却中"
 	default:
-		return "no_key", "无活跃密钥", stats
+		status, reason = "no_key", "无活跃密钥"
 	}
+	return status, reason, stats, failCount, cooldownUntil, lastError
 }
 
 // getHealth 返回全量健康状态：模型熔断态、密钥态。模型的 status 字段会基于
@@ -139,18 +137,17 @@ func (s *Server) getHealth(w http.ResponseWriter, _ *http.Request) {
 
 	resp := healthResp{Now: now, Models: []healthModel{}, Keys: []healthKey{}}
 	for _, m := range models {
-		status, reason, keyStats := effectiveModelStatus(now, m, keysByModel[m.ID], banByModel[m.ID])
+		status, reason, keyStats, failCount, cooldownUntil, lastError := effectiveModelStatus(now, keysByModel[m.ID], banByModel[m.ID])
 		resp.Models = append(resp.Models, healthModel{
 			ID: m.ID, ProviderID: m.ProviderID, Name: m.Name, Status: status,
-			FailCount: m.FailCount, CooldownUntil: m.CooldownUntil,
-			DisableReason: reason, LastError: m.LastError,
+			FailCount: failCount, CooldownUntil: cooldownUntil,
+			DisableReason: reason, LastError: lastError,
 			KeyStats: &keyStats,
 		})
 	}
 	for _, k := range keys {
 		resp.Keys = append(resp.Keys, healthKey{
-			ID: k.ID, ProviderID: k.ProviderID, Name: k.Name, Status: k.Status,
-			CooldownUntil: k.CooldownUntil, DisableReason: k.DisableReason,
+			ID: k.ID, ProviderID: k.ProviderID, Name: k.Name, Status: "active",
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)

@@ -12,6 +12,7 @@ import dayjs from 'dayjs'
 import { api } from '../api'
 import StatusTag from '../components/StatusTag'
 import ModelTestModal, { type TestTarget } from '../components/ModelTestModal'
+import BanManagerModal from '../components/BanManagerModal'
 
 interface Provider {
   id: number
@@ -98,24 +99,20 @@ const modelTypeTag = (t: string) => {
   return <Tag>chat</Tag>
 }
 
-const nowSec = () => Math.floor(Date.now() / 1000)
-
 const modelStatusTag = (m: Model) => {
-  if (m.status === 'active') return <StatusTag tone="ok">正常</StatusTag>
-  if (m.status === 'cooldown') {
-    const remain = m.cooldown_until - nowSec()
-    return <StatusTag tone="warn">冷却{remain > 0 ? ` ${remain}s` : '（半开）'}</StatusTag>
-  }
-  return <Tooltip title={m.disable_reason}><StatusTag tone="error">已禁用</StatusTag></Tooltip>
+  const ids = m.key_ids ?? []
+  const banned = m.banned_keys ?? {}
+  if (ids.length === 0) return <StatusTag tone="mute">未绑定</StatusTag>
+  const bannedCount = ids.filter((id) => banned[id]).length
+  if (bannedCount === 0) return <StatusTag tone="ok">正常</StatusTag>
+  if (modelAllBanned(m)) return <Tooltip title="全部密钥组合已禁用"><StatusTag tone="error">已禁用</StatusTag></Tooltip>
+  return <StatusTag tone="warn">部分禁用</StatusTag>
 }
 
-const keyStatusTag = (k: Key) => {
-  if (k.status === 'active') return <StatusTag tone="ok">可用</StatusTag>
-  if (k.status === 'cooldown') {
-    const remain = k.cooldown_until - nowSec()
-    return <StatusTag tone="warn">限流冷却{remain > 0 ? ` ${remain}s` : ''}</StatusTag>
-  }
-  return <Tooltip title={k.disable_reason}><StatusTag tone="error">已禁用</StatusTag></Tooltip>
+const modelAllBanned = (m: Model) => {
+  const ids = m.key_ids ?? []
+  const banned = m.banned_keys ?? {}
+  return ids.length > 0 && ids.every((id) => banned[id])
 }
 
 // ---------- 上游请求头设置（Header Profile） ----------
@@ -733,6 +730,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Model | null>(null)
   const [testTargets, setTestTargets] = useState<TestTarget[] | null>(null)
+  const [banModel, setBanModel] = useState<Model | null>(null)
   const [fetchingModels, setFetchingModels] = useState(false)
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [form] = Form.useForm()
@@ -798,7 +796,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
 
   const toggle = async (m: Model) => {
     try {
-      await api('POST', `/api/models/${m.id}/${m.status === 'disabled' ? 'enable' : 'disable'}`)
+      await api('POST', `/api/models/${m.id}/${modelAllBanned(m) ? 'enable' : 'disable'}`)
       onSaved()
     } catch (e: unknown) {
       message.error(e instanceof Error ? e.message : String(e))
@@ -834,12 +832,12 @@ function ModelsTab({ provider, keys, models, onSaved }: {
           return `${sym}${m.input_price} / ${sym}${m.output_price}`
         }} />
         <Table.Column title="状态" width={110} render={(_, m: Model) => modelStatusTag(m)} />
-        <Table.Column title="连续失败" dataIndex="fail_count" width={80} />
-        <Table.Column title="操作" width={240} render={(_, m: Model) => (
+        <Table.Column title="操作" width={300} render={(_, m: Model) => (
           <Space>
             <Button size="small" onClick={() => testOne(m)}>测试</Button>
             <Button size="small" onClick={() => openForm(m)}>编辑</Button>
-            <Button size="small" onClick={() => toggle(m)}>{m.status === 'disabled' ? '解禁' : '禁用'}</Button>
+            <Button size="small" onClick={() => setBanModel(m)}>禁用管理</Button>
+            <Button size="small" onClick={() => toggle(m)}>{modelAllBanned(m) ? '解禁' : '禁用'}</Button>
             <Popconfirm title="删除模型将清理路由目标与密钥绑定，确认？" onConfirm={async () => {
               try { await api('DELETE', `/api/models/${m.id}`); onSaved() } catch (e: unknown) { message.error(e instanceof Error ? e.message : String(e)) }
             }}>
@@ -989,6 +987,12 @@ function ModelsTab({ provider, keys, models, onSaved }: {
         onClose={() => setTestTargets(null)}
         onKeysChanged={() => onSaved()}
       />
+      <BanManagerModal
+        open={!!banModel}
+        model={banModel}
+        onClose={() => setBanModel(null)}
+        onChanged={() => onSaved()}
+      />
     </div>
   )
 }
@@ -1020,14 +1024,6 @@ function KeysTab({ provider, keys, onSaved }: { provider: Provider; keys: Key[];
     }
   }
 
-  const setKeyStatus = async (key: Key, status: 'active') => {
-    try {
-      await api('PUT', `/api/keys/${key.id}`, { status })
-      onSaved()
-    } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : String(e))
-    }
-  }
 
   const saveKeyEdit = async () => {
     const values = await editForm.validateFields()
@@ -1070,13 +1066,12 @@ function KeysTab({ provider, keys, onSaved }: { provider: Provider; keys: Key[];
     setRevealedIds((current) => new Set(current).add(key.id))
   }
 
-  const availableCount = keys.filter((key) => key.status === 'active').length
 
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
         <Button type="primary" onClick={() => { form.resetFields(); setOpen(true) }}>新增密钥</Button>
-        <span style={{ color: '#8f8f8f', fontSize: 12 }}>共 {keys.length} 个，可用 {availableCount} 个</span>
+        <span style={{ color: '#8f8f8f', fontSize: 12 }}>共 {keys.length} 个</span>
       </Space>
       <Table<Key> rowKey="id" dataSource={keys} tableLayout="fixed" size="small" scroll={{ x: true }}>
         <Table.Column title="名称" dataIndex="name" width={140} render={(value) => value || '-'} />
@@ -1096,15 +1091,12 @@ function KeysTab({ provider, keys, onSaved }: { provider: Provider; keys: Key[];
             </Space>
           )
         }} />
-        <Table.Column title="状态" render={(_, key: Key) => keyStatusTag(key)} width={130} />
-        <Table.Column title="429次数" dataIndex="rate_limited_count" width={80} />
         <Table.Column title="最近使用" dataIndex="last_used_at" width={150}
           render={(value) => (value ? dayjs(value * 1000).format('MM-DD HH:mm:ss') : '-')} />
         <Table.Column title="最近错误" dataIndex="last_error" ellipsis render={(value) => value || '-'} />
         <Table.Column title="操作" width={240} render={(_, key: Key) => (
           <Space>
             <Button size="small" onClick={() => { editForm.setFieldsValue({ name: key.name, key_value: key.key_value }); setEditingKey(key) }}>编辑</Button>
-            {key.status !== 'active' && <Button size="small" onClick={() => setKeyStatus(key, 'active')}>启用</Button>}
             <Popconfirm title="确认删除该密钥？" onConfirm={async () => {
               try { await api('DELETE', `/api/keys/${key.id}`); onSaved() } catch (e: unknown) { message.error(e instanceof Error ? e.message : String(e)) }
             }}>

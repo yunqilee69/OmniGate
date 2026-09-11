@@ -132,48 +132,19 @@ func loadModelKeys(db *gorm.DB, snap *Snapshot, modelIDs []int64) error {
 	return nil
 }
 
-// ModelAvailable 冷却到期即视为半开可用；disabled 永不可用。
-func ModelAvailable(m store.Model, now time.Time) bool {
-	switch m.Status {
-	case "active":
-		return true
-	case "cooldown":
-		return m.CooldownUntil <= now.Unix()
-	default:
-		return false
-	}
-}
-
-func KeyAvailable(k store.ApiKey, now time.Time) bool {
-	switch k.Status {
-	case "active":
-		return true
-	case "cooldown":
-		return k.CooldownUntil <= now.Unix()
-	default:
-		return false
-	}
-}
-
 func (s *Selector) availableKeys(modelID int64, keys []store.ApiKey, tried map[int64]bool, now time.Time) []store.ApiKey {
 	out := make([]store.ApiKey, 0, len(keys))
-	// 批量加载本模型全部组合禁用，避免逐 key 查询；顺带清理过期的临时禁用
+	// 批量加载本模型全部组合禁用，避免逐 key 查询。过期 temp_banned 保留记录（半开放行），
+	// 由后续成功删除或失败累加 fail_count——不在此清理，否则半开探测失败会丢失阶梯计数。
 	banByKey := map[int64]store.ModelKeyBan{}
 	var bans []store.ModelKeyBan
-	if err := s.db.DB.Where("model_id = ?", modelID).Find(&bans).Error; err == nil && len(bans) > 0 {
-		var expired []int64
+	if err := s.db.DB.Where("model_id = ?", modelID).Find(&bans).Error; err == nil {
 		for _, b := range bans {
 			banByKey[b.KeyID] = b
-			if b.Status == "temp_banned" && b.BannedUntil <= now.Unix() {
-				expired = append(expired, b.ID)
-			}
-		}
-		if len(expired) > 0 {
-			_ = s.db.DB.Delete(&store.ModelKeyBan{}, expired)
 		}
 	}
 	for _, k := range keys {
-		if tried[k.ID] || !KeyAvailable(k, now) {
+		if tried[k.ID] {
 			continue
 		}
 		if b, ok := banByKey[k.ID]; ok {
@@ -228,7 +199,7 @@ func (s *Selector) pick(snap *Snapshot, tried map[int64]bool, now time.Time, pre
 	var weights []int
 	for _, t := range snap.Targets {
 		m, ok := snap.Models[t.ModelID]
-		if !ok || !ModelAvailable(m, now) {
+		if !ok {
 			continue
 		}
 		mt := m.Type
@@ -266,7 +237,7 @@ func (s *Selector) pick(snap *Snapshot, tried map[int64]bool, now time.Time, pre
 }
 
 // PickFallback 根据指定的 modelID 选择可用的 key，用于兜底模型。
-// 检查模型是否可用（未熔断）、是否有绑定的可用 key，返回第一个可用的 Attempt。
+// 返回第一个绑定且组合未被禁用的 Attempt。
 func (s *Selector) PickFallback(modelID int64, now time.Time) (Attempt, bool) {
 	if modelID == 0 {
 		return Attempt{}, false
@@ -274,10 +245,6 @@ func (s *Selector) PickFallback(modelID int64, now time.Time) (Attempt, bool) {
 
 	var model store.Model
 	if err := s.db.DB.Where("id = ?", modelID).First(&model).Error; err != nil {
-		return Attempt{}, false
-	}
-
-	if !ModelAvailable(model, now) {
 		return Attempt{}, false
 	}
 
@@ -305,8 +272,17 @@ func (s *Selector) PickFallback(modelID int64, now time.Time) (Attempt, bool) {
 		return Attempt{}, false
 	}
 
+	banned := map[int64]bool{}
+	var bans []store.ModelKeyBan
+	if err := s.db.DB.Where("model_id = ?", modelID).Find(&bans).Error; err == nil {
+		for _, b := range bans {
+			if b.Status == "perm_banned" || (b.Status == "temp_banned" && b.BannedUntil > now.Unix()) {
+				banned[b.KeyID] = true
+			}
+		}
+	}
 	for _, k := range keys {
-		if KeyAvailable(k, now) {
+		if !banned[k.ID] {
 			return Attempt{Model: model, Provider: provider, Key: k}, true
 		}
 	}
@@ -439,14 +415,34 @@ func (s *Selector) BackendStatuses(snap *Snapshot, now time.Time) []BackendStatu
 		if !ok {
 			continue
 		}
-		bs := BackendStatus{Model: m.Name, Status: m.Status}
-		switch {
-		case m.Status == "disabled":
-			bs.Reason = m.DisableReason
-		case m.Status == "cooldown" && m.CooldownUntil > now.Unix():
-			bs.RetryAfter = m.CooldownUntil - now.Unix()
-		default:
-			if len(snap.Keys[m.ID]) > 0 && len(s.availableKeys(m.ID, snap.Keys[m.ID], nil, now)) == 0 {
+		bs := BackendStatus{Model: m.Name, Status: "active"}
+		keys := snap.Keys[m.ID]
+		if len(keys) == 0 {
+			bs.Status = "no_available_key"
+			bs.Reason = "未绑定密钥"
+		} else if len(s.availableKeys(m.ID, keys, nil, now)) > 0 {
+			// active，保持默认
+		} else {
+			banned, cooling := 0, 0
+			var bans []store.ModelKeyBan
+			if err := s.db.DB.Where("model_id = ?", m.ID).Find(&bans).Error; err == nil {
+				for _, b := range bans {
+					switch {
+					case b.Status == "perm_banned":
+						banned++
+					case b.Status == "temp_banned" && b.BannedUntil > now.Unix():
+						cooling++
+					}
+				}
+			}
+			switch {
+			case banned == len(keys):
+				bs.Status = "disabled"
+				bs.Reason = "全部密钥已禁用"
+			case cooling == len(keys):
+				bs.Status = "cooldown"
+				bs.Reason = "全部密钥冷却中"
+			default:
 				bs.Status = "no_available_key"
 				bs.Reason = "所有绑定密钥不可用（禁用/冷却中）"
 			}

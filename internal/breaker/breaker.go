@@ -1,5 +1,8 @@
-// Package breaker 实现失败归因处置：模型级阶梯熔断 + key 级立即禁用/短冷却。
+// Package breaker 实现失败归因处置：模型×密钥组合级阶梯熔断 + 永久禁用。
 // 状态即时落库（本地 SQLite 写放大可忽略），重启不丢。
+//
+// 禁用/熔断只发生在「模型+密钥」组合这一粒度上：401/403 或连续失败达阈值 → 永久禁用；
+// 可重试错误 → 阶梯冷却；429 → 短冷却。组合成功即清零。模型级与密钥级状态机已退役。
 package breaker
 
 import (
@@ -7,6 +10,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/cloudomni/omnigate/internal/config"
 	"github.com/cloudomni/omnigate/internal/store"
@@ -27,124 +31,85 @@ func clamp(s string) string {
 	return s
 }
 
-// RecordModelFailure 阶梯升级：第 N 次连续失败冷却 ladder[min(N,len)-1]，达阈值禁用。
-// 冷却到期后由 router 层放行真实流量探测（半开），成功即清零。
-func (rec *Recorder) RecordModelFailure(modelID int64, errCode string, rt *config.Runtime) {
-	if err := rec.db.DB.Model(&store.Model{}).Where("id = ?", modelID).Updates(map[string]any{
-		"fail_count": gorm.Expr("fail_count + 1"),
-		"last_error": clamp(errCode),
-	}).Error; err != nil {
-		return
-	}
-	var m store.Model
-	if err := rec.db.DB.First(&m, modelID).Error; err != nil {
-		return
-	}
-	if m.FailCount >= rt.BreakerDisableThreshold {
-		rec.db.DB.Model(&m).Updates(map[string]any{
-			"status": "disabled", "cooldown_until": 0,
-			"disable_reason": clamp(fmt.Sprintf("连续 %d 次失败（最近错误: %s）", m.FailCount, errCode)),
-		})
-		return
-	}
-	idx := m.FailCount - 1
-	if idx >= len(rt.BreakerCooldownLadder) {
-		idx = len(rt.BreakerCooldownLadder) - 1
-	}
-	rec.db.DB.Model(&m).Updates(map[string]any{
-		"status":         "cooldown",
-		"cooldown_until": time.Now().Add(rt.BreakerCooldownLadder[idx]).Unix(),
-		"disable_reason": "",
-	})
-}
-
-// RecordModelSuccess 半开探测成功（或正常成功）：计数清零回归 active。
-func (rec *Recorder) RecordModelSuccess(modelID int64) {
-	rec.db.DB.Model(&store.Model{}).
-		Where("id = ? AND (fail_count > 0 OR status != 'active')", modelID).
-		Updates(map[string]any{
-			"fail_count": 0, "status": "active", "cooldown_until": 0, "disable_reason": "",
-		})
-}
-
-// RecordKeyRateLimited 429：短冷却，优先 Retry-After；不计入熔断。
-func (rec *Recorder) RecordKeyRateLimited(keyID int64, retryAfterS, defaultS int) {
-	if retryAfterS <= 0 {
-		retryAfterS = defaultS
-	}
-	if retryAfterS > 86400 {
-		retryAfterS = 86400
-	}
-	rec.db.DB.Model(&store.ApiKey{}).Where("id = ?", keyID).Updates(map[string]any{
-		"status":             "cooldown",
-		"cooldown_until":     time.Now().Unix() + int64(retryAfterS),
-		"rate_limited_count": gorm.Expr("rate_limited_count + 1"),
-	})
-}
-
-// RecordKeySuccess 清冷却（key 半开探测成功）并刷新使用时间。
-func (rec *Recorder) RecordKeySuccess(keyID int64) {
-	rec.db.DB.Model(&store.ApiKey{}).Where("id = ?", keyID).Updates(map[string]any{
-		"status": "active", "cooldown_until": 0, "last_used_at": time.Now().Unix(),
-	})
-}
-
-// RecordModelKeyFailure 记录模型-密钥组合失败，短暂或永久禁用该组合。
-// retryable=true 时短暂禁用（阶梯冷却），retryable=false 时永久禁用。
+// RecordModelKeyFailure 记录模型-密钥组合失败。
+// retryable=true（超时/5xx/连接/断流）阶梯冷却，连续失败达阈值转永久禁用；
+// retryable=false（401/403）直接永久禁用。
 func (rec *Recorder) RecordModelKeyFailure(modelID, keyID int64, errCode string, retryable bool, rt *config.Runtime) {
 	now := time.Now()
 	var ban store.ModelKeyBan
 	err := rec.db.DB.Where("model_id = ? AND key_id = ?", modelID, keyID).First(&ban).Error
 
 	if err == gorm.ErrRecordNotFound {
-		// 创建新的禁用记录
-		status := "temp_banned"
-		bannedUntil := int64(0)
-		failCount := 1
-
-		if retryable {
-			// 可重试错误：使用第一级冷却时间
-			if len(rt.BreakerCooldownLadder) > 0 {
-				bannedUntil = now.Add(rt.BreakerCooldownLadder[0]).Unix()
-			}
-		} else {
-			// 不可重试错误：永久禁用
-			status = "perm_banned"
-		}
-
 		ban = store.ModelKeyBan{
-			ModelID:     modelID,
-			KeyID:       keyID,
-			Status:      status,
-			BannedUntil: bannedUntil,
-			BanReason:   permBanReason(errCode),
-			LastError:   clamp(errCode),
-			FailCount:   failCount,
+			ModelID:   modelID,
+			KeyID:     keyID,
+			Status:    "temp_banned",
+			LastError: clamp(errCode),
+			FailCount: 1,
 		}
-		rec.db.DB.Create(&ban)
-	} else if err == nil {
-		// 更新现有记录
-		ban.FailCount++
-		ban.LastError = clamp(errCode)
-
 		if retryable {
-			// 可重试错误：阶梯升级冷却时间
-			idx := ban.FailCount - 1
-			if idx >= len(rt.BreakerCooldownLadder) {
-				idx = len(rt.BreakerCooldownLadder) - 1
+			if ban.FailCount >= rt.BreakerDisableThreshold {
+				ban.Status = "perm_banned"
+			} else {
+				ban.BannedUntil = now.Add(ladderStep(rt, ban.FailCount)).Unix()
 			}
-			ban.Status = "temp_banned"
-			ban.BannedUntil = now.Add(rt.BreakerCooldownLadder[idx]).Unix()
-			ban.BanReason = clamp(fmt.Sprintf("连续 %d 次失败（最近错误: %s）", ban.FailCount, errCode))
+			ban.BanReason = failReason(ban.FailCount, errCode)
 		} else {
-			// 不可重试错误：永久禁用
 			ban.Status = "perm_banned"
-			ban.BannedUntil = 0
 			ban.BanReason = permBanReason(errCode)
 		}
-
-		rec.db.DB.Save(&ban)
+		rec.db.DB.Create(&ban)
+		return
 	}
+	if err != nil {
+		return
+	}
+
+	ban.FailCount++
+	ban.LastError = clamp(errCode)
+	if retryable {
+		if ban.FailCount >= rt.BreakerDisableThreshold {
+			ban.Status = "perm_banned"
+			ban.BannedUntil = 0
+		} else {
+			ban.Status = "temp_banned"
+			ban.BannedUntil = now.Add(ladderStep(rt, ban.FailCount)).Unix()
+		}
+		ban.BanReason = failReason(ban.FailCount, errCode)
+	} else {
+		ban.Status = "perm_banned"
+		ban.BannedUntil = 0
+		ban.BanReason = permBanReason(errCode)
+	}
+	rec.db.DB.Save(&ban)
+}
+
+// RecordModelKeyRateLimited 429：组合级短冷却，优先 Retry-After；不计入熔断计数。
+func (rec *Recorder) RecordModelKeyRateLimited(modelID, keyID int64, retryAfterS, defaultS int) {
+	if retryAfterS <= 0 {
+		retryAfterS = defaultS
+	}
+	if retryAfterS > 86400 {
+		retryAfterS = 86400
+	}
+	bannedUntil := time.Now().Add(time.Duration(retryAfterS) * time.Second).Unix()
+
+	ban := store.ModelKeyBan{
+		ModelID:     modelID,
+		KeyID:       keyID,
+		Status:      "temp_banned",
+		BannedUntil: bannedUntil,
+		BanReason:   "上游限流 429",
+		LastError:   "429",
+	}
+	// 已有记录时仅刷新冷却窗口，不推进 fail_count（限流不是故障）。
+	rec.db.DB.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "model_id"}, {Name: "key_id"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"status": "temp_banned", "banned_until": bannedUntil,
+			"ban_reason": "上游限流 429", "last_error": "429",
+		}),
+	}).Create(&ban)
 }
 
 // RecordModelKeySuccess 记录模型-密钥组合成功，清除禁用状态。
@@ -157,7 +122,52 @@ func (rec *Recorder) UnbanModelKey(modelID, keyID int64) error {
 	return rec.db.DB.Where("model_id = ? AND key_id = ?", modelID, keyID).Delete(&store.ModelKeyBan{}).Error
 }
 
-// permBanReason 不可重试失败的禁用原因：401/403 给密钥失效提示，其余保留错误码。
+// BanAllModelKeys 手动禁用模型的所有组合（perm_banned，永不过期）。
+func (rec *Recorder) BanAllModelKeys(modelID int64, reason string) error {
+	var mks []store.ModelKey
+	if err := rec.db.DB.Where("model_id = ?", modelID).Find(&mks).Error; err != nil {
+		return err
+	}
+	if len(mks) == 0 {
+		return nil
+	}
+	return rec.db.DB.Transaction(func(tx *gorm.DB) error {
+		for _, mk := range mks {
+			ban := store.ModelKeyBan{
+				ModelID: mk.ModelID, KeyID: mk.KeyID,
+				Status: "perm_banned", BanReason: reason,
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "model_id"}, {Name: "key_id"}},
+				DoUpdates: clause.Assignments(map[string]any{
+					"status": "perm_banned", "banned_until": 0,
+					"ban_reason": reason, "last_error": "",
+				}),
+			}).Create(&ban).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// UnbanAllModelKeys 手动解禁模型的所有组合。
+func (rec *Recorder) UnbanAllModelKeys(modelID int64) error {
+	return rec.db.DB.Where("model_id = ?", modelID).Delete(&store.ModelKeyBan{}).Error
+}
+
+func ladderStep(rt *config.Runtime, failCount int) time.Duration {
+	idx := failCount - 1
+	if idx >= len(rt.BreakerCooldownLadder) {
+		idx = len(rt.BreakerCooldownLadder) - 1
+	}
+	return rt.BreakerCooldownLadder[idx]
+}
+
+func failReason(failCount int, errCode string) string {
+	return clamp(fmt.Sprintf("连续 %d 次失败（最近错误: %s）", failCount, errCode))
+}
+
 func permBanReason(errCode string) string {
 	if errCode == "401" || errCode == "403" {
 		return fmt.Sprintf("上游返回 %s，密钥可能失效", errCode)

@@ -931,8 +931,9 @@ func captureErrBody(b []byte) string {
 }
 
 // record 按尝试结果做失败归因处置（§5.1）：
-// 成功→清零（含模型-密钥组合禁用）；401/403→禁该模型下的对应密钥组合（不影响其他模型/密钥）；
-// 429→密钥级短冷却（Retry-After 优先）；超时/5xx/连接/断流→模型阶梯熔断；
+// 成功→清零组合禁用；401/403→永久禁用该组合（不影响其他模型/密钥）；
+// 429→组合级短冷却（Retry-After 优先，不计入熔断）；
+// 超时/5xx/连接/断流→组合级阶梯熔断，连续失败达阈值永久禁用；
 // 客户端错误（400 等）与 client_disconnected 不属于上游故障，不记录。
 func (h *Handler) record(res attemptResult, rt *config.Runtime) {
 	if res.att.Model.ID == 0 || res.att.Key.ID == 0 {
@@ -940,15 +941,13 @@ func (h *Handler) record(res attemptResult, rt *config.Runtime) {
 	}
 	switch {
 	case res.status == "success":
-		h.rec.RecordModelSuccess(res.att.Model.ID)
-		h.rec.RecordKeySuccess(res.att.Key.ID)
 		h.rec.RecordModelKeySuccess(res.att.Model.ID, res.att.Key.ID)
 	case res.errCode == "401" || res.errCode == "403":
 		h.rec.RecordModelKeyFailure(res.att.Model.ID, res.att.Key.ID, res.errCode, false, rt)
 	case res.errCode == "429":
-		h.rec.RecordKeyRateLimited(res.att.Key.ID, res.retryAfterS, rt.RetryCooldownS)
+		h.rec.RecordModelKeyRateLimited(res.att.Model.ID, res.att.Key.ID, res.retryAfterS, rt.RetryCooldownS)
 	case res.retryable || res.streamBroke:
-		h.rec.RecordModelFailure(res.att.Model.ID, res.errCode, rt)
+		h.rec.RecordModelKeyFailure(res.att.Model.ID, res.att.Key.ID, res.errCode, true, rt)
 	}
 }
 
@@ -995,6 +994,31 @@ func (cw *captureWriter) setClientReq(h http.Header, body []byte) {
 	}
 	cw.clientReqHeaders = formatHeaders(h)
 	cw.clientReqBody = string(body)
+}
+
+// maybeCapture 落 content_log：客户端入站请求、出站请求（OmniGate → 上游）与上游响应。
+func (h *Handler) maybeCapture(requestID, route string, cw *captureWriter) {
+	if cw == nil {
+		return
+	}
+	respBody := cw.Body()
+	err := h.db.DB.Exec(`
+INSERT INTO content_log (request_id, route, client_request_headers, client_request_body, request_headers, request_body, response_headers, response_body, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(request_id) DO UPDATE SET
+  route=excluded.route,
+  client_request_headers=excluded.client_request_headers,
+  client_request_body=excluded.client_request_body,
+  request_headers=excluded.request_headers,
+  request_body=excluded.request_body,
+  response_headers=excluded.response_headers,
+  response_body=excluded.response_body,
+  created_at=excluded.created_at`,
+		requestID, route, cw.clientReqHeaders, cw.clientReqBody, cw.reqHeaders, cw.reqBody, cw.respHeaders, respBody, time.Now().Unix(),
+	).Error
+	if err != nil {
+		slog.Warn("write content_log failed", "err", err, "request_id", requestID)
+	}
 }
 
 func (cw *captureWriter) Header() http.Header { return cw.w.Header() }
@@ -1065,31 +1089,6 @@ func formatHeaders(h http.Header) string {
 		b.WriteString("\n")
 	}
 	return b.String()
-}
-
-// maybeCapture 落 content_log：客户端入站请求、出站请求（OmniGate → 上游）与上游响应。
-func (h *Handler) maybeCapture(requestID, route string, cw *captureWriter) {
-	if cw == nil {
-		return
-	}
-	respBody := cw.Body()
-	err := h.db.DB.Exec(`
-INSERT INTO content_log (request_id, route, client_request_headers, client_request_body, request_headers, request_body, response_headers, response_body, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(request_id) DO UPDATE SET
-  route=excluded.route,
-  client_request_headers=excluded.client_request_headers,
-  client_request_body=excluded.client_request_body,
-  request_headers=excluded.request_headers,
-  request_body=excluded.request_body,
-  response_headers=excluded.response_headers,
-  response_body=excluded.response_body,
-  created_at=excluded.created_at`,
-		requestID, route, cw.clientReqHeaders, cw.clientReqBody, cw.reqHeaders, cw.reqBody, cw.respHeaders, respBody, time.Now().Unix(),
-	).Error
-	if err != nil {
-		slog.Warn("write content_log failed", "err", err, "request_id", requestID)
-	}
 }
 
 // Messages 实现 Anthropic 原生端点 /v1/messages（直通模式）。

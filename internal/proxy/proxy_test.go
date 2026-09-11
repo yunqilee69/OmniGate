@@ -425,8 +425,12 @@ func TestAllBackendsUnavailable(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	p := store.Provider{Name: "zhipu", BaseURL: "http://127.0.0.1:1"}
 	st.DB.Create(&p)
-	m := store.Model{ProviderID: p.ID, Name: "m0", Status: "disabled", DisableReason: "连续3次超时"}
+	m := store.Model{ProviderID: p.ID, Name: "m0"}
 	st.DB.Create(&m)
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-x", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
+	st.DB.Create(&store.ModelKeyBan{ModelID: m.ID, KeyID: k.ID, Status: "perm_banned", BanReason: "连续3次超时"})
 	rt := store.Route{Name: "glm-pool"}
 	st.DB.Create(&rt)
 	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})

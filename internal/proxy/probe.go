@@ -137,17 +137,24 @@ func ProbeModelKeys(db *store.Store, rt *config.RuntimeManager, modelID int64) (
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			k := keys[idx]
+			keyStatus := "active"
+			banned := false
+			banReason := ""
+			if b, ok := banByKey[k.ID]; ok {
+				switch {
+				case b.Status == "perm_banned":
+					keyStatus, banned, banReason = "disabled", true, b.BanReason
+				case b.Status == "temp_banned" && b.BannedUntil > now:
+					keyStatus, banned, banReason = "cooldown", true, b.BanReason
+				}
+			}
 			r := KeyProbeResult{
 				ProbeResult: probeModelKey(m, provider, k),
 				KeyName:     k.Name,
 				KeyMasked:   maskKeyValue(k.KeyValue),
-				KeyStatus:   k.Status,
-			}
-			if b, ok := banByKey[k.ID]; ok {
-				if b.Status == "perm_banned" || (b.Status == "temp_banned" && b.BannedUntil > now) {
-					r.Banned = true
-					r.BanReason = b.BanReason
-				}
+				KeyStatus:   keyStatus,
+				Banned:      banned,
+				BanReason:   banReason,
 			}
 			results[idx] = r
 		}(i)
