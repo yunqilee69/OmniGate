@@ -78,7 +78,7 @@ export default function McpBackendsPage() {
     <div>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ margin: 0 }}>MCP</h2>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增后端</Button>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增 MCP</Button>
       </div>
 
       <Table<MCPBackend> rowKey="id" dataSource={rows} pagination={{ pageSize: 20 }}>
