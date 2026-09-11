@@ -292,8 +292,8 @@ go vet ./...
 
 ### 前端
 
-- **React 18** + **Ant Design 5** + **ECharts 5**
-- **Vite** 用于开发服务器和打包
+- **React 18** + **Ant Design 5** + **@ant-design/x 1.x**（对话组件 Bubble）+ **@ant-design/x-markdown**（流式 Markdown 渲染）+ **ECharts 5**
+- **Playground 对话输出**：`Bubble`（`variant="outlined"`）内嵌 `XMarkdown`，流式期间传 `streaming={{ hasNextChunk: true, tail: true }}`，结束后传 `undefined` 完成整体渲染；注意 @ant-design/x 2.x 要求 antd 6，本仓库锁定 1.x
 - **TypeScript 5.5**（strict 模式）
 - **构建目标**：ES2020，输出到 `internal/webui/dist/`
 

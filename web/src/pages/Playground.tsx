@@ -5,6 +5,8 @@ import {
 } from 'antd'
 import { ClearOutlined, DownloadOutlined, SendOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
+import { Bubble } from '@ant-design/x'
+import XMarkdown from '@ant-design/x-markdown'
 import { api } from '../api'
 import { isRecord } from '../utils/guards'
 interface Route {
@@ -916,6 +918,7 @@ export default function PlaygroundPage() {
               }
             })
             const showContent = m.content || m.aborted
+            const streaming = sending && i === msgs.length - 1
             return (
               <div key={i} style={{ display: 'flex', justifyContent: 'flex-start' }}>
                 <div style={{ maxWidth: '85%', minWidth: 0 }}>
@@ -937,20 +940,20 @@ export default function PlaygroundPage() {
                     />
                   )}
                   {showContent !== undefined && showContent !== '' && (
-                    <div
-                      style={{
-                        background: '#fafafa',
-                        border: '1px solid #ebebeb',
-                        borderRadius: 8,
-                        padding: '8px 12px',
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                        color: m.aborted ? '#8f8f8f' : undefined,
-                      }}
-                    >
-                      {m.content}
-                      {m.aborted && '（已中止）'}
-                    </div>
+                    <Bubble
+                      variant="outlined"
+                      loading={streaming && !m.content && !m.reasoning}
+                      content={m.content + (m.aborted ? '\n\n*（已中止）*' : '')}
+                      messageRender={(c) => (
+                        <Typography>
+                          <XMarkdown
+                            content={String(c)}
+                            streaming={streaming ? { hasNextChunk: true, tail: true, enableAnimation: true } : undefined}
+                          />
+                        </Typography>
+                      )}
+                      style={{ opacity: m.aborted ? 0.55 : undefined }}
+                    />
                   )}
                   {toolPanels.length > 0 && (
                     <Collapse
