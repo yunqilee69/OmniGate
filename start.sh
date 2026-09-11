@@ -107,7 +107,11 @@ run_bg() {
 wait_healthy() {
   local port=$1 name=$2 i=0
   while [ $i -lt 30 ]; do
-    if curl -sf -o /dev/null "http://127.0.0.1:$port/manage/"; then
+    # --noproxy '*': 本地就绪探测必须绕过 http_proxy 等代理变量，否则请求会被
+    # 发往代理服务器且可能永远得不到响应；--connect-timeout/--max-time 兜底，
+    # 确保任何黑洞/半开连接只会让本轮探测失败重试，而不是永久卡死脚本。
+    # 以上参数 Linux/macOS 自带的 curl 均支持。
+    if curl -sf --noproxy '*' --connect-timeout 2 --max-time 3 -o /dev/null "http://127.0.0.1:$port/manage/"; then
       echo "[OK] $name 就绪 (port $port)"; return 0
     fi
     sleep 0.5; i=$((i + 1))
