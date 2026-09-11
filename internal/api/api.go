@@ -77,6 +77,7 @@ func (s *Server) Router() http.Handler {
 		ar.Get("/logs/{request_id}", s.getLogByID)
 
 		ar.Post("/maintenance/cleanup", s.postMaintenanceCleanup)
+		ar.Post("/maintenance/clear-logs", s.postMaintenanceClearLogs)
 		ar.Post("/maintenance/clear-stats", s.postMaintenanceClearStats)
 		ar.Post("/logout", s.handleLogout)
 

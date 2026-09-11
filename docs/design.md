@@ -440,6 +440,7 @@ GET/PUT  /api/settings                        # §9 全部配置项；保存即�
 
 # 维护
 POST /api/maintenance/cleanup                 # 立即按保留期清理过期日志；返回 {"deleted":{"request_log":N,…}}
+POST /api/maintenance/clear-logs              # body {"confirm":true}；仅清空请求日志/尝试日志（每日统计、内容日志保留）
 POST /api/maintenance/clear-stats             # body {"confirm":true}；清空请求日志/尝试日志/每日统计（内容日志保留）
 ```
 

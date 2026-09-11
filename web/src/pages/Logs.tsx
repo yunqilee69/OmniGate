@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Button, DatePicker, Select, Space, Table, message } from 'antd'
+import { Button, DatePicker, Modal, Select, Space, Table, message } from 'antd'
 import dayjs, { Dayjs } from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
+import { formatCounts } from '../utils/format'
 import StatusTag from '../components/StatusTag'
 
 interface Log {
@@ -74,12 +75,32 @@ export default function Logs() {
       const res = await api<{ total: number; items: Log[] }>('GET', `/api/logs?${q.toString()}`)
       setItems(res.items)
       setTotal(res.total)
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e))
     }
   }
   useEffect(() => { load(1) }, [filterRoute, filterStatus, filterEndpoint, range])
   useEffect(() => { api<{ id: number; name: string; endpoint?: string }[]>('GET', '/api/routes').then(setRoutes).catch(() => {}) }, [])
+
+  const confirmClearLogs = () => {
+    Modal.confirm({
+      title: '确认清空全部请求日志？',
+      content: '将删除全部请求日志明细与尝试日志，每日统计数据与内容日志保留。此操作不可恢复。',
+      okText: '清空日志',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const r = await api<{ cleared: Record<string, number> }>('POST', '/api/maintenance/clear-logs', { confirm: true })
+          message.success(`已清空：${formatCounts(r.cleared)}`)
+          setPage(1)
+          await load(1)
+        } catch (e) {
+          message.error(e instanceof Error ? e.message : String(e))
+        }
+      },
+    })
+  }
 
   return (
     <div>
@@ -111,6 +132,7 @@ export default function Logs() {
           onChange={(v) => setRange(v?.[0] && v[1] ? [v[0], v[1]] : null)}
         />
         <Button onClick={() => load()}>刷新</Button>
+        <Button danger onClick={confirmClearLogs}>清空日志</Button>
       </Space>
       <Table<Log>
         rowKey="id"

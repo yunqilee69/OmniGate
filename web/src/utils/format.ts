@@ -21,3 +21,10 @@ export function formatCost(v: number, currency: string = 'USD'): string {
   if (v < 1) return sym + v.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')
   return sym + formatNumber(v)
 }
+
+// 维护操作结果计数：把 {表名: 行数} 拼成"表名 N 条，…"，空对象返回空串
+export function formatCounts(counts: Record<string, number> | undefined): string {
+  return Object.entries(counts ?? {})
+    .map(([k, v]) => `${k} ${v} 条`)
+    .join('，')
+}

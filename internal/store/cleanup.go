@@ -55,11 +55,22 @@ func PurgeRetentions(db *gorm.DB, logRetentionDays, captureRetentionDays int) (m
 	return deleted, nil
 }
 
+// ClearLogs 清空请求明细（request_log / request_attempt），保留每日统计预聚合
+// （request_log_daily）与内容捕获（content_log）。
+// 与 ClearStats 的"明细+统计一起清"形成切割：本函数只清明细。
+func ClearLogs(db *gorm.DB) (map[string]int64, error) {
+	return deleteAll(db, "request_log", "request_attempt")
+}
+
 // ClearStats 清空全部统计数据（request_log / request_attempt / request_log_daily）。
 // content_log 属于内容捕获数据而非统计事实，不在清空范围。
 func ClearStats(db *gorm.DB) (map[string]int64, error) {
+	return deleteAll(db, "request_log", "request_attempt", "request_log_daily")
+}
+
+func deleteAll(db *gorm.DB, tables ...string) (map[string]int64, error) {
 	cleared := map[string]int64{}
-	for _, table := range []string{"request_log", "request_attempt", "request_log_daily"} {
+	for _, table := range tables {
 		res := db.Exec("DELETE FROM " + table)
 		if res.Error != nil {
 			return cleared, fmt.Errorf("clear %s: %w", table, res.Error)

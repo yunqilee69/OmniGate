@@ -161,3 +161,55 @@ func TestClearStats(t *testing.T) {
 		t.Fatalf("clear-stats must keep content_log, remaining %d", n)
 	}
 }
+
+func TestClearLogs(t *testing.T) {
+	st := openCleanupStore(t)
+	now := time.Now().Unix()
+	rows := []store.RequestLog{
+		{RequestID: "a", Route: "r", Model: "m", Provider: "p", Status: "success", CreatedAt: now},
+		{RequestID: "b", Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "500", CreatedAt: now},
+	}
+	for i := range rows {
+		if err := st.DB.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.DB.Create(&store.RequestAttempt{
+		RequestID: "a", Attempt: 1, Route: "r", Model: "m", Provider: "p", Status: "success", CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.RequestLogDaily{
+		Day: store.DayKey(now), Route: "r", Model: "m", Provider: "p", Status: "success", Total: 2,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.ContentLog{
+		RequestID: "a", Route: "r", RequestBody: "{}", ResponseBody: "{}", CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	cleared, err := store.ClearLogs(st.DB)
+	if err != nil {
+		t.Fatalf("clear logs: %v", err)
+	}
+	if cleared["request_log"] != 2 || cleared["request_attempt"] != 1 {
+		t.Fatalf("cleared counts wrong: %v", cleared)
+	}
+	if _, ok := cleared["request_log_daily"]; ok {
+		t.Fatalf("clear-logs must not touch request_log_daily: %v", cleared)
+	}
+	if n := countRows(t, st, "request_log"); n != 0 {
+		t.Fatalf("request_log remaining %d, want 0", n)
+	}
+	if n := countRows(t, st, "request_attempt"); n != 0 {
+		t.Fatalf("request_attempt remaining %d, want 0", n)
+	}
+	if n := countRows(t, st, "request_log_daily"); n != 1 {
+		t.Fatalf("clear-logs must keep request_log_daily, remaining %d", n)
+	}
+	if n := countRows(t, st, "content_log"); n != 1 {
+		t.Fatalf("clear-logs must keep content_log, remaining %d", n)
+	}
+}

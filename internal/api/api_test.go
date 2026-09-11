@@ -637,6 +637,49 @@ func TestMaintenanceClearStatsRequiresConfirm(t *testing.T) {
 	}
 }
 
+func TestMaintenanceClearLogs(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	for i := range 2 {
+		if err := st.DB.Create(&store.RequestLog{
+			RequestID: fmt.Sprintf("r%d", i), Route: "r", Model: "m", Provider: "p",
+			Status: "success", CreatedAt: now,
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.DB.Create(&store.RequestAttempt{
+		RequestID: "r0", Attempt: 1, Route: "r", Model: "m", Provider: "p", Status: "success", CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.RequestLogDaily{
+		Day: store.DayKey(now), Route: "r", Model: "m", Provider: "p", Status: "success", Total: 2,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(t, h, "POST", "/api/maintenance/clear-logs", nil, "test-token")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing confirm must be 400, got %d — %s", rec.Code, rec.Body.String())
+	}
+
+	rec = do(t, h, "POST", "/api/maintenance/clear-logs", map[string]any{"confirm": true}, "test-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear-logs failed: %d — %s", rec.Code, rec.Body.String())
+	}
+	obj := decodeObj(t, rec)
+	cleared := obj["cleared"].(map[string]any)
+	if cleared["request_log"].(float64) != 2 || cleared["request_attempt"].(float64) != 1 {
+		t.Fatalf("cleared counts wrong: %v", cleared)
+	}
+	var n int64
+	st.DB.Table("request_log_daily").Count(&n)
+	if n != 1 {
+		t.Fatalf("clear-logs must keep request_log_daily, remaining %d", n)
+	}
+}
+
 func TestStatsErrorCodeBreakdown(t *testing.T) {
 	h, st, _ := newTestServerWithStore(t)
 	now := time.Now().Unix()

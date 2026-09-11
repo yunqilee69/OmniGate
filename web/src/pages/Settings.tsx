@@ -2,14 +2,10 @@ import { useEffect, useState } from 'react'
 import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Switch, Tooltip, message } from 'antd'
 import { QuestionCircleOutlined } from '@ant-design/icons'
 import { api } from '../api'
+import { formatCounts } from '../utils/format'
 
 type Settings = Record<string, any>
 type Model = { id: number; name: string; type: string; protocol: string; provider_id: number; status: string }
-
-const fmtCounts = (m: any) =>
-  Object.entries(m ?? {})
-    .map(([k, v]) => `${k} ${v} 条`)
-    .join('，')
 
 const LADDER_PRESETS = ['10s', '30s', '1m', '3m', '5m', '15m', '30m']
 
@@ -101,7 +97,7 @@ export default function Settings() {
       onOk: async () => {
         try {
           const r = await api('POST', '/api/maintenance/cleanup')
-          message.success(`已清理：${fmtCounts(r.deleted) || '无过期数据'}`)
+          message.success(`已清理：${formatCounts(r.deleted) || '无过期数据'}`)
         } catch (e: any) {
           message.error(e.message)
         }
@@ -119,7 +115,7 @@ export default function Settings() {
       onOk: async () => {
         try {
           const r = await api('POST', '/api/maintenance/clear-stats', { confirm: true })
-          message.success(`已清空：${fmtCounts(r.cleared)}`)
+          message.success(`已清空：${formatCounts(r.cleared)}`)
         } catch (e: any) {
           message.error(e.message)
         }
