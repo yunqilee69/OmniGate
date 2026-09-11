@@ -243,7 +243,8 @@ ON CONFLICT(day, route, model, provider, status) DO UPDATE SET
 	return tx.Commit().Error
 }
 
-// P95FromBuckets 从 10 桶直方反查 p95（毫秒）。
+// P95FromBuckets 从 10 桶直方反查 p95（毫秒）：自低桶向高桶累加计数，首个累计量达到
+// 95% 的桶即 p95 所在桶，返回该桶上界；落在最高开区间桶时返回 bounds[8]*2。
 func P95FromBuckets(counts [10]int64, bounds [9]int64) int64 {
 	var total int64
 	for _, c := range counts {
@@ -254,8 +255,8 @@ func P95FromBuckets(counts [10]int64, bounds [9]int64) int64 {
 	}
 	target := (total*95 + 99) / 100
 	var acc int64
-	for i := 9; i >= 0; i-- {
-		acc += counts[i]
+	for i, c := range counts {
+		acc += c
 		if acc >= target {
 			if i == 9 {
 				return bounds[8] * 2

@@ -830,6 +830,49 @@ func TestStatsCurrencyParam(t *testing.T) {
 	}
 }
 
+// TestStatsOverviewRollupLatency 回归：预聚合路径的 p95 必须自低桶累加定位（不是自顶 5%），
+// 且延迟直方图只取成功请求——错误行 ttft/total 为 0，混入会把计数堆进 0 号桶。
+func TestStatsOverviewRollupLatency(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	day := store.DayKey(now)
+	// 100 次成功：90 次 ttft/total 落在 6 号桶，10 次落在 8 号桶
+	// → TTFT p95 = 桶 8 上界 30000ms（均值 (90*3500+10*20000)/100 = 5150ms）
+	// → 总耗时 p95 = 桶 8 上界 300000ms（均值 (90*45000+10*210000)/100 = 61500ms）
+	if err := st.DB.Create(&store.RequestLogDaily{
+		Day: day, Route: "glm", Model: "m1", Provider: "p1", Status: "success",
+		Total: 100, Success: 100,
+		TTFTB6: 90, TTFTB8: 10, TotalB6: 90, TotalB8: 10,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// 100 次错误：延迟为 0，全部落在 0 号桶，不得进入延迟统计口径
+	if err := st.DB.Create(&store.RequestLogDaily{
+		Day: day, Route: "glm", Model: "m1", Provider: "p1", Status: "error",
+		Total: 100, Errors: 100,
+		TTFTB0: 100, TotalB0: 100,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	ov := decodeObj(t, do(t, h, "GET", "/api/stats/overview", nil, "test-token"))
+	if ov["total"] != float64(200) || ov["success"] != float64(100) {
+		t.Fatalf("totals must cover every status: %v", ov)
+	}
+	if ov["p95_ttft_ms"] != float64(30000) {
+		t.Fatalf("p95_ttft_ms want 30000, got %v", ov["p95_ttft_ms"])
+	}
+	if ov["avg_ttft_ms"] != float64(5150) {
+		t.Fatalf("avg_ttft_ms want 5150 (errors excluded), got %v", ov["avg_ttft_ms"])
+	}
+	if ov["p95_total_ms"] != float64(300000) {
+		t.Fatalf("p95_total_ms want 300000, got %v", ov["p95_total_ms"])
+	}
+	if ov["avg_total_ms"] != float64(61500) {
+		t.Fatalf("avg_total_ms want 61500 (errors excluded), got %v", ov["avg_total_ms"])
+	}
+}
+
 // TestModelTestKeysEndpoint 逐密钥测试端点：好/坏 key 并存，各自出结果。
 func TestModelTestKeysEndpoint(t *testing.T) {
 	h, _ := newTestServer(t)

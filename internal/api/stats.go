@@ -122,6 +122,8 @@ func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64,
 		return
 	}
 
+	// 延迟直方图只统计成功请求：错误行的 ttft_ms/total_ms 恒为 0，混入会把计数堆进 0 号桶，
+	// 拉低均值、扭曲 p95（与 overviewFromRaw 的 status='success' 口径保持一致）。
 	bucketRow := s.store.DB.Raw(`SELECT
 		COALESCE(SUM(ttftb0),0), COALESCE(SUM(ttftb1),0), COALESCE(SUM(ttftb2),0), COALESCE(SUM(ttftb3),0),
 		COALESCE(SUM(ttftb4),0), COALESCE(SUM(ttftb5),0), COALESCE(SUM(ttftb6),0), COALESCE(SUM(ttftb7),0),
@@ -129,7 +131,7 @@ func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64,
 		COALESCE(SUM(totalb0),0), COALESCE(SUM(totalb1),0), COALESCE(SUM(totalb2),0), COALESCE(SUM(totalb3),0),
 		COALESCE(SUM(totalb4),0), COALESCE(SUM(totalb5),0), COALESCE(SUM(totalb6),0), COALESCE(SUM(totalb7),0),
 		COALESCE(SUM(totalb8),0), COALESCE(SUM(totalb9),0)
-		FROM request_log_daily WHERE day BETWEEN ? AND ?`, dayFrom, dayTo).Row()
+		FROM request_log_daily WHERE day BETWEEN ? AND ? AND status = 'success'`, dayFrom, dayTo).Row()
 	if err := bucketRow.Scan(
 		&ttftCounts[0], &ttftCounts[1], &ttftCounts[2], &ttftCounts[3], &ttftCounts[4],
 		&ttftCounts[5], &ttftCounts[6], &ttftCounts[7], &ttftCounts[8], &ttftCounts[9],

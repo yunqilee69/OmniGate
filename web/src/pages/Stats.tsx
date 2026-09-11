@@ -143,8 +143,8 @@ export default function Stats() {
         <Col xs={24} sm={12} md={8} lg={6}><StatTile title="费用" value={formatCost(ov?.cost ?? 0, currency)} tint="#f0fbe8" /></Col>
         <Col xs={24} sm={12} md={8} lg={6}><StatTile title="总 Tokens" value={formatNumber(ov?.total_tokens ?? 0)} tint="#f4f0ff" /></Col>
         <Col xs={24} sm={12} md={8} lg={6}><StatTile title="输入 / 输出" value={`${formatNumber(ov?.prompt_tokens ?? 0)} / ${formatNumber(ov?.completion_tokens ?? 0)}`} tint="#e8fbf4" suffix="tok" /></Col>
-        <Col xs={24} sm={12} md={8} lg={6}><StatTile title="P95 首字响应" value={formatNumber(Math.round(ov?.p95_ttft_ms ?? 0))} tint="#fff4e6" suffix="ms" /></Col>
-        <Col xs={24} sm={12} md={8} lg={6}><StatTile title="P95 总耗时" value={formatNumber(Math.round(ov?.p95_total_ms ?? 0))} tint="#fff4e6" suffix="ms" /></Col>
+        <Col xs={24} sm={12} md={8} lg={6}><StatTile title="P95 首字响应" value={`${Math.round(ov?.p95_ttft_ms ?? 0)}`} tint="#fff4e6" suffix="ms" /></Col>
+        <Col xs={24} sm={12} md={8} lg={6}><StatTile title="P95 总耗时" value={`${Math.round(ov?.p95_total_ms ?? 0)}`} tint="#fff4e6" suffix="ms" /></Col>
         {(ov?.fallback_count ?? 0) > 0 && <Col xs={24} sm={12} md={8} lg={6}><StatTile title="兜底使用" value={formatNumber(ov?.fallback_count ?? 0)} tint="#fff0f0" suffix={`${((ov?.fallback_rate ?? 0) * 100).toFixed(1)}%`} /></Col>}
       </Row>
 
