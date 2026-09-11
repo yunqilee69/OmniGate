@@ -873,15 +873,16 @@ func TestStatsCurrencyParam(t *testing.T) {
 	}
 }
 
-// TestStatsOverviewRollupLatency 回归：预聚合路径的 p95 必须自低桶累加定位（不是自顶 5%），
-// 且延迟直方图只取成功请求——错误行 ttft/total 为 0，混入会把计数堆进 0 号桶。
+// TestStatsOverviewRollupLatency 回归：预聚合路径的 p95 必须自低桶累加定位（不是自顶 5%）、
+// 并在命中的桶内线性插值（不是直接返回桶上界）；延迟直方图只取成功请求——错误行
+// ttft/total 为 0，混入会把计数堆进 0 号桶。
 func TestStatsOverviewRollupLatency(t *testing.T) {
 	h, st, _ := newTestServerWithStore(t)
 	now := time.Now().Unix()
 	day := store.DayKey(now)
-	// 100 次成功：90 次 ttft/total 落在 6 号桶，10 次落在 8 号桶
-	// → TTFT p95 = 桶 8 上界 30000ms（均值 (90*3500+10*20000)/100 = 5150ms）
-	// → 总耗时 p95 = 桶 8 上界 300000ms（均值 (90*45000+10*210000)/100 = 61500ms）
+	// 100 次成功：90 次 ttft/total 落在 6 号桶，10 次落在 8 号桶，p95 秩 95 落在 8 号桶中部
+	// → TTFT p95 = 10000+(95-90)/10*(30000-10000) = 20000ms（均值 (90*3500+10*20000)/100 = 5150ms）
+	// → 总耗时 p95 = 120000+(95-90)/10*(300000-120000) = 210000ms（均值 (90*45000+10*210000)/100 = 61500ms）
 	if err := st.DB.Create(&store.RequestLogDaily{
 		Day: day, Route: "glm", Model: "m1", Provider: "p1", Status: "success",
 		Total: 100, Success: 100,
@@ -902,14 +903,14 @@ func TestStatsOverviewRollupLatency(t *testing.T) {
 	if ov["total"] != float64(200) || ov["success"] != float64(100) {
 		t.Fatalf("totals must cover every status: %v", ov)
 	}
-	if ov["p95_ttft_ms"] != float64(30000) {
-		t.Fatalf("p95_ttft_ms want 30000, got %v", ov["p95_ttft_ms"])
+	if ov["p95_ttft_ms"] != float64(20000) {
+		t.Fatalf("p95_ttft_ms want 20000, got %v", ov["p95_ttft_ms"])
 	}
 	if ov["avg_ttft_ms"] != float64(5150) {
 		t.Fatalf("avg_ttft_ms want 5150 (errors excluded), got %v", ov["avg_ttft_ms"])
 	}
-	if ov["p95_total_ms"] != float64(300000) {
-		t.Fatalf("p95_total_ms want 300000, got %v", ov["p95_total_ms"])
+	if ov["p95_total_ms"] != float64(210000) {
+		t.Fatalf("p95_total_ms want 210000, got %v", ov["p95_total_ms"])
 	}
 	if ov["avg_total_ms"] != float64(61500) {
 		t.Fatalf("avg_total_ms want 61500 (errors excluded), got %v", ov["avg_total_ms"])

@@ -2,6 +2,7 @@ package store
 
 import (
 	"log/slog"
+	"math"
 	"time"
 
 	"gorm.io/gorm"
@@ -112,9 +113,12 @@ func boolToInt64(b bool) int64 {
 	return 0
 }
 
-// Backfill 用一次 GROUP BY 把现有 request_log 全部回填进 request_log_daily。
+// Backfill 用一次 GROUP BY 把现有 request_log 回填进 request_log_daily，已存在的
+// (day, route, model, provider, status) 行保持不动（DO NOTHING）。
 // 设计上仅在启动时调用一次：实时路径（UpsertDaily）负责维护当天及之后的数据。
-// 安全可重入：INSERT 会覆盖已存在行（同 PK 全量重算）。
+//
+// 不能整行覆盖：明细与日聚合可以各自单独删除——clear-logs 与保留期清理只删 request_log，
+// 日聚合按设计保留（design.md §8.1），此时用残缺明细重算会把已保留的聚合值直接改小。
 func Backfill(db *gorm.DB) error {
 	now := time.Now().Unix()
 	rows, err := db.Raw(`
@@ -218,18 +222,7 @@ INSERT INTO request_log_daily
    totalb0, totalb1, totalb2, totalb3, totalb4, totalb5, totalb6, totalb7, totalb8, totalb9,
    updated_at)
 VALUES (?,?,?,?,?, ?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?, ?)
-ON CONFLICT(day, route, model, provider, status) DO UPDATE SET
-  total=excluded.total, success=excluded.success, errors=excluded.errors,
-  prompt_tokens=excluded.prompt_tokens, completion_tokens=excluded.completion_tokens,
-  cached_tokens=excluded.cached_tokens,
-  cost=excluded.cost, retries_sum=excluded.retries_sum,
-  ttftb0=excluded.ttftb0, ttftb1=excluded.ttftb1, ttftb2=excluded.ttftb2, ttftb3=excluded.ttftb3,
-  ttftb4=excluded.ttftb4, ttftb5=excluded.ttftb5, ttftb6=excluded.ttftb6, ttftb7=excluded.ttftb7,
-  ttftb8=excluded.ttftb8, ttftb9=excluded.ttftb9,
-  totalb0=excluded.totalb0, totalb1=excluded.totalb1, totalb2=excluded.totalb2, totalb3=excluded.totalb3,
-  totalb4=excluded.totalb4, totalb5=excluded.totalb5, totalb6=excluded.totalb6, totalb7=excluded.totalb7,
-  totalb8=excluded.totalb8, totalb9=excluded.totalb9,
-  updated_at=excluded.updated_at`,
+ON CONFLICT(day, route, model, provider, status) DO NOTHING`,
 			a.Day, a.Route, a.Model, a.Provider, a.Status,
 			a.Total, a.Success, a.Errors, a.PTok, a.CTok, a.CachedTok, a.Cost, a.RetriesSum,
 			h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8], h[9],
@@ -243,8 +236,12 @@ ON CONFLICT(day, route, model, provider, status) DO UPDATE SET
 	return tx.Commit().Error
 }
 
-// P95FromBuckets 从 10 桶直方反查 p95（毫秒）：自低桶向高桶累加计数，首个累计量达到
-// 95% 的桶即 p95 所在桶，返回该桶上界；落在最高开区间桶时返回 bounds[8]*2。
+// P95FromBuckets 从 10 桶直方反查 p95（毫秒）：自低桶向高桶累加计数定位 p95 所在桶，
+// 再按桶内均匀分布线性插值出具体延迟。桶 i 覆盖 [bounds[i-1], bounds[i])（首桶自 0 起），
+// 桶 9 是开区间 [bounds[8], +∞)，插值上界取 bounds[8]*2。
+//
+// 不能直接返回所在桶的上界：p95 常落在宽尾桶（TTFT 10s~30s、总耗时 30s~60s 各占一个桶），
+// 取上界会系统性高估到 2~3 倍桶宽，且输出恒为 30000/60000 这类桶边界整数。
 func P95FromBuckets(counts [10]int64, bounds [9]int64) int64 {
 	var total int64
 	for _, c := range counts {
@@ -253,16 +250,30 @@ func P95FromBuckets(counts [10]int64, bounds [9]int64) int64 {
 	if total == 0 {
 		return 0
 	}
-	target := (total*95 + 99) / 100
+	// 0.95 分位的连续秩（0-based），与百分位定义一致；桶内按此秩插值。
+	rank := 0.95 * float64(total)
 	var acc int64
 	for i, c := range counts {
 		acc += c
-		if acc >= target {
-			if i == 9 {
-				return bounds[8] * 2
-			}
-			return bounds[i]
+		if float64(acc) < rank {
+			continue
 		}
+		// c 恒 > 0：acc 首次达到 rank，说明进入本桶前累计量仍小于 rank。
+		lower := int64(0)
+		if i > 0 {
+			lower = bounds[i-1]
+		}
+		upper := bounds[8] * 2
+		if i < 9 {
+			upper = bounds[i]
+		}
+		pos := (rank - float64(acc-c)) / float64(c)
+		if pos < 0 {
+			pos = 0
+		} else if pos > 1 {
+			pos = 1
+		}
+		return lower + int64(math.Round(pos*float64(upper-lower)))
 	}
 	return 0
 }

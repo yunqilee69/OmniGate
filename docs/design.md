@@ -469,7 +469,7 @@ POST /api/maintenance/clear-stats             # body {"confirm":true}；清空�
 | 费用 | cost（按 model 价格表计算，未配价格则为 0） |
 | 重试 | retries |
 
-统计查询优先走每日预聚合表 `request_log_daily`（写入路径同步 UPSERT，`day × route × model × provider × status` 粒度 + 10 桶延迟直方图，均值/p95 由桶反查）；延迟类指标（平均首字响应/平均耗时/p95）只统计 `status='success'` 的行——错误行延迟恒为 0，混入会把计数堆进 0 号桶；p95 自低桶累加定位所在桶后返回该桶上界（开区间桶返回末边界 ×2），故为桶粒度近似值。当日增量、`error_code` 维度等 rollup 未覆盖的查询回退 `request_log` 现算（索引已按维度建好）。清空统计与保留期清理同时覆盖两类表；仅清明细而不动统计可走 `POST /api/maintenance/clear-logs`（日聚合随后台 UPSERT 独立维护，不受明细删除影响）。
+统计查询优先走每日预聚合表 `request_log_daily`（写入路径同步 UPSERT，`day × route × model × provider × status` 粒度 + 10 桶延迟直方图，均值/p95 由桶反查）；延迟类指标（平均首字响应/平均耗时/p95）只统计 `status='success'` 的行——错误行延迟恒为 0，混入会把计数堆进 0 号桶；p95 自低桶累加定位所在桶后，按桶内均匀分布线性插值出具体值（开区间尾桶以末边界 ×2 作插值上界），故仍是桶粒度近似值，但不会像直接取桶上界那样被 2~3 倍宽的尾桶系统性抬高。当日增量、`error_code` 维度等 rollup 未覆盖的查询回退 `request_log` 现算（索引已按维度建好）。清空统计与保留期清理同时覆盖两类表；仅清明细而不动统计可走 `POST /api/maintenance/clear-logs`（日聚合随后台 UPSERT 独立维护，不受明细删除影响）。
 
 ### 8.2 隐私设计
 
