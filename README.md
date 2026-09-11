@@ -5,7 +5,7 @@
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Release](https://img.shields.io/github/v/release/yunqilee69/OmniGate)](https://github.com/yunqilee69/OmniGate/releases)
-[![MCP](https://img.shields.io/badge/MCP-规划中-orange)](#路线图)
+[![MCP](https://img.shields.io/badge/MCP-已支持-brightgreen)](#路线图)
 
 OmniGate 把多个模型提供方聚合成一个 OpenAI 兼容端点,提供加权负载均衡、密钥轮询、阶梯熔断和多维统计,内嵌管理控制台——全部打包在一个 34 MB 的静态二进制里。
 
@@ -17,13 +17,17 @@ OmniGate 把多个模型提供方聚合成一个 OpenAI 兼容端点,提供加�
 
 | | |
 |---|---|
-| **OpenAI 兼容代理** | `/v1/chat/completions`(SSE 流式)、`/v1/embeddings`(OpenAI 标准)、`/v1/rerank`(Cohere 骨架直通)、`/v1/models` |
-| **混合协议端点** | `/v1/messages`(Anthropic 原生)、`/v1/responses`(OpenAI Responses 原生) — 直通模式,零损耗 |
+| **OpenAI 兼容代理** | `/v1/chat/completions`(SSE 流式)、`/v1/embeddings`(OpenAI 标准)、`/v1/rerank`(Cohere 骨架直通)、`/v1/images/generations`(生图,支持高清尺寸预设)、`/v1/models` |
+| **混合协议端点** | `/v1/messages`(Anthropic 原生)、`/v1/responses`(OpenAI Responses 原生) — 直通模式,零损耗;跨协议转换时 `thinking` 以 `reasoning_content` 透出 |
+| **MCP 工具网关** | `/v1/mcp/<路由>` 聚合多个 MCP Server:一个会话集中管理,tools/list 自动汇总,tools/call 按工具路由到后端;对话测试页可把 MCP 工具直接注入模型自动调用 |
+| **虚拟密钥** | 消费者凭证体系:RPM 限流、美元预算与用量累计、按路由授权;管理台独立用量统计与预算重置 |
 | **两级路由** | 逻辑模型 → 加权选模型 → 模型内 key 轮询。请求 `glm`,落地到背后任意真实模型 |
-| **阶梯熔断** | 模型级 30s → 1m → 3m;key 级 401/403 立即禁用,429 短冷却 |
-| **多维统计** | 次数 / token / 首字延迟 / 总耗时 / 费用,按 路由·模型·提供方·key·状态·时间 聚合 |
+| **阶梯熔断** | 模型级 30s → 1m → 3m;key 级 401/403 立即禁用,429 短冷却;禁用粒度精确到 模型×key 组合 |
+| **多维统计** | 次数 / token / 首字延迟 / 总耗时 / 费用,按 路由·模型·提供方·key·虚拟密钥·状态·时间 聚合;含逐次尝试明细(request_attempt) |
+| **对话测试页** | 管理台内置 Playground:对话(流式 Markdown 渲染、思考过程折叠面板)、Embedding、Rerank、生图 四面板,挂载 MCP 路由即自动工具调用 |
 | **隐私默认** | 只记元数据。请求内容捕获是显式开关(全局 + 按路由两级),默认关闭 |
-| **内嵌管理台** | React 18 + Ant Design 5,`go:embed` 嵌入二进制,无独立前端部署 |
+| **内嵌管理台** | React 18 + Ant Design 5 + Ant Design X,`go:embed` 嵌入二进制,无独立前端部署 |
+| **客户端模拟请求头** | 提供商级出站请求头覆盖(如模拟浏览器/客户端 UA),模板库一键插入,fetch-models 预览同样生效 |
 | **两层配置** | 启动层(监听地址、账号密码鉴权)走 `config.yaml`;运行层(熔断/捕获/限流等)走 SQLite,管理界面保存即热生效 |
 | **单二进制** | 纯 Go SQLite(`modernc.org/sqlite`,无 CGO),一处构建,处处运行 |
 | **零配置启动** | 首次运行自动创建 `~/.omnigate/`,落盘 db / config / log 三件套 |
@@ -128,7 +132,7 @@ OmniGate 提供三种协议端点，满足不同使用场景：
 | 端点 | 协议 | 使用场景 | 特点 |
 |---|---|---|---|
 | **`/v1/chat/completions`** | OpenAI | **推荐：日常使用** | 统一接口，自动转换，可路由到任意协议的模型 |
-| **`/v1/messages`** | Anthropic | 需要 `thinking` 等特性 | 直通模式，保留厂商独有参数，仅路由到 `protocol=anthropic` 的模型 |
+| **`/v1/messages`** | Anthropic | 需要 `thinking` 等特性 | 直通模式，保留厂商独有参数，仅路由到 `protocol=messages` 的模型 |
 | **`/v1/responses`** | OpenAI Responses | 需要 `reasoning_content` | 直通模式，保留推理过程，仅路由到 `protocol=responses` 的模型 |
 
 **推荐用法**：
@@ -189,7 +193,7 @@ admin:
 
 ## 开发
 
-前置:Go 1.22+、Node 18+(仅 web 构建需要)。
+前置:Go 1.27+、Node 18+(仅 web 构建需要)。
 
 ```bash
 git clone https://github.com/yunqilee69/OmniGate
@@ -252,7 +256,7 @@ go test ./...
 | **协议** | MIT | AGPL-3.0 | 专有 | MIT |
 | **自部署** | ✅ 丢上去就跑 | ✅ | ❌ | ✅ |
 | **管理 UI** | 内嵌 | 独立前端 | 云端 | 无 |
-| **MCP 网关** | 规划中 | ❌ | ❌ | ❌ |
+| **MCP 网关** | ✅ 多后端会话聚合 + 工具注入 | ❌ | ❌ | 实验性 |
 
 `one-api` / `new-api` 仅作**行为参考,零行拷贝**——详见 `docs/design.md` §11 的协议合规说明。
 
@@ -261,10 +265,13 @@ go test ./...
 ## 路线图
 
 - [x] **v1.0** — 设计定稿(实体模型、路由、熔断、统计、UI)
-- [ ] **v1.1** — MCP(Model Context Protocol)网关
-- [ ] **v1.2** — Anthropic / Gemini 原生协议适配
-- [ ] **v1.3** — Token 用量预算与软配额
-- [ ] **v2.0** — 多实例集群模式(读写分离、配置共享)
+- [x] **MCP 网关** — `/v1/mcp/<路由>` 多后端聚合、工具自动注入对话(v0.2.x 起交付)
+- [x] **Anthropic 原生协议** — `/v1/messages` 直通 + `thinking` 思考过程跨协议贯通
+- [x] **虚拟密钥** — RPM 限流、美元预算配额、按路由授权、独立用量统计
+- [x] **生图 / Embedding / Rerank 端点** — `/v1/images/generations`(高清尺寸预设)等类型化端点族
+- [ ] **Gemini 原生协议** — 适配 Google AI 端点
+- [ ] **软配额告警** — 用量阈值通知(虚拟密钥硬预算已具备)
+- [ ] **多实例集群模式** — 读写分离、配置共享
 
 实时待办见 [issues](https://github.com/yunqilee69/OmniGate/issues)。
 
@@ -274,12 +281,12 @@ go test ./...
 
 | 层 | 选型 | 理由 |
 |---|---|---|
-| 语言 | Go 1.22+ | 单静态二进制、低内存、冷启动快 |
+| 语言 | Go 1.27+ | 单静态二进制、低内存、冷启动快 |
 | HTTP | `net/http` + `chi` | 标准库够用;chi 中间件顺手 |
 | ORM / 存储 | GORM + `modernc.org/sqlite` | 纯 Go 无 CGO,交叉编译零摩擦 |
 | 热更新 | `atomic.Pointer[Snapshot]` | 读路径无锁,进行中请求不受影响 |
 | SDK 复用 | `anthropic-sdk-go`(MIT)+ `sashabaranov/go-openai`(Apache-2.0) | 直接复用 wire/SSE 类型 |
-| UI | React 18 + Ant Design 5 + ECharts | `go:embed` 内嵌 |
+| UI | React 18 + Ant Design 5 + @ant-design/x(Bubble 对话组件、x-markdown 流式渲染)+ ECharts | `go:embed` 内嵌 |
 | 日志 | `log/slog`(结构化) | 标准库 |
 
 ---

@@ -76,7 +76,14 @@ omnigate stop
 # ✓ 服务已停止
 ```
 
-完整功能（加权路由、密钥轮询、阶梯熔断、统计、管理台）见[主项目 README](https://github.com/yunqilee69/OmniGate)。
+核心能力(详见[主项目 README](https://github.com/yunqilee69/OmniGate)):
+
+- **OpenAI 兼容端点**:`/v1/chat/completions`(SSE 流式)、`/v1/embeddings`、`/v1/rerank`、`/v1/images/generations`
+- **原生协议直通**:`/v1/messages`(Anthropic)、`/v1/responses`(OpenAI Responses)
+- **MCP 工具网关**:`/v1/mcp/<路由>` 聚合多后端 MCP Server,工具自动注入对话
+- **两级路由 + 阶梯熔断**:加权负载均衡、密钥轮询、模型×密钥粒度熔断
+- **虚拟密钥**:RPM 限流、美元预算配额、按路由授权、独立用量统计
+- **内嵌管理台**:多维统计、请求日志、内容捕获(默认关闭),对话测试页支持流式 Markdown 渲染与思考过程展示
 
 ## 支持平台
 
