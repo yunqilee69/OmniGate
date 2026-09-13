@@ -1,7 +1,9 @@
 package proxy_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,14 +11,16 @@ import (
 	"github.com/cloudomni/omnigate/internal/store"
 )
 
-// seedCostTarget 建一个单模型单 key 路由，价格与币种由参数指定。
-func seedCostTarget(t *testing.T, st *store.Store, url, routeName string, in, out float64, currency string) {
+// seedCostModel 建一个单模型单 key 的路由；价格、币种与协议由调用方给出
+// （Name/ProviderID 由本函数填）。路由 endpoint 跟随模型协议，messages 模型挂 messages 端点。
+func seedCostModel(t *testing.T, st *store.Store, url, routeName string, m store.Model) {
 	t.Helper()
 	p := store.Provider{Name: "cost-prov-" + routeName, BaseURL: url, TimeoutMs: 5000}
 	if err := st.DB.Create(&p).Error; err != nil {
 		t.Fatal(err)
 	}
-	m := store.Model{ProviderID: p.ID, Name: "m-" + routeName, InputPrice: in, OutputPrice: out, PriceCurrency: currency}
+	m.ProviderID = p.ID
+	m.Name = "m-" + routeName
 	if err := st.DB.Create(&m).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -28,12 +32,21 @@ func seedCostTarget(t *testing.T, st *store.Store, url, routeName string, in, ou
 		t.Fatal(err)
 	}
 	rt := store.Route{Name: routeName}
+	if m.Protocol == "messages" {
+		rt.Endpoint = "messages"
+	}
 	if err := st.DB.Create(&rt).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1}).Error; err != nil {
 		t.Fatal(err)
 	}
+}
+
+// seedCostTarget 建一个单模型单 key 路由，价格与币种由参数指定。
+func seedCostTarget(t *testing.T, st *store.Store, url, routeName string, in, out float64, currency string) {
+	t.Helper()
+	seedCostModel(t, st, url, routeName, store.Model{InputPrice: in, OutputPrice: out, PriceCurrency: currency})
 }
 
 func usageUpstream(prompt, completion int) *httptest.Server {
@@ -115,5 +128,115 @@ func TestCostUSDUntouched(t *testing.T) {
 	ls = logs(t, st)
 	if !approxEq(ls[len(ls)-1].Cost, (12*10+6*20)/1e6) {
 		t.Fatalf("default currency should be USD, got %v", ls[len(ls)-1].Cost)
+	}
+}
+
+// usageUpstreamCached 返回 OpenAI 形状 usage，prompt_tokens_details.cached_tokens
+// 表示命中缓存的输入 token（OpenAI 系协议下 cached ⊆ prompt_tokens）。
+func usageUpstreamCached(prompt, completion, cached int) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body, _ := json.Marshal(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": "pong"}}},
+			"usage": map[string]any{
+				"prompt_tokens": prompt, "completion_tokens": completion,
+				"prompt_tokens_details": map[string]int{"cached_tokens": cached},
+			},
+		})
+		_, _ = w.Write(body)
+	}))
+}
+
+// postAnthropic 走原生 /v1/messages 直通端点（route endpoint=messages）。
+func postAnthropic(t *testing.T, h http.Handler, model, vkToken string) {
+	t.Helper()
+	buf, _ := json.Marshal(map[string]any{
+		"model": model, "max_tokens": 16,
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(buf))
+	req.Header.Set("Content-Type", "application/json")
+	if vkToken != "" {
+		req.Header.Set("Authorization", "Bearer "+vkToken)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expect 200, got %d — %s", rec.Code, rec.Body.String())
+	}
+}
+
+// OpenAI 系协议命中缓存：prompt_tokens 含命中量，需扣除后按 cached_price 计价。
+// 输入 10 / 缓存 2 / 输出 20、prompt=1000（命中 600）、completion=100
+// → (400×10 + 600×2 + 100×20) / 1e6 = 0.0072。
+func TestCostCachedPrice(t *testing.T) {
+	st, rtm, vkToken := newStackWithRTMAndVK(t)
+	h := hWithRTM(st, rtm)
+	up := usageUpstreamCached(1000, 100, 600)
+	defer up.Close()
+	seedCostModel(t, st, up.URL, "ck", store.Model{InputPrice: 10, CachedPrice: 2, OutputPrice: 20})
+
+	postChat(t, h, "ck", vkToken)
+	ls := logs(t, st)
+	if len(ls) != 1 {
+		t.Fatalf("expect 1 log, got %d", len(ls))
+	}
+	if ls[0].CachedTokens != 600 || ls[0].PromptTokens != 1000 {
+		t.Fatalf("usage should stay as reported, got prompt=%d cached=%d", ls[0].PromptTokens, ls[0].CachedTokens)
+	}
+	if !approxEq(ls[0].Cost, 0.0072) {
+		t.Fatalf("cached tokens should bill at cached_price, got %v", ls[0].Cost)
+	}
+}
+
+// cached_price 未配置（0）或为负的历史行回退输入价：命中量仍按输入价计费，与旧行为一致。
+func TestCostCachedPriceFallsBackToInput(t *testing.T) {
+	st, rtm, vkToken := newStackWithRTMAndVK(t)
+	h := hWithRTM(st, rtm)
+	up := usageUpstreamCached(1000, 100, 600)
+	defer up.Close()
+	seedCostModel(t, st, up.URL, "c0", store.Model{InputPrice: 10, CachedPrice: 0, OutputPrice: 20})
+	seedCostModel(t, st, up.URL, "cneg", store.Model{InputPrice: 10, CachedPrice: -1, OutputPrice: 20})
+	want := (1000*10 + 100*20) / 1e6
+
+	postChat(t, h, "c0", vkToken)
+	postChat(t, h, "cneg", vkToken)
+	ls := logs(t, st)
+	if len(ls) != 2 {
+		t.Fatalf("expect 2 logs, got %d", len(ls))
+	}
+	for _, l := range ls {
+		if !approxEq(l.Cost, want) {
+			t.Fatalf("unset cached_price should fall back to input price, got %v want %v", l.Cost, want)
+		}
+	}
+}
+
+// Anthropic messages 的 input_tokens 不含 cache_read（两者互斥），须按各自单价相加：
+// 输入 10 / 缓存 2 / 输出 20、input=400 + cache_read=600、output=100 → 0.0072。
+func TestCostAnthropicCacheRead(t *testing.T) {
+	st, rtm, vkToken := newStackWithRTMAndVK(t)
+	h := hWithRTM(st, rtm)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("messages upstream path = %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"claude"}],"stop_reason":"end_turn","usage":{"input_tokens":400,"output_tokens":100,"cache_read_input_tokens":600}}`)
+	}))
+	defer up.Close()
+	seedCostModel(t, st, up.URL+"/v1", "cm", store.Model{
+		Protocol: "messages", InputPrice: 10, CachedPrice: 2, OutputPrice: 20,
+	})
+
+	postAnthropic(t, h, "cm", vkToken)
+	ls := logs(t, st)
+	if len(ls) != 1 {
+		t.Fatalf("expect 1 log, got %d", len(ls))
+	}
+	if ls[0].CachedTokens != 600 {
+		t.Fatalf("cache_read_input_tokens should be recorded, got %d", ls[0].CachedTokens)
+	}
+	if !approxEq(ls[0].Cost, 0.0072) {
+		t.Fatalf("anthropic cache read should bill at cached_price, got %v", ls[0].Cost)
 	}
 }

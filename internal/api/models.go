@@ -32,6 +32,7 @@ type modelCreateReq struct {
 	Type          string  `json:"type"`
 	Protocol      string  `json:"protocol"`
 	InputPrice    float64 `json:"input_price"`
+	CachedPrice   float64 `json:"cached_price"`
 	OutputPrice   float64 `json:"output_price"`
 	PriceCurrency string  `json:"price_currency"`
 	KeyIDs        []int64 `json:"key_ids"`
@@ -154,7 +155,7 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "price_currency must be USD or CNY")
 		return
 	}
-	if req.InputPrice < 0 || req.OutputPrice < 0 {
+	if req.InputPrice < 0 || req.CachedPrice < 0 || req.OutputPrice < 0 {
 		writeErr(w, http.StatusBadRequest, "bad_request", "prices must not be negative")
 		return
 	}
@@ -193,7 +194,7 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 	m := store.Model{
 		ProviderID: req.ProviderID, Name: req.Name, Type: req.Type, Protocol: req.Protocol,
 		ApiPath: req.ApiPath, BodyOverride: req.BodyOverride,
-		InputPrice: req.InputPrice, OutputPrice: req.OutputPrice, PriceCurrency: req.PriceCurrency, Status: "active",
+		InputPrice: req.InputPrice, CachedPrice: req.CachedPrice, OutputPrice: req.OutputPrice, PriceCurrency: req.PriceCurrency, Status: "active",
 	}
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&m).Error; err != nil {
@@ -227,6 +228,7 @@ type modelUpdateReq struct {
 	Type          *string  `json:"type"`
 	Protocol      *string  `json:"protocol"`
 	InputPrice    *float64 `json:"input_price"`
+	CachedPrice   *float64 `json:"cached_price"`
 	OutputPrice   *float64 `json:"output_price"`
 	ApiPath       *string  `json:"api_path"`
 	BodyOverride  *string  `json:"body_override"`
@@ -299,6 +301,13 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		simple["input_price"] = *req.InputPrice
+	}
+	if req.CachedPrice != nil {
+		if *req.CachedPrice < 0 {
+			writeErr(w, http.StatusBadRequest, "bad_request", "cached_price must not be negative")
+			return
+		}
+		simple["cached_price"] = *req.CachedPrice
 	}
 	if req.OutputPrice != nil {
 		if *req.OutputPrice < 0 {

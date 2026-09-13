@@ -825,7 +825,7 @@ func TestStatsTimeseriesIncludesMetricsAndFiltersProvider(t *testing.T) {
 	}
 }
 
-// TestModelPriceCurrency 模型价格币种：创建回显、非法值 400、更新生效。
+// TestModelPriceCurrency 模型价格：缓存价回显与非法值、币种回显与非法值、更新生效。
 func TestModelPriceCurrency(t *testing.T) {
 	h, _ := newTestServer(t)
 	rec := do(t, h, "POST", "/api/providers", map[string]any{"name": "cc-prov", "base_url": "https://x"}, "test-token")
@@ -834,12 +834,20 @@ func TestModelPriceCurrency(t *testing.T) {
 	keyID := idOf(t, decodeObj(t, rec))
 
 	rec = do(t, h, "POST", "/api/models", map[string]any{
-		"provider_id": provID, "name": "m-cc", "input_price": 10, "output_price": 20,
+		"provider_id": provID, "name": "m-cc", "input_price": 10, "cached_price": 5, "output_price": 20,
 		"price_currency": "CNY", "key_ids": []int64{keyID},
 	}, "test-token")
 	m := decodeObj(t, rec)
 	if m["price_currency"] != "CNY" {
 		t.Fatalf("price_currency should echo CNY, got %v", m["price_currency"])
+	}
+	if m["cached_price"] != float64(5) {
+		t.Fatalf("cached_price should echo 5, got %v", m["cached_price"])
+	}
+	if rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": provID, "name": "m-neg", "cached_price": -1, "key_ids": []int64{keyID},
+	}, "test-token"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("negative cached_price should 400, got %d", rec.Code)
 	}
 	if rec = do(t, h, "POST", "/api/models", map[string]any{
 		"provider_id": provID, "name": "m-eur", "key_ids": []int64{keyID}, "price_currency": "EUR",
@@ -848,12 +856,14 @@ func TestModelPriceCurrency(t *testing.T) {
 	}
 
 	modelID := idOf(t, m)
-	rec = do(t, h, "PUT", fmt.Sprintf("/api/models/%d", modelID), map[string]any{"price_currency": "USD"}, "test-token")
+	rec = do(t, h, "PUT", fmt.Sprintf("/api/models/%d", modelID), map[string]any{
+		"price_currency": "USD", "cached_price": 3,
+	}, "test-token")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("update currency failed: %d", rec.Code)
+		t.Fatalf("update price fields failed: %d", rec.Code)
 	}
-	if m = decodeObj(t, rec); m["price_currency"] != "USD" {
-		t.Fatalf("updated currency should be USD, got %v", m["price_currency"])
+	if m = decodeObj(t, rec); m["price_currency"] != "USD" || m["cached_price"] != float64(3) {
+		t.Fatalf("updated price fields wrong: currency=%v cached=%v", m["price_currency"], m["cached_price"])
 	}
 }
 

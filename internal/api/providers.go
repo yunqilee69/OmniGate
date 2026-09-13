@@ -264,6 +264,7 @@ type exportModelData struct {
 	Type          string   `json:"type"`
 	Protocol      string   `json:"protocol"`
 	InputPrice    float64  `json:"input_price"`
+	CachedPrice   float64  `json:"cached_price"`
 	OutputPrice   float64  `json:"output_price"`
 	PriceCurrency string   `json:"price_currency"`
 	KeyNames      []string `json:"key_names"` // 使用密钥名称而不是ID
@@ -319,6 +320,7 @@ func (s *Server) exportProviders(w http.ResponseWriter, _ *http.Request) {
 				Type:          m.Type,
 				Protocol:      m.Protocol,
 				InputPrice:    m.InputPrice,
+				CachedPrice:   m.CachedPrice,
 				OutputPrice:   m.OutputPrice,
 				PriceCurrency: m.PriceCurrency,
 				KeyNames:      keyNames,
@@ -403,6 +405,7 @@ func (s *Server) importProviders(w http.ResponseWriter, r *http.Request) {
 				Type:          md.Type,
 				Protocol:      md.Protocol,
 				InputPrice:    md.InputPrice,
+				CachedPrice:   md.CachedPrice,
 				OutputPrice:   md.OutputPrice,
 				PriceCurrency: md.PriceCurrency,
 				Status:        "active",

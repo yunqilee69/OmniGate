@@ -48,6 +48,7 @@ interface Model {
   api_path: string
   body_override: string
   input_price: number
+  cached_price: number
   output_price: number
   price_currency: string
   status: string
@@ -769,7 +770,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
       form.setFieldsValue({
         name: m.name, type: m.type || 'chat', protocol: m.protocol,
         api_path: m.api_path, body_override: m.body_override,
-        input_price: m.input_price, output_price: m.output_price,
+        input_price: m.input_price, cached_price: m.cached_price ?? 0, output_price: m.output_price,
         price_currency: m.price_currency || 'USD', key_ids: m.key_ids,
       })
     } else {
@@ -827,9 +828,16 @@ function ModelsTab({ provider, keys, models, onSaved }: {
             ) : <Tag key={id}>{name}</Tag>
           })
         }} />
-        <Table.Column title="输入/输出价(1M)" width={160} render={(_, m: Model) => {
+        <Table.Column title="价格(1M)" width={210} render={(_, m: Model) => {
           const sym = m.price_currency === 'CNY' ? '¥' : '$'
-          return `${sym}${m.input_price} / ${sym}${m.output_price}`
+          return (
+            <div>
+              <div>输入 {sym}{m.input_price} / 输出 {sym}{m.output_price}</div>
+              <div style={{ color: '#8c8c8c', fontSize: 12 }}>
+                缓存 {m.cached_price > 0 ? `${sym}${m.cached_price}` : '按输入价'}
+              </div>
+            </div>
+          )
         }} />
         <Table.Column title="状态" width={110} render={(_, m: Model) => modelStatusTag(m)} />
         <Table.Column title="操作" width={300} render={(_, m: Model) => (
@@ -948,24 +956,28 @@ function ModelsTab({ provider, keys, models, onSaved }: {
             extra="JSON 对象，合并到转换后的请求体；可覆盖 model、temperature 等字段">
             <Input.TextArea rows={3} placeholder='{"temperature": 0.5, "max_tokens": 2000}' />
           </Form.Item>
-          <Form.Item label="价格（每 1M token）">
-            <Space>
-              <Form.Item name="input_price" initialValue={0} noStyle>
-                <InputNumber min={0} placeholder="输入价" style={{ width: 160 }} />
+          <Form.Item label="价格（每 1M token）"
+            extra="三个单价共用右侧币种；缓存价指命中提示缓存（cache read）的输入 token 单价，0 表示按输入价计费">
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <Form.Item name="input_price" label="输入价" initialValue={0} style={{ marginBottom: 0, flex: 1, minWidth: 130 }}>
+                <InputNumber min={0} style={{ width: '100%' }} />
               </Form.Item>
-              <Form.Item name="output_price" initialValue={0} noStyle>
-                <InputNumber min={0} placeholder="输出价" style={{ width: 160 }} />
+              <Form.Item name="cached_price" label="缓存价" initialValue={0} style={{ marginBottom: 0, flex: 1, minWidth: 130 }}>
+                <InputNumber min={0} style={{ width: '100%' }} />
               </Form.Item>
-              <Form.Item name="price_currency" initialValue="USD" noStyle>
+              <Form.Item name="output_price" label="输出价" initialValue={0} style={{ marginBottom: 0, flex: 1, minWidth: 130 }}>
+                <InputNumber min={0} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="price_currency" label="币种" initialValue="USD" style={{ marginBottom: 0, minWidth: 130 }}>
                 <Select
-                  style={{ width: 120 }}
+                  style={{ width: '100%' }}
                   options={[
                     { value: 'USD', label: '$ 美元' },
                     { value: 'CNY', label: '¥ 人民币' },
                   ]}
                 />
               </Form.Item>
-            </Space>
+            </div>
           </Form.Item>
           <Form.Item name="key_ids" label="绑定密钥（多选）" extra="仅显示当前提供商下的密钥"
             rules={[{ required: true, message: '至少绑定一个密钥' }]}>

@@ -118,6 +118,7 @@ type Model struct {
 	ApiPath       string  `json:"api_path" gorm:"size:512;not null;default:''"`         // 自定义 API 路径覆盖
 	BodyOverride  string  `json:"body_override" gorm:"type:text;not null;default:''"`   // 请求体覆盖 JSON
 	InputPrice    float64 `json:"input_price" gorm:"not null;default:0"`                // 每 1M prompt token 价格
+	CachedPrice   float64 `json:"cached_price" gorm:"not null;default:0"`               // 每 1M 命中缓存输入 token 价格；<=0 回退输入价
 	OutputPrice   float64 `json:"output_price" gorm:"not null;default:0"`               // 每 1M completion token 价格
 	PriceCurrency string  `json:"price_currency" gorm:"size:8;not null;default:'USD'"`  // 价格币种：USD | CNY；计费时统一折算为 USD 入库
 	// （保留字段，熔断状态机已退役，不再被写入/读取——禁用粒度见 ModelKeyBan）
