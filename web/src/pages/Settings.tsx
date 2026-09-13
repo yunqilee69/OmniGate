@@ -7,6 +7,7 @@ import { formatCounts } from '../utils/format'
 type Settings = Record<string, any>
 type Model = { id: number; name: string; type: string; protocol: string; provider_id: number; status: string }
 type Provider = { id: number; name: string }
+type Route = { id: number; name: string; endpoint?: string }
 
 const LADDER_PRESETS = ['10s', '30s', '1m', '3m', '5m', '15m', '30m']
 
@@ -31,7 +32,6 @@ type Section =
   | 'retry'
   | 'stream'
   | 'capture'
-  | 'log'
   | 'affinity'
   | 'pricing'
   | 'fallback'
@@ -41,8 +41,7 @@ const sectionLabels: Record<Section, string> = {
   breaker: '熔断策略',
   retry: '重试配置',
   stream: '流式处理',
-  capture: '内容捕获',
-  log: '请求日志',
+  capture: '日志与捕获',
   affinity: '会话亲和',
   pricing: '计费设置',
   fallback: '兜底模型',
@@ -76,6 +75,7 @@ export default function Settings() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [models, setModels] = useState<Model[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
+  const [routes, setRoutes] = useState<Route[]>([])
   const [form] = Form.useForm()
   const [activeSection, setActiveSection] = useState<Section>('breaker')
   const captureOn = Form.useWatch('capture.enabled', form)
@@ -83,17 +83,19 @@ export default function Settings() {
 
   const load = async () => {
     try {
-      const [s, m, p] = await Promise.all([
+      const [s, m, p, rt] = await Promise.all([
         api('GET', '/api/settings'),
         api<Model[]>('GET', '/api/models'),
         api<Provider[]>('GET', '/api/providers'),
+        api<Route[]>('GET', '/api/routes'),
       ])
       setSettings(s)
       setModels(m)
       setProviders(p)
+      setRoutes(rt)
       form.setFieldsValue(s)
-    } catch (e: any) {
-      message.error(e.message)
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e))
     }
   }
   useEffect(() => { load() }, [])
@@ -182,7 +184,7 @@ export default function Settings() {
           }}>
             <div className="eyebrow">配置分组</div>
           </div>
-          {(['breaker', 'retry', 'stream', 'capture', 'log', 'affinity', 'pricing', 'fallback'] as Section[]).map(sec => (
+          {(['breaker', 'retry', 'stream', 'capture', 'affinity', 'pricing', 'fallback'] as Section[]).map(sec => (
             <div
               key={sec}
               onClick={() => setActiveSection(sec)}
@@ -298,7 +300,7 @@ export default function Settings() {
               </>
             )}
 
-            {/* 内容捕获 */}
+            {/* 日志与捕获 */}
             {activeSection === 'capture' && (
               <>
                 <Form.Item label={<span>内容捕获（默认关闭，仅元数据落库）</span>} name="capture.enabled" valuePropName="checked">
@@ -313,19 +315,20 @@ export default function Settings() {
                   />
                 )}
                 <Form.Item label={<span>捕获路由白名单（空 = 全部路由）</span>} name="capture.routes">
-                  <Select mode="tags" placeholder="模型别名" tokenSeparators={[',']} />
+                  <Select
+                    mode="tags"
+                    placeholder="模型别名"
+                    tokenSeparators={[',']}
+                    options={routes.map((r) => ({ value: r.name, label: r.name }))}
+                  />
                 </Form.Item>
                 <Form.Item label={<span>内容日志保留天数</span>} name="capture.retention_days">
                   <InputNumber min={1} max={365} style={{ width: '100%' }} />
                 </Form.Item>
+                <Form.Item label={<span>请求日志保留天数（0 = 永久）</span>} name="log.retention_days">
+                  <InputNumber min={0} max={3650} style={{ width: '100%' }} />
+                </Form.Item>
               </>
-            )}
-
-            {/* 请求日志 */}
-            {activeSection === 'log' && (
-              <Form.Item label={<span>请求日志保留天数（0 = 永久）</span>} name="log.retention_days">
-                <InputNumber min={0} max={3650} style={{ width: '100%' }} />
-              </Form.Item>
             )}
 
             {/* 会话亲和 */}
