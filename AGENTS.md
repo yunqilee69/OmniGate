@@ -75,7 +75,7 @@ web/                   # React 18 + Ant Design 5 + ECharts 前端
   │   ├── pages/       # Dashboard、Stats、Routes、Models、Keys、Logs、Settings
   │   ├── components/  # StatusTag、Chart、ModelTestModal、CurrencyToggle
   │   └── utils/       # format.ts（货币、字节、时长）
-  └── vite.config.ts   # 构建到 internal/webui/dist/，代理 /api、/v1 到 :17777
+  └── vite.config.ts   # 构建到 internal/webui/dist/，代理 /api、/v1 到 :27777
 docs/
   ├── design.md        # 实体模型、熔断器 FSM、重试策略、schema DDL
   ├── protocol-conversion.md  # OpenAI ↔ Anthropic ↔ Responses 字段映射
@@ -109,7 +109,7 @@ cd web && npm ci && npm run build
 ### 开发模式
 
 ```bash
-# 热重载：后端 :17777 + Vite 开发服务器 :17778
+# 热重载：后端 :27777 + Vite 开发服务器 :27778（与用户实例隔离，见下）
 ./start.sh
 
 # 生产模式：后端 :17777 内嵌前端
@@ -117,11 +117,13 @@ cd web && npm ci && npm run build
 ```
 
 **`start.sh` 行为**：
-- 构建后端，启动在 `:17777`
-- 启动 Vite 开发服务器在 `:17778`，管理台在 `/manage`，代理后端 `/api` 和 `/v1`
+- 构建后端，启动在 `:27777`（dev 端口与用户实例的 `:17777` 分开，可同时运行）
+- 启动 Vite 开发服务器在 `:27778`，管理台在 `/manage`，代理后端 `/api` 和 `/v1`
 - 两者日志输出到 `logs/backend.log` 和 `logs/frontend.log`
 - `Ctrl+C` 杀死整个进程树
 - 使用本地 `./data/omnigate.db` 和 `./config.yaml`
+- **dev 实例完全独立**：数据库在仓库内 `data/`（已 gitignore），`--listen` 固定 dev 端口，PID 文件随数据库落在 `data/omnigate.pid`，不读 `~/.omnigate/` 下的任何状态
+- 操作 dev 实例：`./omnigate stop --db ./data/omnigate.db`、`./omnigate status --db ./data/omnigate.db`
 
 ### 测试
 

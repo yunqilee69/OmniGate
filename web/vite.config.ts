@@ -6,10 +6,10 @@ export default defineConfig({
   base: '/manage/',
   server: {
     host: '127.0.0.1',
-    port: 17778,
+    port: 27778,
     proxy: {
-      '/api': 'http://127.0.0.1:17777',
-      '/v1': 'http://127.0.0.1:17777',
+      '/api': 'http://127.0.0.1:27777',
+      '/v1': 'http://127.0.0.1:27777',
     },
   },
   build: { outDir: '../internal/webui/dist', emptyOutDir: true },

@@ -11,8 +11,8 @@ LOG_DIR="$ROOT/logs"
 DATA_DIR="$ROOT/data"
 mkdir -p "$LOG_DIR" "$DATA_DIR"
 
-BACKEND_PORT=17777
-FRONTEND_PORT=17778
+BACKEND_PORT=27777
+FRONTEND_PORT=27778
 
 # ---------- 工具定位（兼容 nvm 安装的 node 与用户目录安装的 go） ----------
 find_go() {
@@ -130,10 +130,12 @@ if port_busy "$BACKEND_PORT"; then
   echo "[SKIP] 端口 $BACKEND_PORT 已被占用（后端可能已在运行）"
 else
   build_backend
-  # 开发模式:db / config 用仓库内本地路径(便于 rm -rf data/ 重置),
-  # 日志走 stdout 由 shell 重定向到 backend.log(避免双重写文件)。
-  echo "[..] 启动后端 (config: $ROOT/config.yaml)"
-  run_bg "$BIN" --config "$ROOT/config.yaml" --log stdout --foreground \
+  # 开发实例与用户实例完全隔离：数据库落在仓库内 data/（已 gitignore），
+  # 端口由 --listen 固定为 $BACKEND_PORT，不读 ~/.omnigate 下的任何状态。
+  # 后端通过 db 路径自动派生 PID 文件（data/omnigate.pid），与用户实例互不干扰。
+  echo "[..] 启动后端 (config: $ROOT/config.yaml, db: $DATA_DIR/omnigate.db, listen: 127.0.0.1:$BACKEND_PORT)"
+  run_bg "$BIN" --config "$ROOT/config.yaml" --db "$DATA_DIR/omnigate.db" \
+    --listen "127.0.0.1:$BACKEND_PORT" --log stdout --foreground \
     > "$LOG_DIR/backend.log" 2>&1
   wait_healthy "$BACKEND_PORT" "后端"
   # 启用 debug 模式

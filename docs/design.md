@@ -491,7 +491,7 @@ POST /api/maintenance/clear-stats             # body {"confirm":true}；清空�
 | 命令行 `--db` | 数据库路径 | `./data/omnigate.db` | 路径无法存进数据库自身 |
 | 命令行 `--config` | 配置文件路径 | `./config.yaml` | 文件不存在时自动生成含注释的默认模板 |
 | 命令行 `--listen` | 监听地址 | 空（不覆盖） | 调试用，优先级最高 |
-| `config.yaml` → `server.listen` | 监听地址 | `127.0.0.1:17777` | 启动即需确定；dev 模式下 vite 独立前端跑 17778 反代到本端口 |
+| `config.yaml` → `server.listen` | 监听地址 | `127.0.0.1:17777` | 启动即需确定；dev 模式下 `start.sh` 用 `--listen` 固定 27777，vite 独立前端跑 27778 反代到本端口 |
 | `config.yaml` → `admin.username` / `admin.password` | 管理账号密码 | `""`（关闭） | Web 登录 + /api 保护；同时可作 /v1 凭据：api_key = `base64(账号:密码)`（Basic/Bearer 皆可，RFC 7617）。用户名禁冒号；重启生效 |
 | `config.yaml` → `admin.api_key` | 网关调用密钥 | `""`（关闭） | /v1 专用：`Authorization: Bearer <api_key>`；不用于 Web 登录；仅设此项 = 本地免登录 + 远程带密钥 |
 

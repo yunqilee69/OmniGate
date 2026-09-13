@@ -157,6 +157,9 @@ func printHelp() {
 	fmt.Println("  --foreground        前台运行模式")
 	fmt.Println("  --version           显示版本信息")
 	fmt.Println()
+	fmt.Println("stop/status 命令标志:")
+	fmt.Println("  --db <path>         目标实例的数据库路径 (PID 文件与其同目录)")
+	fmt.Println()
 	fmt.Println("示例:")
 	fmt.Println("  omnigate              # 后台启动服务")
 	fmt.Println("  omnigate start        # 后台启动服务")
@@ -165,27 +168,30 @@ func printHelp() {
 	fmt.Println("  omnigate status       # 查看状态")
 }
 
-func pidFilePath() string {
-	return filepath.Join(appHomeDir(), "omnigate.pid")
+// pidFilePath 把 PID 文件放在数据库同目录：一个数据库即一个实例，
+// 开发实例(./data/omnigate.db)与用户实例(~/.omnigate/omnigate.db)因此可同时运行。
+func pidFilePath(dbPath string) string {
+	dir := filepath.Dir(dbPath)
+	if dir == "" || dir == "." {
+		return "omnigate.pid"
+	}
+	return filepath.Join(dir, "omnigate.pid")
 }
 
-func writePidFile(pid int) error {
-	pidFile := pidFilePath()
-	return os.WriteFile(pidFile, []byte(strconv.Itoa(pid)), 0o644)
+func writePidFile(pid int, dbPath string) error {
+	return os.WriteFile(pidFilePath(dbPath), []byte(strconv.Itoa(pid)), 0o644)
 }
 
-func readPidFile() (int, error) {
-	pidFile := pidFilePath()
-	data, err := os.ReadFile(pidFile)
+func readPidFile(dbPath string) (int, error) {
+	data, err := os.ReadFile(pidFilePath(dbPath))
 	if err != nil {
 		return 0, err
 	}
 	return strconv.Atoi(strings.TrimSpace(string(data)))
 }
 
-func removePidFile() error {
-	pidFile := pidFilePath()
-	return os.Remove(pidFile)
+func removePidFile(dbPath string) error {
+	return os.Remove(pidFilePath(dbPath))
 }
 
 // webAccessURL 根据启动层配置或 --listen 覆盖生成管理台 URL。
@@ -202,7 +208,12 @@ func webAccessURL(cfgPath, listenOverride string) string {
 }
 
 func stopCommand() {
-	pid, err := readPidFile()
+	fs := flag.NewFlagSet("stop", flag.ExitOnError)
+	dbPath := fs.String("db", filepath.Join(appHomeDir(), "omnigate.db"),
+		"SQLite database file path (selects which instance to stop)")
+	fs.Parse(os.Args[2:])
+
+	pid, err := readPidFile(expandHome(*dbPath))
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Println("✗ 服务未运行（找不到PID文件）")
@@ -214,7 +225,7 @@ func stopCommand() {
 
 	if !isProcessRunning(pid) {
 		fmt.Printf("✗ 进程 %d 不存在，清理PID文件\n", pid)
-		removePidFile()
+		removePidFile(expandHome(*dbPath))
 		os.Exit(1)
 	}
 
@@ -228,7 +239,7 @@ func stopCommand() {
 	for range 50 {
 		time.Sleep(100 * time.Millisecond)
 		if !isProcessRunning(pid) {
-			removePidFile()
+			removePidFile(expandHome(*dbPath))
 			fmt.Println("✓ 服务已停止")
 			return
 		}
@@ -238,7 +249,12 @@ func stopCommand() {
 }
 
 func statusCommand() {
-	pid, err := readPidFile()
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	dbPath := fs.String("db", filepath.Join(appHomeDir(), "omnigate.db"),
+		"SQLite database file path (selects which instance to inspect)")
+	fs.Parse(os.Args[2:])
+
+	pid, err := readPidFile(expandHome(*dbPath))
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Println("状态: 未运行")
@@ -259,7 +275,7 @@ func statusCommand() {
 		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	} else {
 		fmt.Println("状态: 未运行 (PID文件存在但进程不存在)")
-		removePidFile()
+		removePidFile(expandHome(*dbPath))
 		os.Exit(1)
 	}
 }
@@ -317,9 +333,20 @@ func startCommand() {
 		return
 	}
 
+	// PID 文件跟随数据库：先按 CLI > config.yaml 解析生效的 db 路径，
+	// 使开发实例与用户实例可同时运行且互不干扰。
+	boot, err := config.LoadBootstrap(expandHome(cfgPath))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load bootstrap config failed: %v\n", err)
+		os.Exit(1)
+	}
+	if !dbExplicit && boot.Database.Path != "" {
+		dbPath = expandHome(boot.Database.Path)
+	}
+
 	// 检查是否已有实例运行
 	if !isChild {
-		if pid, err := readPidFile(); err == nil && isProcessRunning(pid) {
+		if pid, err := readPidFile(dbPath); err == nil && isProcessRunning(pid) {
 			fmt.Printf("✗ 服务已在运行 (PID: %d)\n", pid)
 			fmt.Printf("  管理台: %s\n", webAccessURL(cfgPath, listenOverride))
 			fmt.Println("  使用 'omnigate status' 查看状态")
@@ -354,7 +381,7 @@ func startCommand() {
 		}
 
 		// 写入PID文件
-		if err := writePidFile(cmd.Process.Pid); err != nil {
+		if err := writePidFile(cmd.Process.Pid, dbPath); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠ 写入PID文件失败: %v\n", err)
 		}
 
@@ -374,14 +401,6 @@ func startCommand() {
 		return
 	}
 
-	// 子进程写入自己的PID
-	if isChild {
-		if err := writePidFile(os.Getpid()); err != nil {
-			slog.Warn("write pid file failed", "err", err)
-		}
-		// 确保退出时清理PID文件
-		defer removePidFile()
-	}
 	// 展开 ~ 到用户主目录（日志的流/关闭 token 不展开）
 	dbPath = expandHome(dbPath)
 	cfgPath = expandHome(cfgPath)
@@ -389,21 +408,20 @@ func startCommand() {
 		logPath = expandHome(logPath)
 	}
 
-	// 加载启动层配置（此时 logger 尚未初始化，错误直接写 stderr）
-	boot, err := config.LoadBootstrap(cfgPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "load bootstrap config failed: %v\n", err)
-		os.Exit(1)
-	}
-
 	// 四级优先级：CLI flag > 环境变量 > config.yaml > 代码默认值
 	// 环境变量已在 LoadBootstrap 内覆盖 config.yaml 对应字段
-	// 此处仅处理 CLI 未显式指定时，用 config/环境变量 的值回退
-	if !dbExplicit && boot.Database.Path != "" {
-		dbPath = expandHome(boot.Database.Path)
-	}
+	// db 路径已在上方解析（PID 文件位置依赖它），此处仅做日志路径回退
 	if !logExplicit && boot.Log.Path != "" {
 		logPath = expandHome(boot.Log.Path)
+	}
+
+	// 子进程写入自己的PID（db 路径已解析完毕，PID 文件与数据库同目录）
+	if isChild {
+		if err := writePidFile(os.Getpid(), dbPath); err != nil {
+			slog.Warn("write pid file failed", "err", err)
+		}
+		// 确保退出时清理PID文件
+		defer removePidFile(dbPath)
 	}
 
 	// 配置日志（失败时 fallback 到 stderr，不阻塞启动）
