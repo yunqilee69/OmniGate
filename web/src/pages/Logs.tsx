@@ -28,6 +28,7 @@ interface Log {
   retries: number
   created_at: number
 }
+type Provider = { id: number; name: string }
 
 const statusTag = (s: string) => {
   if (s === 'success') return <StatusTag tone="ok">成功</StatusTag>
@@ -53,7 +54,9 @@ export default function Logs() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [routes, setRoutes] = useState<{ id: number; name: string; endpoint?: string }[]>([])
+  const [providers, setProviders] = useState<string[]>([])
   const [filterRoute, setFilterRoute] = useState<string | undefined>()
+  const [filterProvider, setFilterProvider] = useState<string | undefined>()
   const [filterStatus, setFilterStatus] = useState<string | undefined>()
   const [filterEndpoint, setFilterEndpoint] = useState<string | undefined>()
   // null = 未手动圈定范围，默认"最近 7 天（含今天）"；每次 load 动态计算，保证刷新能看到最新日志
@@ -69,6 +72,7 @@ export default function Logs() {
       size: '50',
     })
     if (filterRoute) q.set('route', filterRoute)
+    if (filterProvider) q.set('provider', filterProvider)
     if (filterStatus) q.set('status', filterStatus)
     if (filterEndpoint) q.set('endpoint', filterEndpoint)
     try {
@@ -79,8 +83,13 @@ export default function Logs() {
       message.error(e instanceof Error ? e.message : String(e))
     }
   }
-  useEffect(() => { load(1) }, [filterRoute, filterStatus, filterEndpoint, range])
-  useEffect(() => { api<{ id: number; name: string; endpoint?: string }[]>('GET', '/api/routes').then(setRoutes).catch(() => {}) }, [])
+  useEffect(() => { load(1) }, [filterRoute, filterProvider, filterStatus, filterEndpoint, range])
+  useEffect(() => {
+    api<{ id: number; name: string; endpoint?: string }[]>('GET', '/api/routes').then(setRoutes).catch(() => {})
+    api<Provider[]>('GET', '/api/providers').then((ps) => {
+      setProviders(ps.map((p) => p.name).sort())
+    }).catch(() => {})
+  }, [])
 
   const confirmClearLogs = () => {
     Modal.confirm({
@@ -109,6 +118,11 @@ export default function Logs() {
           allowClear placeholder="路由" style={{ width: 180 }}
           value={filterRoute} onChange={setFilterRoute}
           options={routes.map((r) => ({ value: r.name, label: r.name }))}
+        />
+        <Select
+          allowClear placeholder="提供商" style={{ width: 140 }}
+          value={filterProvider} onChange={setFilterProvider}
+          options={providers.map((p) => ({ value: p, label: p }))}
         />
         <Select
           allowClear placeholder="路由类型" style={{ width: 140 }}

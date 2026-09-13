@@ -271,7 +271,7 @@ export default function Dashboard() {
             tableLayout="fixed"
             rowClassName={() => 'log-row-clean'}
           >
-            <Table.Column title="模型" dataIndex="dim" width={220} ellipsis />
+            <Table.Column title="提供商/模型" dataIndex="dim" width={220} ellipsis />
             <Table.Column title="请求数" dataIndex="total" width={90} sorter={(a, b) => a.total - b.total} render={(v) => formatNumber(+v)} />
             <Table.Column title="平均 Tokens" width={120} sorter={(a, b) => ((b.prompt_tokens + b.completion_tokens) / Math.max(b.total, 1)) - ((a.prompt_tokens + a.completion_tokens) / Math.max(a.total, 1))} render={(_, r) => formatNumber(Math.round((r.prompt_tokens + r.completion_tokens) / Math.max(r.total, 1)))} />
             <Table.Column title="总 Tokens" width={120} sorter={(a, b) => (b.prompt_tokens + b.completion_tokens) - (a.prompt_tokens + a.completion_tokens)} render={(_, r) => formatNumber(r.prompt_tokens + r.completion_tokens)} />

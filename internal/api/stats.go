@@ -298,20 +298,41 @@ func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom,
 		AvgTotal   float64 `json:"avg_total_ms"`
 		AvgRetries float64 `json:"avg_retries"`
 	}
-	q := `SELECT ` + col + ` AS dim,
-		SUM(total) AS total,
-		SUM(success) AS success,
-		SUM(errors) AS errors,
-		SUM(prompt_tokens) AS p_tok,
-		SUM(completion_tokens) AS c_tok,
-		SUM(cost) AS cost,
-		SUM(ttftb0) AS tb0, SUM(ttftb1) AS tb1, SUM(ttftb2) AS tb2, SUM(ttftb3) AS tb3, SUM(ttftb4) AS tb4,
-		SUM(ttftb5) AS tb5, SUM(ttftb6) AS tb6, SUM(ttftb7) AS tb7, SUM(ttftb8) AS tb8, SUM(ttftb9) AS tb9,
-		SUM(totalb0) AS ob0, SUM(totalb1) AS ob1, SUM(totalb2) AS ob2, SUM(totalb3) AS ob3, SUM(totalb4) AS ob4,
-		SUM(totalb5) AS ob5, SUM(totalb6) AS ob6, SUM(totalb7) AS ob7, SUM(totalb8) AS ob8, SUM(totalb9) AS ob9,
-		SUM(retries_sum) AS retries_sum
-		FROM request_log_daily WHERE day BETWEEN ? AND ?
-		GROUP BY dim ORDER BY total DESC LIMIT 200`
+	
+	// model 维度特殊处理：按 provider, model 分组后拼接为 provider/model
+	var q string
+	if col == "model" {
+		q = `SELECT provider || '/' || model AS dim,
+			SUM(total) AS total,
+			SUM(success) AS success,
+			SUM(errors) AS errors,
+			SUM(prompt_tokens) AS p_tok,
+			SUM(completion_tokens) AS c_tok,
+			SUM(cost) AS cost,
+			SUM(ttftb0) AS tb0, SUM(ttftb1) AS tb1, SUM(ttftb2) AS tb2, SUM(ttftb3) AS tb3, SUM(ttftb4) AS tb4,
+			SUM(ttftb5) AS tb5, SUM(ttftb6) AS tb6, SUM(ttftb7) AS tb7, SUM(ttftb8) AS tb8, SUM(ttftb9) AS tb9,
+			SUM(totalb0) AS ob0, SUM(totalb1) AS ob1, SUM(totalb2) AS ob2, SUM(totalb3) AS ob3, SUM(totalb4) AS ob4,
+			SUM(totalb5) AS ob5, SUM(totalb6) AS ob6, SUM(totalb7) AS ob7, SUM(totalb8) AS ob8, SUM(totalb9) AS ob9,
+			SUM(retries_sum) AS retries_sum
+			FROM request_log_daily WHERE day BETWEEN ? AND ?
+			GROUP BY provider, model ORDER BY total DESC LIMIT 200`
+	} else {
+		q = `SELECT ` + col + ` AS dim,
+			SUM(total) AS total,
+			SUM(success) AS success,
+			SUM(errors) AS errors,
+			SUM(prompt_tokens) AS p_tok,
+			SUM(completion_tokens) AS c_tok,
+			SUM(cost) AS cost,
+			SUM(ttftb0) AS tb0, SUM(ttftb1) AS tb1, SUM(ttftb2) AS tb2, SUM(ttftb3) AS tb3, SUM(ttftb4) AS tb4,
+			SUM(ttftb5) AS tb5, SUM(ttftb6) AS tb6, SUM(ttftb7) AS tb7, SUM(ttftb8) AS tb8, SUM(ttftb9) AS tb9,
+			SUM(totalb0) AS ob0, SUM(totalb1) AS ob1, SUM(totalb2) AS ob2, SUM(totalb3) AS ob3, SUM(totalb4) AS ob4,
+			SUM(totalb5) AS ob5, SUM(totalb6) AS ob6, SUM(totalb7) AS ob7, SUM(totalb8) AS ob8, SUM(totalb9) AS ob9,
+			SUM(retries_sum) AS retries_sum
+			FROM request_log_daily WHERE day BETWEEN ? AND ?
+			GROUP BY dim ORDER BY total DESC LIMIT 200`
+	}
+	
 	rows, err := s.store.DB.Raw(q, dayFrom, dayTo).Rows()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
@@ -347,17 +368,35 @@ func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom,
 
 // breakdownFromRaw rollup 不可用时的回退路径。
 func (s *Server) breakdownFromRaw(w http.ResponseWriter, col string, from, to int64, rate float64) {
-	rows, err := s.store.DB.Raw(`SELECT `+col+` AS dim, COUNT(*) AS total,
-		SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
-		SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
-		COALESCE(SUM(prompt_tokens),0) AS p_tokens,
-		COALESCE(SUM(completion_tokens),0) AS c_tokens,
-		COALESCE(SUM(cost),0) AS cost,
-		AVG(CASE WHEN status='success' THEN ttft_ms END) AS avg_ttft,
-		AVG(CASE WHEN status='success' THEN total_ms END) AS avg_total,
-		COALESCE(AVG(retries),0) AS avg_retries
-		FROM request_log WHERE created_at BETWEEN ? AND ?
-		GROUP BY dim ORDER BY total DESC LIMIT 200`, from, to).Rows()
+	// model 维度特殊处理：按 provider, model 分组后拼接为 provider/model
+	var q string
+	if col == "model" {
+		q = `SELECT provider || '/' || model AS dim, COUNT(*) AS total,
+			SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
+			COALESCE(SUM(prompt_tokens),0) AS p_tokens,
+			COALESCE(SUM(completion_tokens),0) AS c_tokens,
+			COALESCE(SUM(cost),0) AS cost,
+			AVG(CASE WHEN status='success' THEN ttft_ms END) AS avg_ttft,
+			AVG(CASE WHEN status='success' THEN total_ms END) AS avg_total,
+			COALESCE(AVG(retries),0) AS avg_retries
+			FROM request_log WHERE created_at BETWEEN ? AND ?
+			GROUP BY provider, model ORDER BY total DESC LIMIT 200`
+	} else {
+		q = `SELECT ` + col + ` AS dim, COUNT(*) AS total,
+			SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
+			COALESCE(SUM(prompt_tokens),0) AS p_tokens,
+			COALESCE(SUM(completion_tokens),0) AS c_tokens,
+			COALESCE(SUM(cost),0) AS cost,
+			AVG(CASE WHEN status='success' THEN ttft_ms END) AS avg_ttft,
+			AVG(CASE WHEN status='success' THEN total_ms END) AS avg_total,
+			COALESCE(AVG(retries),0) AS avg_retries
+			FROM request_log WHERE created_at BETWEEN ? AND ?
+			GROUP BY dim ORDER BY total DESC LIMIT 200`
+	}
+	
+	rows, err := s.store.DB.Raw(q, from, to).Rows()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
@@ -531,6 +570,10 @@ func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := q.Get("model"); v != "" {
 		conds = append(conds, "r.model = ?")
+		args = append(args, v)
+	}
+	if v := q.Get("provider"); v != "" {
+		conds = append(conds, "r.provider = ?")
 		args = append(args, v)
 	}
 	if v := q.Get("status"); v != "" {

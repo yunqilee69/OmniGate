@@ -715,6 +715,47 @@ func TestStatsErrorCodeBreakdown(t *testing.T) {
 	}
 }
 
+// TestLogsProviderFilterAndModelBreakdown 回归两处契约：
+//  1. /api/logs 支持 provider 过滤（前端日志页提供商筛选项依赖它）；
+//  2. dim=model 的分布按 (provider, model) 分组并以 provider/model 呈现，
+//     跨提供商的同名模型不得被合并成一行。
+func TestLogsProviderFilterAndModelBreakdown(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	rows := []store.RequestLog{
+		{RequestID: "p1-1", Route: "glm", Model: "glm-5", Provider: "Zhipu", Status: "success", CreatedAt: now},
+		{RequestID: "p1-2", Route: "glm", Model: "glm-5", Provider: "Zhipu", Status: "success", CreatedAt: now},
+		{RequestID: "p2-1", Route: "glm", Model: "glm-5", Provider: "Bailian", Status: "success", CreatedAt: now},
+	}
+	for i := range rows {
+		if err := st.DB.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	filtered := decodeObj(t, do(t, h, "GET", "/api/logs?provider=Zhipu", nil, "test-token"))
+	if filtered["total"].(float64) != 2 {
+		t.Fatalf("provider filter total = %v, want 2", filtered["total"])
+	}
+	for _, it := range filtered["items"].([]any) {
+		if got := it.(map[string]any)["provider"]; got != "Zhipu" {
+			t.Fatalf("filtered row provider = %v, want Zhipu", got)
+		}
+	}
+	if all := decodeObj(t, do(t, h, "GET", "/api/logs", nil, "test-token")); all["total"].(float64) != 3 {
+		t.Fatalf("unfiltered total = %v, want 3", all["total"])
+	}
+
+	got := map[string]float64{}
+	for _, it := range decodeArr(t, do(t, h, "GET", "/api/stats/breakdown?dim=model", nil, "test-token")) {
+		row := it.(map[string]any)
+		got[row["dim"].(string)] = row["total"].(float64)
+	}
+	if len(got) != 2 || got["Zhipu/glm-5"] != 2 || got["Bailian/glm-5"] != 1 {
+		t.Fatalf("model breakdown rows wrong: %v", got)
+	}
+}
+
 func TestStatsTimeseriesAvgTotal(t *testing.T) {
 	h, st, _ := newTestServerWithStore(t)
 	now := time.Now().Unix()
