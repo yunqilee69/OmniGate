@@ -93,8 +93,8 @@ export default function Logs() {
 
   const confirmClearLogs = () => {
     Modal.confirm({
-      title: '确认清空全部请求日志？',
-      content: '将删除全部请求日志明细与尝试日志，每日统计数据与内容日志保留。此操作不可恢复。',
+      title: '确认清空全部请求日志与内容记录？',
+      content: '将删除全部请求日志明细、尝试日志与内容捕获记录（请求/响应正文），每日统计数据保留。此操作不可恢复。',
       okText: '清空日志',
       okButtonProps: { danger: true },
       cancelText: '取消',

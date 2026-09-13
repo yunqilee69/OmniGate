@@ -194,7 +194,7 @@ func TestClearLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clear logs: %v", err)
 	}
-	if cleared["request_log"] != 2 || cleared["request_attempt"] != 1 {
+	if cleared["request_log"] != 2 || cleared["request_attempt"] != 1 || cleared["content_log"] != 1 {
 		t.Fatalf("cleared counts wrong: %v", cleared)
 	}
 	if _, ok := cleared["request_log_daily"]; ok {
@@ -209,7 +209,7 @@ func TestClearLogs(t *testing.T) {
 	if n := countRows(t, st, "request_log_daily"); n != 1 {
 		t.Fatalf("clear-logs must keep request_log_daily, remaining %d", n)
 	}
-	if n := countRows(t, st, "content_log"); n != 1 {
-		t.Fatalf("clear-logs must keep content_log, remaining %d", n)
+	if n := countRows(t, st, "content_log"); n != 0 {
+		t.Fatalf("clear-logs must clear content_log, remaining %d", n)
 	}
 }

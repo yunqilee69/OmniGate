@@ -658,6 +658,11 @@ func TestMaintenanceClearLogs(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := st.DB.Create(&store.ContentLog{
+		RequestID: "r0", Route: "r", RequestBody: "{}", ResponseBody: "{}", CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	rec := do(t, h, "POST", "/api/maintenance/clear-logs", nil, "test-token")
 	if rec.Code != http.StatusBadRequest {
@@ -670,13 +675,19 @@ func TestMaintenanceClearLogs(t *testing.T) {
 	}
 	obj := decodeObj(t, rec)
 	cleared := obj["cleared"].(map[string]any)
-	if cleared["request_log"].(float64) != 2 || cleared["request_attempt"].(float64) != 1 {
+	if cleared["request_log"].(float64) != 2 || cleared["request_attempt"].(float64) != 1 ||
+		cleared["content_log"].(float64) != 1 {
 		t.Fatalf("cleared counts wrong: %v", cleared)
 	}
 	var n int64
 	st.DB.Table("request_log_daily").Count(&n)
 	if n != 1 {
 		t.Fatalf("clear-logs must keep request_log_daily, remaining %d", n)
+	}
+	var cl int64
+	st.DB.Table("content_log").Count(&cl)
+	if cl != 0 {
+		t.Fatalf("clear-logs must clear content_log, remaining %d", cl)
 	}
 }
 
