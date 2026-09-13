@@ -17,6 +17,7 @@ type keyStats struct {
 type healthModel struct {
 	ID            int64     `json:"id"`
 	ProviderID    int64     `json:"provider_id"`
+	Provider      string    `json:"provider"`
 	Name          string    `json:"name"`
 	Status        string    `json:"status"`
 	FailCount     int       `json:"fail_count"`
@@ -135,11 +136,20 @@ func (s *Server) getHealth(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
+	providerNameByID := map[int64]string{}
+	var providers []store.Provider
+	if err := s.store.DB.Find(&providers).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	for _, p := range providers {
+		providerNameByID[p.ID] = p.Name
+	}
 	resp := healthResp{Now: now, Models: []healthModel{}, Keys: []healthKey{}}
 	for _, m := range models {
 		status, reason, keyStats, failCount, cooldownUntil, lastError := effectiveModelStatus(now, keysByModel[m.ID], banByModel[m.ID])
 		resp.Models = append(resp.Models, healthModel{
-			ID: m.ID, ProviderID: m.ProviderID, Name: m.Name, Status: status,
+			ID: m.ID, ProviderID: m.ProviderID, Provider: providerNameByID[m.ProviderID], Name: m.Name, Status: status,
 			FailCount: failCount, CooldownUntil: cooldownUntil,
 			DisableReason: reason, LastError: lastError,
 			KeyStats: &keyStats,

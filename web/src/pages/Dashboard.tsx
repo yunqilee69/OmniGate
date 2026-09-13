@@ -29,6 +29,7 @@ interface KeyStats {
 interface HealthModel {
   id: number
   name: string
+  provider: string
   status: string
   fail_count: number
   cooldown_until: number
@@ -297,7 +298,8 @@ export default function Dashboard() {
         ) : (
           <Table<HealthModel> rowKey="id" dataSource={models} pagination={false} size="small" tableLayout="fixed">
             <Table.Column title="ID" dataIndex="id" width={60} />
-            <Table.Column title="模型" dataIndex="name" width={160} />
+            <Table.Column title="提供商/模型" dataIndex="name" width={200} ellipsis
+              render={(_, m: HealthModel) => (m.provider ? `${m.provider}/${m.name}` : m.name)} />
             <Table.Column 
               title="密钥状态" 
               width={140}
