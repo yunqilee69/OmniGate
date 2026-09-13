@@ -298,7 +298,7 @@ func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom,
 		AvgTotal   float64 `json:"avg_total_ms"`
 		AvgRetries float64 `json:"avg_retries"`
 	}
-	
+
 	// model 维度特殊处理：按 provider, model 分组后拼接为 provider/model
 	var q string
 	if col == "model" {
@@ -332,7 +332,7 @@ func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom,
 			FROM request_log_daily WHERE day BETWEEN ? AND ?
 			GROUP BY dim ORDER BY total DESC LIMIT 200`
 	}
-	
+
 	rows, err := s.store.DB.Raw(q, dayFrom, dayTo).Rows()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
@@ -395,7 +395,7 @@ func (s *Server) breakdownFromRaw(w http.ResponseWriter, col string, from, to in
 			FROM request_log WHERE created_at BETWEEN ? AND ?
 			GROUP BY dim ORDER BY total DESC LIMIT 200`
 	}
-	
+
 	rows, err := s.store.DB.Raw(q, from, to).Rows()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
