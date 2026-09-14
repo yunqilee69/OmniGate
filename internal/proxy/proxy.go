@@ -51,6 +51,26 @@ func New(db *store.Store, rt *config.RuntimeManager) *Handler {
 	}
 }
 
+// HTTPClientFor 按提供商 ProxyURL 构造一次性 HTTP 客户端。
+// 空或非法 ProxyURL 直连。timeout<=0 时 Client.Timeout 为零值，即无客户端级超时。
+func HTTPClientFor(p store.Provider, timeout time.Duration) *http.Client {
+	c := &http.Client{Timeout: timeout}
+	if p.ProxyURL == "" {
+		return c
+	}
+	proxyURL, err := url.Parse(p.ProxyURL)
+	if err != nil {
+		return c
+	}
+	c.Transport = &http.Transport{
+		Proxy:               http.ProxyURL(proxyURL),
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 16,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	return c
+}
+
 // clientForProvider 返回按提供商配置了代理的 HTTP 客户端。
 // ProxyURL 支持以下格式：
 //   - http://host:port
@@ -74,16 +94,7 @@ func (h *Handler) clientForProvider(providerID int64) *http.Client {
 
 	client := h.client
 	if p.ProxyURL != "" {
-		proxyURL, err := url.Parse(p.ProxyURL)
-		if err == nil {
-			transport := &http.Transport{
-				Proxy:               http.ProxyURL(proxyURL),
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 16,
-				IdleConnTimeout:     90 * time.Second,
-			}
-			client = &http.Client{Transport: transport}
-		}
+		client = HTTPClientFor(p, 0)
 	}
 
 	actual, _ := h.clientCache.LoadOrStore(providerID, client)

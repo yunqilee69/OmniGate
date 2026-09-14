@@ -2,10 +2,12 @@ package proxy_test
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudomni/omnigate/internal/config"
 	"github.com/cloudomni/omnigate/internal/proxy"
@@ -181,5 +183,115 @@ func TestProbeModelKeys(t *testing.T) {
 
 	if _, found := proxy.ProbeModelKeys(st, rtm, 99999); found {
 		t.Fatal("missing model should not be found")
+	}
+}
+
+func seedNamedProbeTarget(t *testing.T, st *store.Store, p store.Provider) int64 {
+	t.Helper()
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-probe", Status: "active"}
+	if err := st.DB.Create(&k).Error; err != nil {
+		t.Fatal(err)
+	}
+	m := store.Model{ProviderID: p.ID, Name: "m-probe", Protocol: "completions"}
+	if err := st.DB.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	return m.ID
+}
+
+// TestProbeModelUsesProviderProxy 探测请求必须走提供商 ProxyURL，不能直连上游。
+func TestProbeModelUsesProviderProxy(t *testing.T) {
+	st, rtm := newProbeStack(t)
+
+	upHit := make(chan struct{}, 1)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case upHit <- struct{}{}:
+		default:
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"pong"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer up.Close()
+
+	proxyHit := make(chan struct{}, 1)
+	px := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case proxyHit <- struct{}{}:
+		default:
+		}
+		if r.Method != http.MethodConnect {
+			upReq, err := http.NewRequest(r.Method, r.URL.String(), r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			upReq.Header = r.Header.Clone()
+			resp, err := http.DefaultClient.Do(upReq)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			defer resp.Body.Close()
+			for k, vs := range resp.Header {
+				for _, v := range vs {
+					w.Header().Add(k, v)
+				}
+			}
+			w.WriteHeader(resp.StatusCode)
+			_, _ = io.Copy(w, resp.Body)
+			return
+		}
+		http.Error(w, "CONNECT not used for http upstream", http.StatusBadRequest)
+	}))
+	defer px.Close()
+
+	mid := seedNamedProbeTarget(t, st, store.Provider{
+		Name: "probe-via-proxy", BaseURL: up.URL, ProxyURL: px.URL, TimeoutMs: 5000,
+	})
+	res := proxy.ProbeModel(st, rtm, mid)
+	if !res.Ok {
+		t.Fatalf("probe via proxy should succeed: %+v", res)
+	}
+	select {
+	case <-proxyHit:
+	default:
+		t.Fatal("probe request never hit provider proxy")
+	}
+	select {
+	case <-upHit:
+	default:
+		t.Fatal("probe request never reached upstream through proxy")
+	}
+}
+
+// TestProbeModelHonorsProviderTimeout 探测超时用提供商 timeout_ms，不再硬顶 15s。
+func TestProbeModelHonorsProviderTimeout(t *testing.T) {
+	st, rtm := newProbeStack(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"pong"}}]}`)
+	}))
+	defer up.Close()
+
+	mid := seedNamedProbeTarget(t, st, store.Provider{
+		Name: "probe-timeout", BaseURL: up.URL, TimeoutMs: 100,
+	})
+	start := time.Now()
+	res := proxy.ProbeModel(st, rtm, mid)
+	elapsed := time.Since(start)
+	if res.Ok {
+		t.Fatalf("slow upstream should timeout: %+v", res)
+	}
+	if res.ErrCode != "conn" {
+		t.Fatalf("timeout should surface as conn: %+v", res)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("probe waited %s, should honor 100ms timeout", elapsed)
 	}
 }

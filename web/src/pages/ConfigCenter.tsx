@@ -619,6 +619,7 @@ function ProviderCardItem({ p, active, modelCount, keyCount, onClick, onSaved, o
         <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.base_url}</div>
         <div style={{ marginTop: 2 }}>
           {modelCount} 模型 · {keyCount} 密钥
+          {p.proxy_url ? <Tag style={{ marginLeft: 8 }}>代理</Tag> : null}
           {p.header_profile ? <Tag style={{ marginLeft: 8 }}>请求头设置</Tag> : null}
         </div>
       </div>

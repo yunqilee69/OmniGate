@@ -16,7 +16,6 @@ import (
 )
 
 const (
-	probeTimeoutCapMs = 15000
 	probeMaxTokens    = 16
 	probeBodyLimit    = 4 << 10
 	probeMessageTrunc = 300
@@ -218,10 +217,7 @@ func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) Pro
 	if timeoutMs <= 0 {
 		timeoutMs = 120000
 	}
-	if timeoutMs > probeTimeoutCapMs {
-		timeoutMs = probeTimeoutCapMs
-	}
-	client := &http.Client{Timeout: time.Duration(timeoutMs) * time.Millisecond}
+	client := HTTPClientFor(provider, time.Duration(timeoutMs)*time.Millisecond)
 	httpReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		res.ErrCode, res.Message = "bad_url", err.Error()
