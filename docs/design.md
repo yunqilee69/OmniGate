@@ -16,7 +16,7 @@
 | # | 能力 | 说明 |
 |---|------|------|
 | G1 | OpenAI 兼容代理 | 对下游暴露 `/v1/chat/completions`（含 SSE 流式）、`/v1/embeddings`、`/v1/rerank`、`/v1/images/generations`、`/v1/models` |
-| G2 | 逻辑模型路由 | 请求一个逻辑 modelId（如 `glm`），按权重分发到 N 个真实模型（可以是不同模型） |
+| G2 | 逻辑模型路由 | 请求一个逻辑 modelId（如 `glm`），按权重分发到 N 个真实模型（可以是不同模型）；也可直接用 `provider/model` 锁定物理模型 |
 | G3 | 提供商/密钥/模型实体 | Provider → ApiKey；模型与密钥多对多绑定（须同提供商）；模型内 key 轮询 |
 | G4 | 阶梯熔断 | 模型级：30s → 1m → 3m，连续 3 次禁用并明确报错；key 级：401/403 立即禁用，429 短冷却 |
 | G5 | 多维统计 | 次数 / token / 首字延迟 / 总耗时 / 费用，按 路由·模型·提供商·key·状态·时间 聚合 |
@@ -262,16 +262,22 @@ CREATE INDEX idx_cl_time ON content_log(created_at);
 ### 4.1 选择算法（单次尝试的决策链）
 
 ```
-① 解析 route → 候选 route_target 列表
+① 解析客户端 model：
+   先按逻辑路由名精确匹配 Route.Name；
+   未命中且含 `/` 时，仅用第一个 `/` 拆成 provider/model，直达该提供商下的物理模型
+   （模型名可含后续 `/`，如 openrouter/anthropic/claude-3.5-sonnet）。
+   直达快照只有这一个目标，无加权、无路由级兜底。
+
+② 命中后取候选 route_target 列表（直达路径即该物理模型）
    过滤：model.status == disabled 或 处于 cooldown 的目标 → 权重临时归零
    加权随机：r = rand(Σw)，顺序累减命中
    （LiteLLM simple-shuffle 同款语义；全被过滤 → §5.4 全不可用流程）
 
-② 命中 model → 取其绑定的候选 api_key 列表（模型与密钥须同提供商）
+③ 命中 model → 取其绑定的候选 api_key 列表（模型与密钥须同提供商）
    过滤：disabled / cooldown 中的 key
 
-③ 模型内 key 轮询（每模型独立原子游标）
-   游标环扫一周全跳过 → 该模型视为不可用，回到①换目标
+④ 模型内 key 轮询（每模型独立原子游标）
+   游标环扫一周全跳过 → 该模型视为不可用，回到②换目标
 ```
 
 进行中请求持有当前配置快照（atomic.Pointer 加载的不可变视图），配置热替换不影响已开始的请求。

@@ -21,7 +21,7 @@ OmniGate 把多个模型提供方聚合成一个 OpenAI 兼容端点,提供加�
 | **混合协议端点** | `/v1/messages`(Anthropic 原生)、`/v1/responses`(OpenAI Responses 原生) — 直通模式,零损耗;跨协议转换时 `thinking` 以 `reasoning_content` 透出 |
 | **MCP 工具网关** | `/v1/mcp/<路由>` 聚合多个 MCP Server:一个会话集中管理,tools/list 自动汇总,tools/call 按工具路由到后端;对话测试页可把 MCP 工具直接注入模型自动调用 |
 | **虚拟密钥** | 消费者凭证体系:RPM 限流、美元预算与用量累计、按路由授权;管理台独立用量统计与预算重置 |
-| **两级路由** | 逻辑模型 → 加权选模型 → 模型内 key 轮询。请求 `glm`,落地到背后任意真实模型 |
+| **两级路由** | 逻辑模型 → 加权选模型 → 模型内 key 轮询。请求 `glm`,落地到背后任意真实模型;也可直接用 `provider/model` 锁定某个物理模型 |
 | **阶梯熔断** | 模型级 30s → 1m → 3m;key 级 401/403 立即禁用,429 短冷却;禁用粒度精确到 模型×key 组合 |
 | **多维统计** | 次数 / token / 首字延迟 / 总耗时 / 费用,按 路由·模型·提供方·key·虚拟密钥·状态·时间 聚合;含逐次尝试明细(request_attempt) |
 | **对话测试页** | 管理台内置 Playground:对话(流式 Markdown 渲染、思考过程折叠面板)、Embedding、Rerank、生图 四面板,挂载 MCP 路由即自动工具调用 |
@@ -153,6 +153,24 @@ curl http://localhost:17777/v1/messages \
 ```
 
 > **协议转换详情**: 完整的字段映射、已知限制和最佳实践见 [`docs/protocol-conversion.md`](./docs/protocol-conversion.md)。
+
+### provider/model 直达
+
+除逻辑路由名外,`model` 参数还支持 `提供商名/模型名` 直接锁定某个物理模型,跳过加权选择:
+
+```bash
+# 直达 OpenRouter 下的 claude-3.5-sonnet(绕开路由池,固定用该模型)
+curl http://localhost:17777/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer vk-xxxx" \
+  -d '{"model": "openrouter/anthropic/claude-3.5-sonnet", "messages": [{"role": "user", "content": "Hi"}]}'
+```
+
+规则:
+- **仅在逻辑路由未命中时生效**:若存在与输入完全同名的路由(如 `zhipu/glm-4.6` 也是路由名),仍然走路由池
+- **仅用第一个 `/` 分割**:模型名里可以再含 `/`(`openrouter/anthropic/claude-3.5-sonnet` 中 provider=`openrouter`、model=`anthropic/claude-3.5-sonnet`);提供商名本身不能含 `/`
+- **`/v1/models`** 会把所有物理模型以 `provider/model` 形式一并列出,可直接使用
+- **虚拟密钥授权**:配置了授权路由的受限密钥无法用该语法绕过白名单;未受限密钥(空授权)不受影响
 
 ---
 

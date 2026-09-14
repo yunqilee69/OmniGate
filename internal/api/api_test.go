@@ -267,11 +267,18 @@ func TestM1FullFlow(t *testing.T) {
 		t.Fatalf("target weight lost: %v", t0)
 	}
 
-	// --- /v1/models 返回逻辑路由名（Basic 凭据走代理面通道） ---
+	// --- /v1/models 返回逻辑路由名 + provider/model 直达 id ---
 	v1 := decodeObj(t, doV1(t, h, "GET", "/v1/models", nil, vkToken))
 	v1data := v1["data"].([]any)
-	if len(v1data) != 1 || v1data[0].(map[string]any)["id"] != "glm-pool" {
-		t.Fatalf("v1/models wrong: %v", v1)
+	v1ids := map[string]bool{}
+	for _, item := range v1data {
+		v1ids[item.(map[string]any)["id"].(string)] = true
+	}
+	if !v1ids["glm-pool"] {
+		t.Fatalf("v1/models missing logical route: %v", v1)
+	}
+	if !v1ids["zhipu/glm-4.6"] || !v1ids["zhipu/glm-4.5-flash"] {
+		t.Fatalf("v1/models missing provider/model ids: %v", v1)
 	}
 
 	// --- 运行层配置：读取默认 → 热更新 → 校验 ---
@@ -345,6 +352,41 @@ func TestM1FullFlow(t *testing.T) {
 		t.Fatalf("expect 404 after cascade delete, got %d", rec.Code)
 	}
 }
+
+func TestV1ModelsIncludesProviderModelIDs(t *testing.T) {
+	h, st, vkToken := newTestServerWithStore(t)
+	p := store.Provider{Name: "openrouter", BaseURL: "https://openrouter.ai/api/v1"}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	m := store.Model{ProviderID: p.ID, Name: "anthropic/claude-3.5-sonnet"}
+	if err := st.DB.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	rt := store.Route{Name: "glm-pool"}
+	if err := st.DB.Create(&rt).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	v1 := decodeObj(t, doV1(t, h, "GET", "/v1/models", nil, vkToken))
+	data, _ := v1["data"].([]any)
+	ids := map[string]bool{}
+	for _, item := range data {
+		row, _ := item.(map[string]any)
+		id, _ := row["id"].(string)
+		ids[id] = true
+		if row["owned_by"] != "omnigate" {
+			t.Fatalf("owned_by = %v", row["owned_by"])
+		}
+	}
+	if !ids["glm-pool"] {
+		t.Fatalf("missing logical route: %v", ids)
+	}
+	if !ids["openrouter/anthropic/claude-3.5-sonnet"] {
+		t.Fatalf("missing provider/model id: %v", ids)
+	}
+}
+
 
 func TestProviderProxyURLIsPersisted(t *testing.T) {
 	h, st, _ := newTestServerWithStore(t)

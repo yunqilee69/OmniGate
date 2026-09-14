@@ -26,7 +26,7 @@
 - `/manage/*` — 管理台页面（`GET /` 302 到 `/manage/`）
 
 **三级路由**：
-1. **逻辑路由**（如 `glm`）→ 加权选择物理模型
+1. **逻辑路由**（如 `glm`）→ 加权选择物理模型；`provider/model`（仅第一个 `/`）在路由未命中时直达对应物理模型
 2. **物理模型** → 模型内绑定密钥的轮询
 3. **熔断器**在选择前过滤不可用的模型/密钥
 
@@ -44,9 +44,9 @@
 ### 数据流
 
 **请求路径**：
-1. 客户端 → `/v1/chat/completions`，逻辑 `model="glm"`
+1. 客户端 → `/v1/chat/completions`，逻辑 `model="glm"` 或直达 `model="zhipu/glm-4.6"`
 2. `proxy.Handler` 加载配置快照（`atomic.Pointer`）
-3. `router.Selector.Pick()` → 加权模型 + 轮询密钥
+3. `router.Selector.Pick()` → 加权模型 + 轮询密钥（直达路径只有一个目标）
 4. 适配器将请求转换为上游协议（OpenAI/Anthropic/Responses）
 5. 使用提供商专用 `http.Client` 转发（每提供商缓存，支持代理）
 6. SSE 流式或完整响应 → 客户端

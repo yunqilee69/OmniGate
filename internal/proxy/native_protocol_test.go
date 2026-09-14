@@ -136,3 +136,68 @@ func TestNativeResponsesFiltersProtocol(t *testing.T) {
 		t.Fatalf("responses upstream hits=%d, want 1", responsesHits)
 	}
 }
+
+func TestNativeMessagesProviderModelRewritesBody(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	var gotModel string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer up.Close()
+
+	p := store.Provider{Name: "anthropic", BaseURL: up.URL + "/v1", TimeoutMs: 3000}
+	st.DB.Create(&p)
+	m := store.Model{ProviderID: p.ID, Name: "claude-sonnet-4", Protocol: "messages", Type: "chat"}
+	st.DB.Create(&m)
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-ant", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
+
+	body, _ := json.Marshal(map[string]any{
+		"model":      "anthropic/claude-sonnet-4",
+		"max_tokens": 16,
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+vkToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	resp := rec.Result()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d — %s", resp.StatusCode, readAll(t, resp))
+	}
+	if gotModel != "claude-sonnet-4" {
+		t.Fatalf("upstream model = %q, want physical name", gotModel)
+	}
+}
+
+func TestNativeMessagesProviderModelEndpointMismatch(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	p := store.Provider{Name: "zhipu", BaseURL: "http://127.0.0.1:1"}
+	st.DB.Create(&p)
+	m := store.Model{ProviderID: p.ID, Name: "glm-4.6", Protocol: "completions", Type: "chat"}
+	st.DB.Create(&m)
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-z", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
+
+	body, _ := json.Marshal(map[string]any{
+		"model":      "zhipu/glm-4.6",
+		"max_tokens": 16,
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+vkToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("completions model on /v1/messages: status=%d, want 400", rec.Code)
+	}
+}
+

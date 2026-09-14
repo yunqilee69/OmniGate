@@ -157,6 +157,8 @@ func TestCheckVKRouteAccess(t *testing.T) {
 		{"empty array allows all", "[]", 1, nil},
 		{"route in list", `[1,2]`, 1, nil},
 		{"route not in list", `[1,2]`, 3, ErrVKAccessDenied},
+		{"direct model denied when allowlist set", `[1,2]`, 0, ErrVKAccessDenied},
+		{"direct model allowed when unrestricted", "[]", 0, nil},
 	}
 
 	for _, tt := range tests {

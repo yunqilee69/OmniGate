@@ -472,7 +472,7 @@ func (s *Server) deleteRoute(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
-// v1Models 代理面模型列表：返回全部逻辑路由名（OpenAI 兼容格式）。
+// v1Models 代理面模型列表：逻辑路由名 + provider/model 直达 id（OpenAI 兼容格式）。
 // 与 /v1 其他端点一样经虚拟密钥鉴权（VKAuthMiddleware 挂在 /v1 路由组上）。
 func (s *Server) v1Models(w http.ResponseWriter, _ *http.Request) {
 	var routes []store.Route
@@ -480,9 +480,31 @@ func (s *Server) v1Models(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
+	seen := make(map[string]bool, len(routes))
 	data := make([]map[string]string, 0, len(routes))
 	for _, rt := range routes {
 		data = append(data, map[string]string{"id": rt.Name, "object": "model", "owned_by": "omnigate"})
+		seen[rt.Name] = true
+	}
+	var rows []struct {
+		ProviderName string
+		ModelName    string
+	}
+	if err := s.store.DB.Table("model").
+		Select("provider.name AS provider_name, model.name AS model_name").
+		Joins("JOIN provider ON provider.id = model.provider_id").
+		Order("provider.id, model.id").
+		Scan(&rows).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	for _, row := range rows {
+		id := row.ProviderName + "/" + row.ModelName
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		data = append(data, map[string]string{"id": id, "object": "model", "owned_by": "omnigate"})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }

@@ -334,6 +334,46 @@ func TestTypedEndpointValidation(t *testing.T) {
 	}
 }
 
+func TestEmbeddingsProviderModelDirect(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	var gotModel string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1]}],"usage":{"prompt_tokens":1,"total_tokens":1}}`)
+	}))
+	defer up.Close()
+
+	p := store.Provider{Name: "openai", BaseURL: up.URL + "/v1"}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	m := store.Model{ProviderID: p.ID, Name: "text-embedding-3-small", Type: "embedding"}
+	if err := st.DB.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-e", Status: "active"}
+	if err := st.DB.Create(&k).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	resp := typedPost(t, h, "/v1/embeddings", map[string]any{
+		"model": "openai/text-embedding-3-small", "input": "hello",
+	}, vkToken)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d — %s", resp.StatusCode, readAll(t, resp))
+	}
+	if gotModel != "text-embedding-3-small" {
+		t.Fatalf("upstream model = %q", gotModel)
+	}
+}
+
+
 // 编译期保证 Handler 实现 api.TypedPlane。
 var _ interface {
 	Embeddings(w http.ResponseWriter, r *http.Request)

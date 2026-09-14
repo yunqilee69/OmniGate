@@ -493,6 +493,104 @@ func TestUnknownRoute(t *testing.T) {
 	}
 }
 
+func TestProviderModelDirect(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	var gotModel string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer up.Close()
+
+	p := store.Provider{Name: "openrouter", BaseURL: up.URL, TimeoutMs: 3000}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	m := store.Model{ProviderID: p.ID, Name: "anthropic/claude-3.5-sonnet", Protocol: "completions"}
+	if err := st.DB.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-or", Status: "active"}
+	if err := st.DB.Create(&k).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	body := map[string]any{
+		"model":    "openrouter/anthropic/claude-3.5-sonnet",
+		"messages": []map[string]any{{"role": "user", "content": "hello"}},
+	}
+	resp := postWithAuth(t, h, body, vkToken)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d — %s", resp.StatusCode, readAll(t, resp))
+	}
+	if gotModel != "anthropic/claude-3.5-sonnet" {
+		t.Fatalf("upstream model = %q, want physical name", gotModel)
+	}
+	ls := logs(t, st)
+	if len(ls) != 1 {
+		t.Fatalf("logs = %d", len(ls))
+	}
+	if ls[0].Route != "openrouter/anthropic/claude-3.5-sonnet" {
+		t.Fatalf("log route = %q", ls[0].Route)
+	}
+	if ls[0].Model != "anthropic/claude-3.5-sonnet" || ls[0].Provider != "openrouter" {
+		t.Fatalf("log model/provider = %s/%s", ls[0].Provider, ls[0].Model)
+	}
+}
+
+func TestProviderModelDirectUnknown(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	p := store.Provider{Name: "zhipu", BaseURL: "http://127.0.0.1:1"}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	body := chatBody(false)
+	body["model"] = "zhipu/nope"
+	resp := postWithAuth(t, h, body, vkToken)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expect 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestProviderModelDirectDeniedByVKAllowlist(t *testing.T) {
+	st, h, _ := newTestStackWithVK(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer up.Close()
+	p := store.Provider{Name: "zhipu", BaseURL: up.URL, TimeoutMs: 3000}
+	st.DB.Create(&p)
+	m := store.Model{ProviderID: p.ID, Name: "glm-4.6"}
+	st.DB.Create(&m)
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-z", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
+
+	denied := &store.VirtualKey{
+		Name:          "restricted",
+		Status:        "active",
+		AllowedRoutes: `[99999]`,
+	}
+	if err := st.CreateVirtualKey(denied); err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{
+		"model":    "zhipu/glm-4.6",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}
+	resp := postWithAuth(t, h, body, denied.KeyValue)
+	if resp.StatusCode != 403 {
+		t.Fatalf("restricted VK must not bypass allowlist via provider/model, got %d — %s", resp.StatusCode, readAll(t, resp))
+	}
+}
+
+
 func setupSingleUpstream(t *testing.T, st *store.Store, url string, timeoutMs int) {
 	t.Helper()
 	p := store.Provider{Name: "zhipu", BaseURL: url, TimeoutMs: timeoutMs}

@@ -3,6 +3,7 @@ package router
 
 import (
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,12 +65,16 @@ func NewSelector(db *store.Store) *Selector {
 func (s *Selector) LoadSnapshot(routeName string) (*Snapshot, bool, error) {
 	var route store.Route
 	err := s.db.DB.Preload("Targets").Where("name = ?", routeName).First(&route).Error
-	if err == gorm.ErrRecordNotFound {
-		return nil, false, nil
+	if err == nil {
+		return s.snapshotFromRoute(route)
 	}
-	if err != nil {
+	if err != gorm.ErrRecordNotFound {
 		return nil, false, err
 	}
+	return s.loadSnapshotByProviderModel(routeName)
+}
+
+func (s *Selector) snapshotFromRoute(route store.Route) (*Snapshot, bool, error) {
 	snap := &Snapshot{
 		Route: route, Targets: route.Targets,
 		Models: map[int64]store.Model{}, Providers: map[int64]store.Provider{},
@@ -105,6 +110,60 @@ func (s *Selector) LoadSnapshot(routeName string) (*Snapshot, bool, error) {
 		snap.Providers[p.ID] = p
 	}
 	if err := loadModelKeys(s.db.DB, snap, modelIDs); err != nil {
+		return nil, false, err
+	}
+	return snap, true, nil
+}
+
+// splitProviderModel 仅用第一个 / 分割：提供商名不含 /，模型名可以含 /（openrouter 风格）。
+func splitProviderModel(name string) (provider, model string, ok bool) {
+	i := strings.IndexByte(name, '/')
+	if i <= 0 || i == len(name)-1 {
+		return "", "", false
+	}
+	return name[:i], name[i+1:], true
+}
+
+// loadSnapshotByProviderModel 在逻辑路由未命中时，按 provider/model 直达物理模型。
+// 合成快照 Route.ID=0（VK 白名单按路由 ID 校验时，受限 key 会拒绝直达）；
+// Endpoint 跟模型 protocol 对齐，供 /v1/messages|/v1/responses 做端点匹配。
+func (s *Selector) loadSnapshotByProviderModel(name string) (*Snapshot, bool, error) {
+	provName, modelName, ok := splitProviderModel(name)
+	if !ok {
+		return nil, false, nil
+	}
+	var p store.Provider
+	err := s.db.DB.Where("name = ?", provName).First(&p).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var m store.Model
+	err = s.db.DB.Where("provider_id = ? AND name = ?", p.ID, modelName).First(&m).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if m.Type == "" {
+		m.Type = "chat"
+	}
+	endpoint := m.Protocol
+	if endpoint == "" {
+		endpoint = "completions"
+	}
+	snap := &Snapshot{
+		Route:     store.Route{Name: name, Endpoint: endpoint},
+		Models:    map[int64]store.Model{m.ID: m},
+		Providers: map[int64]store.Provider{p.ID: p},
+		Keys:      map[int64][]store.ApiKey{},
+		Weights:   map[int64]int{m.ID: 1},
+		Targets:   []store.RouteTarget{{ModelID: m.ID, Weight: 1}},
+	}
+	if err := loadModelKeys(s.db.DB, snap, []int64{m.ID}); err != nil {
 		return nil, false, err
 	}
 	return snap, true, nil

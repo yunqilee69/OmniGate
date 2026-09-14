@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bytes"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -30,5 +32,29 @@ func TestStreamTPS(t *testing.T) {
 				t.Errorf("streamTPS() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRewriteJSONModel(t *testing.T) {
+	in := []byte(`{"model":"anthropic/claude-sonnet-4","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+	out := rewriteJSONModel(in, "claude-sonnet-4")
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["model"] != "claude-sonnet-4" {
+		t.Fatalf("model = %v", got["model"])
+	}
+	if got["max_tokens"].(float64) != 16 {
+		t.Fatalf("max_tokens dropped: %v", got["max_tokens"])
+	}
+
+	same := rewriteJSONModel(in, "anthropic/claude-sonnet-4")
+	if !bytes.Equal(same, in) {
+		t.Fatalf("identical model should keep original bytes")
+	}
+	bad := []byte("not-json")
+	if got := rewriteJSONModel(bad, "x"); !bytes.Equal(got, bad) {
+		t.Fatalf("invalid json should pass through")
 	}
 }

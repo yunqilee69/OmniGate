@@ -1375,6 +1375,7 @@ func (h *Handler) nativeAttempt(w http.ResponseWriter, r *http.Request, reqBody 
 	})
 	defer deadline.Stop()
 	stopDeadline := func() { deadline.Stop() }
+	reqBody = rewriteJSONModel(reqBody, att.Model.Name)
 
 	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, adapter.endpoint(att.Provider.BaseURL, &att.Model), bytes.NewReader(reqBody))
 	if err != nil {
@@ -1553,4 +1554,22 @@ func (h *Handler) nativeStreamResponse(w http.ResponseWriter, resp *http.Respons
 			return res
 		}
 	}
+}
+
+// rewriteJSONModel 仅替换顶层 model 字段，其余 JSON 结构保持语义不变。
+// 解析失败时原样返回，避免把非法体再破坏一次。
+func rewriteJSONModel(body []byte, model string) []byte {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body
+	}
+	if cur, _ := req["model"].(string); cur == model {
+		return body
+	}
+	req["model"] = model
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body
+	}
+	return out
 }

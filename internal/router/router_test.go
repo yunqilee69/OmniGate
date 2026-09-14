@@ -309,3 +309,129 @@ func TestPickTransfersSharedKeyAcrossModels(t *testing.T) {
 		t.Fatal("both combos tried: pick must fail")
 	}
 }
+
+func TestLoadSnapshotProviderModel(t *testing.T) {
+	st := newStore(t)
+	p := store.Provider{Name: "openrouter", BaseURL: "https://example.com"}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	m := store.Model{ProviderID: p.ID, Name: "anthropic/claude-3.5-sonnet", Status: "active", Protocol: "completions"}
+	if err := st.DB.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-or", Status: "active"}
+	if err := st.DB.Create(&k).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	sel := NewSelector(st)
+	snap, found, err := sel.LoadSnapshot("openrouter/anthropic/claude-3.5-sonnet")
+	if err != nil || !found {
+		t.Fatalf("load provider/model: found=%v err=%v", found, err)
+	}
+	if snap.Route.ID != 0 {
+		t.Fatalf("direct snapshot Route.ID = %d, want 0", snap.Route.ID)
+	}
+	if snap.Route.Endpoint != "completions" {
+		t.Fatalf("direct snapshot endpoint = %q, want completions", snap.Route.Endpoint)
+	}
+	if len(snap.Targets) != 1 || snap.Targets[0].ModelID != m.ID {
+		t.Fatalf("targets = %+v, want model %d", snap.Targets, m.ID)
+	}
+	att, ok := sel.Pick(snap, map[Combo]bool{}, time.Now(), 0)
+	if !ok {
+		t.Fatal("pick must succeed on direct snapshot")
+	}
+	if att.Model.ID != m.ID || att.Provider.ID != p.ID || att.Key.ID != k.ID {
+		t.Fatalf("pick landed on model=%d provider=%d key=%d", att.Model.ID, att.Provider.ID, att.Key.ID)
+	}
+	if att.Model.Name != "anthropic/claude-3.5-sonnet" {
+		t.Fatalf("physical model name = %q", att.Model.Name)
+	}
+}
+
+func TestLoadSnapshotPrefersExactRouteOverProviderModel(t *testing.T) {
+	st := newStore(t)
+	p := store.Provider{Name: "zhipu", BaseURL: "https://example.com"}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	phys := store.Model{ProviderID: p.ID, Name: "glm-4.6", Status: "active"}
+	alias := store.Model{ProviderID: p.ID, Name: "glm-flash", Status: "active"}
+	if err := st.DB.Create(&phys).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&alias).Error; err != nil {
+		t.Fatal(err)
+	}
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-z", Status: "active"}
+	if err := st.DB.Create(&k).Error; err != nil {
+		t.Fatal(err)
+	}
+	st.DB.Create(&store.ModelKey{ModelID: phys.ID, KeyID: k.ID})
+	st.DB.Create(&store.ModelKey{ModelID: alias.ID, KeyID: k.ID})
+	rt := store.Route{Name: "zhipu/glm-4.6"}
+	if err := st.DB.Create(&rt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: alias.ID, Weight: 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	sel := NewSelector(st)
+	snap, found, err := sel.LoadSnapshot("zhipu/glm-4.6")
+	if err != nil || !found {
+		t.Fatalf("load: found=%v err=%v", found, err)
+	}
+	if snap.Route.ID != rt.ID {
+		t.Fatalf("must prefer exact route id=%d, got %d", rt.ID, snap.Route.ID)
+	}
+	att, ok := sel.Pick(snap, map[Combo]bool{}, time.Now(), 0)
+	if !ok || att.Model.ID != alias.ID {
+		t.Fatalf("exact route should pick alias model, ok=%v model=%s", ok, att.Model.Name)
+	}
+}
+
+func TestLoadSnapshotProviderModelUnknown(t *testing.T) {
+	st := newStore(t)
+	p := store.Provider{Name: "zhipu", BaseURL: "https://example.com"}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	sel := NewSelector(st)
+	for _, name := range []string{"zhipu/nope", "missing/glm-4.6", "zhipu/", "/glm-4.6"} {
+		if _, found, err := sel.LoadSnapshot(name); found || err != nil {
+			t.Fatalf("%s: found=%v err=%v, want not-found", name, found, err)
+		}
+	}
+}
+
+func TestLoadSnapshotProviderModelNativeEndpoint(t *testing.T) {
+	st := newStore(t)
+	p := store.Provider{Name: "anthropic", BaseURL: "https://api.anthropic.com"}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	m := store.Model{ProviderID: p.ID, Name: "claude-sonnet-4", Status: "active", Protocol: "messages", Type: "chat"}
+	if err := st.DB.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-ant", Status: "active"}
+	if err := st.DB.Create(&k).Error; err != nil {
+		t.Fatal(err)
+	}
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
+
+	sel := NewSelector(st)
+	snap, found, err := sel.LoadSnapshot("anthropic/claude-sonnet-4")
+	if err != nil || !found {
+		t.Fatalf("load: found=%v err=%v", found, err)
+	}
+	if snap.Route.Endpoint != "messages" {
+		t.Fatalf("endpoint = %q, want messages", snap.Route.Endpoint)
+	}
+}
