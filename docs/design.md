@@ -341,6 +341,14 @@ HTTP 503
 
 明确告诉调用方**哪个后端因什么不可用**，而非无限挂起或含糊报错。记一条 `error_code=all_backends` 的请求日志。
 
+**路由级兜底模型**（`route.fallback_model_id`，路由 CRUD 各自配置，无全局开关）：
+
+- 触发条件：**首跳即无可用候选**（入口时该路由所有目标模型与密钥组合均不可用）。重试耗尽（`all_retries_failed`）不触发——那是后端质量问题，兜底会掩盖真实错误
+- 兜底模型必须与路由端点协议/类型匹配（创建/更新时校验，口径同目标模型）；mcp 路由不支持兜底
+- 兜底为单次尝试、不重试：`PickFallback` 取该模型第一个未禁用组合（不走加权/轮询），失败就地终结
+- 命中时记 `request_log.is_fallback=1`（统计口径：fallback_count / fallback_rate 不变）
+- 历史全局配置 `fallback.enabled` / `fallback.<endpoint>_model_id` 已删除，启动时清库不做迁移
+
 ---
 
 ## 6. 请求生命周期与重试

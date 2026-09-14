@@ -30,10 +30,7 @@ type Runtime struct {
 	AffinityEnabled         bool
 	AffinityHeaders         []string
 	AffinityTTL             time.Duration
-	USDCNY                  float64
-	FallbackEnabled         bool
-	// FallbackModels 端点类型 → 兜底模型 ID（0 表示未配置）；键见 fallbackEndpoints。
-	FallbackModels map[string]int64
+	USDCNY float64
 	DebugStreamLog bool
 	// HeaderProfilePresets 客户端模拟请求头模板库（JSON 数组文本，命名组供提供商表单一键插入）。
 	HeaderProfilePresets string
@@ -182,9 +179,6 @@ func headerProfilePresets(v any) error {
 	return nil
 }
 
-// fallbackEndpoints 兜底模型支持的端点类型，与路由 endpoint / 请求日志口径一致。
-var fallbackEndpoints = []string{"completions", "messages", "responses", "embedding", "rerank"}
-
 var settingSpecs = []settingSpec{
 	{key: "breaker.cooldown_ladder", def: `["30s","1m","3m"]`, validate: durArr},
 	{key: "breaker.disable_threshold", def: `3`, validate: intRange(1, 100)},
@@ -201,12 +195,6 @@ var settingSpecs = []settingSpec{
 	{key: "affinity.headers", def: `["X-Session-ID"]`, validate: headerArr},
 	{key: "affinity.ttl_s", def: `3600`, validate: intRange(10, 86400)},
 	{key: "pricing.usd_cny", def: `7.25`, validate: floatRange(0.01, 10000)},
-	{key: "fallback.enabled", def: `false`, validate: boolVal},
-	{key: "fallback.completions_model_id", def: `0`, validate: intRange(0, 9999999)},
-	{key: "fallback.messages_model_id", def: `0`, validate: intRange(0, 9999999)},
-	{key: "fallback.responses_model_id", def: `0`, validate: intRange(0, 9999999)},
-	{key: "fallback.embedding_model_id", def: `0`, validate: intRange(0, 9999999)},
-	{key: "fallback.rerank_model_id", def: `0`, validate: intRange(0, 9999999)},
 	{key: "header_profile_presets", def: `[]`, validate: headerProfilePresets},
 	{key: "debug.stream_log", def: `false`, validate: boolVal},
 }
@@ -256,7 +244,9 @@ func (m *RuntimeManager) migrateSettings() error {
 	if err := m.migrateAffinityHeader(); err != nil {
 		return err
 	}
-	return m.migrateFallbackModel()
+	// 兜底配置已下沉到路由级（routes.fallback_model_id），历史全局键（fallback.model_id /
+	// fallback.enabled / fallback.<endpoint>_model_id）就地删除，不做迁移。
+	return m.db.DB.Where("key LIKE ?", "fallback.%").Delete(&store.AppConfig{}).Error
 }
 
 // migrateAffinityHeader 把单值 affinity.header 迁移为候选头数组 affinity.headers。
@@ -293,56 +283,6 @@ func (m *RuntimeManager) migrateAffinityHeader() error {
 	return nil
 }
 
-// migrateFallbackModel 把旧的单值 fallback.model_id 迁移为 completions 端点的兜底模型。
-// 旧字段从未被快照读取（历史缺陷），仅当配置过非零值且新键仍为默认 0 时才搬运。
-func (m *RuntimeManager) migrateFallbackModel() error {
-	var old store.AppConfig
-	err := m.db.DB.Where("key = ?", "fallback.model_id").First(&old).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("check fallback.model_id: %w", err)
-	}
-
-	var id int64
-	if err := json.Unmarshal([]byte(old.Value), &id); err != nil {
-		id = 0
-	}
-	if id > 0 {
-		var cur store.AppConfig
-		curErr := m.db.DB.Where("key = ?", "fallback.completions_model_id").First(&cur).Error
-		switch {
-		case curErr == nil:
-			if cur.Value == "0" || cur.Value == "" {
-				if err := m.setFallbackModelID(id); err != nil {
-					return err
-				}
-			}
-		case errors.Is(curErr, gorm.ErrRecordNotFound):
-			if err := m.setFallbackModelID(id); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("check fallback.completions_model_id: %w", curErr)
-		}
-	}
-
-	if err := m.db.DB.Delete(&old).Error; err != nil {
-		return fmt.Errorf("delete old fallback.model_id: %w", err)
-	}
-	return nil
-}
-
-func (m *RuntimeManager) setFallbackModelID(id int64) error {
-	val, _ := json.Marshal(id)
-	if err := m.db.DB.Where("key = ?", "fallback.completions_model_id").
-		Assign(store.AppConfig{Key: "fallback.completions_model_id", Value: string(val)}).
-		FirstOrCreate(&store.AppConfig{}).Error; err != nil {
-		return fmt.Errorf("migrate to fallback.completions_model_id: %w", err)
-	}
-	return nil
-}
 
 // rawMap 返回「默认值 + DB 行覆盖」合并后的原始 JSON 串。
 func (m *RuntimeManager) rawMap() (map[string]string, error) {
@@ -415,11 +355,6 @@ func (m *RuntimeManager) rebuild() error {
 		rate = 7.25
 	}
 	rt.USDCNY = rate
-	rt.FallbackEnabled = getBool("fallback.enabled")
-	rt.FallbackModels = make(map[string]int64, len(fallbackEndpoints))
-	for _, ep := range fallbackEndpoints {
-		rt.FallbackModels[ep] = int64(getInt("fallback." + ep + "_model_id"))
-	}
 	rt.DebugStreamLog = getBool("debug.stream_log")
 	rt.HeaderProfilePresets = raw["header_profile_presets"]
 

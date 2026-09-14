@@ -342,24 +342,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		att, ok := h.sel.Pick(snap, tried, time.Now(), affModel)
 		if !ok {
 			if attempt == 0 {
-				if rt.FallbackEnabled {
-					if fbID := rt.FallbackModels["completions"]; fbID > 0 {
-						fallbackAtt, fallbackOK := h.sel.PickFallback(fbID, time.Now())
-						if fallbackOK {
-							slog.Info("using fallback model", "route", routeName, "fallback_model_id", fbID)
-							attemptStart := time.Now()
-							res := h.attempt(w, r, req, fallbackAtt, isStream, rt)
-							res.latencyMs = time.Since(attemptStart).Milliseconds()
-							h.record(res, rt)
-							attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
-							h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
-								res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
-							cw.setAttempt(res)
-							h.maybeCapture(requestID, routeName, cw)
-							return
-						}
-						slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", fbID)
+				if fbID := snap.Route.FallbackModelID; fbID > 0 {
+					fallbackAtt, fallbackOK := h.sel.PickFallback(fbID, time.Now())
+					if fallbackOK {
+						slog.Info("using fallback model", "route", routeName, "fallback_model_id", fbID)
+						attemptStart := time.Now()
+						res := h.attempt(w, r, req, fallbackAtt, isStream, rt)
+						res.latencyMs = time.Since(attemptStart).Milliseconds()
+						h.record(res, rt)
+						attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
+						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
+						cw.setAttempt(res)
+						h.maybeCapture(requestID, routeName, cw)
+						return
 					}
+					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", fbID)
 				}
 
 				// all_backends 错误：没有可用模型，仍需记录尝试
@@ -1245,26 +1243,30 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 		att, ok := h.sel.Pick(snap, tried, time.Now(), 0)
 		if !ok {
 			if attempt == 0 {
-				if rt.FallbackEnabled {
-					if fbID := rt.FallbackModels[endpoint]; fbID > 0 {
-						fallbackAtt, fallbackOK := h.sel.PickFallback(fbID, time.Now())
-						if fallbackOK {
-							slog.Info("using fallback model", "route", routeName, "fallback_model_id", fbID, "endpoint", endpoint)
-							attemptStart := time.Now()
-							res := h.nativeAttempt(w, r, body, fallbackAtt, isStream, rt, endpoint)
-							res.latencyMs = time.Since(attemptStart).Milliseconds()
-							h.record(res, rt)
-							attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
-							h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
-								res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
-							cw.setAttempt(res)
-							h.maybeCapture(requestID, routeName, cw)
-							return
-						}
-						slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", fbID, "endpoint", endpoint)
+				// 首跳即无可用候选：先尝试路由级兜底模型，再落 all_backends 503。
+				if fbID := snap.Route.FallbackModelID; fbID > 0 {
+					fallbackAtt, fallbackOK := h.sel.PickFallback(fbID, time.Now())
+					if fallbackOK {
+						slog.Info("using fallback model", "route", routeName, "fallback_model_id", fbID, "endpoint", endpoint)
+						attemptStart := time.Now()
+						res := h.nativeAttempt(w, r, body, fallbackAtt, isStream, rt, endpoint)
+						res.latencyMs = time.Since(attemptStart).Milliseconds()
+						h.record(res, rt)
+						attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
+						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
+						cw.setAttempt(res)
+						h.maybeCapture(requestID, routeName, cw)
+						return
 					}
+					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", fbID, "endpoint", endpoint)
 				}
 
+				// all_backends 错误：没有可用模型，仍需记录尝试
+				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
+					status:  "error",
+					errCode: "all_backends",
+				}, start))
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
 					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
@@ -1273,7 +1275,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 				h.maybeCapture(requestID, routeName, cw)
 				return
 			}
-			// all_backends 错误：没有可用模型，仍需记录尝试
+			// 转移途中无候选：记录后跳出，由尾部统一收尾。
 			attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
 				status:  "error",
 				errCode: "all_backends",

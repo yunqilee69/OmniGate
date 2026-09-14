@@ -160,12 +160,15 @@ type Route struct {
 	ID           int64            `json:"id" gorm:"primaryKey;autoIncrement"`
 	Name         string           `json:"name" gorm:"size:191;not null;uniqueIndex"`
 	Endpoint     string           `json:"endpoint" gorm:"size:32;not null;default:completions"` // completions | messages | responses | mcp
-	BodyOverride string           `json:"body_override" gorm:"type:text;not null;default:''"`   // 请求体覆盖 JSON
-	Remark       string           `json:"remark" gorm:"size:1024;not null;default:''"`
-	Targets      []RouteTarget    `json:"targets" gorm:"foreignKey:RouteID"`
-	McpTargets   []RouteMcpTarget `json:"mcp_targets" gorm:"foreignKey:RouteID"`
-	CreatedAt    int64            `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt    int64            `json:"updated_at" gorm:"autoUpdateTime"`
+	// FallbackModelID 路由级兜底模型：目标后端全灭时单次尝试的目标（0=不兜底）。
+	// 协议/类型必须匹配 Endpoint（创建/更新时校验），触发条件与统计口径不变（is_fallback）。
+	FallbackModelID int64            `json:"fallback_model_id" gorm:"not null;default:0"`
+	BodyOverride    string           `json:"body_override" gorm:"type:text;not null;default:''"` // 请求体覆盖 JSON
+	Remark          string           `json:"remark" gorm:"size:1024;not null;default:''"`
+	Targets         []RouteTarget    `json:"targets" gorm:"foreignKey:RouteID"`
+	McpTargets      []RouteMcpTarget `json:"mcp_targets" gorm:"foreignKey:RouteID"`
+	CreatedAt       int64            `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt       int64            `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 // RouteTarget 路由目标：路由 → 真实模型（带权重）。

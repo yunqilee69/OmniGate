@@ -26,6 +26,7 @@ interface Route {
   id: number
   name: string
   endpoint: string
+  fallback_model_id: number
   remark: string
   targets: Target[]
   mcp_targets: McpTarget[]
@@ -83,12 +84,13 @@ export default function RoutesPage() {
       form.setFieldsValue({
         name: r.name,
         endpoint: r.endpoint,
+        fallback_model_id: r.fallback_model_id || 0,
         remark: r.remark,
         targets: r.targets?.map((t) => ({ model_id: t.model_id, weight: t.weight })) || [],
         mcp_targets: r.mcp_targets?.map((t) => ({ mcp_backend_id: t.mcp_backend_id })) || [],
       })
     } else if (ep) {
-      form.setFieldsValue({ endpoint: ep })
+      form.setFieldsValue({ endpoint: ep, fallback_model_id: 0 })
     }
     setOpen(true)
   }
@@ -99,6 +101,7 @@ export default function RoutesPage() {
     const payload: any = {
       name: values.name,
       endpoint: values.endpoint,
+      fallback_model_id: endpoint === 'mcp' ? 0 : Number(values.fallback_model_id || 0),
       remark: values.remark,
     }
     if (endpoint === 'mcp') {
@@ -177,6 +180,9 @@ export default function RoutesPage() {
             <Table.Column title="流量占比" width={200} render={(_, t: Target) => (
               <Progress percent={targetPercent(t, r.targets)} size="small" />
             )} />
+            {r.fallback_model_id ? (
+              <Table.Column title="兜底模型" width={260} render={() => modelName(r.fallback_model_id)} />
+            ) : null}
           </Table>
         )
       },
@@ -244,7 +250,43 @@ export default function RoutesPage() {
               }))}
             />
           </Form.Item>
-          <Form.Item name="remark" label="备注"><Input /></Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.endpoint !== cur.endpoint || prev.fallback_model_id !== cur.fallback_model_id}>
+            {({ getFieldValue }) => {
+              const ep = getFieldValue('endpoint') || 'completions'
+              if (ep === 'mcp') return null
+              // 与后端 validateFallbackModel 同口径：协议匹配端点 + 类型匹配端点家族。
+              const requiredProtocol = ep === 'messages' ? 'messages' : ep === 'responses' ? 'responses' : 'completions'
+              const fbModels = models.filter((m) => {
+                if (m.protocol !== requiredProtocol) return false
+                if (ep === 'embedding') return m.type === 'embedding'
+                if (ep === 'rerank') return m.type === 'rerank'
+                if (ep === 'image') return m.type === 'image'
+                return m.type === 'chat'
+              })
+              const fbOptions = fbModels.map((m) => ({ value: m.id, label: modelName(m.id) }))
+              // 已配置的模型可能因禁用/协议变更不再匹配，补进选项保证回显名称而非裸 ID。
+              const current = getFieldValue('fallback_model_id')
+              if (current && current !== 0 && !fbOptions.some((o) => o.value === current)) {
+                const m = models.find((x) => x.id === current)
+                if (m) fbOptions.unshift({ value: m.id, label: modelName(m.id) })
+              }
+              return (
+                <Form.Item
+                  name="fallback_model_id"
+                  initialValue={0}
+                  label="兜底模型"
+                  extra="该路由所有目标模型与密钥都不可用时，自动使用此模型（单次尝试，不重试）"
+                >
+                  <Select
+                    showSearch
+                    optionFilterProp="label"
+                    filterOption={(input, option) => (option?.label ?? '').toLowerCase().includes(input.toLowerCase())}
+                    options={[{ value: 0, label: '不启用' }, ...fbOptions]}
+                  />
+                </Form.Item>
+              )
+            }}
+          </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.endpoint !== cur.endpoint}>
             {({ getFieldValue }) => {
               const endpoint = getFieldValue('endpoint') || 'completions'

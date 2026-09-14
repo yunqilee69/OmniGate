@@ -27,14 +27,13 @@ const numericRanges: Record<string, [number, number]> = {
   'affinity.ttl_s': [10, 86400],
 }
 
-type Section = 
+type Section =
   | 'breaker'
   | 'retry'
   | 'stream'
   | 'capture'
   | 'affinity'
   | 'pricing'
-  | 'fallback'
   | 'danger'
 
 const sectionLabels: Record<Section, string> = {
@@ -44,18 +43,9 @@ const sectionLabels: Record<Section, string> = {
   capture: '日志与捕获',
   affinity: '会话亲和',
   pricing: '计费设置',
-  fallback: '兜底模型',
   danger: '危险操作',
 }
 
-// FALLBACK_SLOTS 每个端点类型各配一个兜底模型；match 与后端选择口径保持一致。
-const FALLBACK_SLOTS: { key: string; label: string; path: string; match: (m: Model) => boolean }[] = [
-  { key: 'fallback.completions_model_id', label: 'Chat Completions 兜底', path: '/v1/chat/completions', match: (m) => (m.type || 'chat') === 'chat' },
-  { key: 'fallback.messages_model_id', label: 'Messages 兜底', path: '/v1/messages', match: (m) => (m.type || 'chat') === 'chat' && m.protocol === 'messages' },
-  { key: 'fallback.responses_model_id', label: 'Responses 兜底', path: '/v1/responses', match: (m) => (m.type || 'chat') === 'chat' && m.protocol === 'responses' },
-  { key: 'fallback.embedding_model_id', label: 'Embedding 兜底', path: '/v1/embeddings', match: (m) => m.type === 'embedding' },
-  { key: 'fallback.rerank_model_id', label: 'Rerank 兜底', path: '/v1/rerank', match: (m) => m.type === 'rerank' },
-]
 // Select mode="tags" 键入的标签始终是字符串，而默认值自服务端反序列化为数字；
 // 统一归一化为 100-599 的整数，避免后端 intArr 因字符串元素拒绝保存。
 const normalizeStatuses = (v: unknown): number[] => {
@@ -79,7 +69,6 @@ export default function Settings() {
   const [form] = Form.useForm()
   const [activeSection, setActiveSection] = useState<Section>('breaker')
   const captureOn = Form.useWatch('capture.enabled', form)
-  const fallbackOn = Form.useWatch('fallback.enabled', form)
 
   const load = async () => {
     try {
@@ -101,14 +90,6 @@ export default function Settings() {
   useEffect(() => { load() }, [])
 
   const providerName = (id: number) => providers.find((p) => p.id === id)?.name ?? `#${id}`
-
-  const fallbackOptions = (slot: typeof FALLBACK_SLOTS[number]) =>
-    models
-      .filter((m) => m.status === 'active' && slot.match(m))
-      .map((m) => ({
-        value: m.id,
-        label: `${providerName(m.provider_id)} / ${m.name} (${m.type || 'chat'} / ${m.protocol})`,
-      }))
 
   const save = async () => {
     const values = await form.validateFields()
@@ -184,7 +165,7 @@ export default function Settings() {
           }}>
             <div className="eyebrow">配置分组</div>
           </div>
-          {(['breaker', 'retry', 'stream', 'capture', 'affinity', 'pricing', 'fallback'] as Section[]).map(sec => (
+          {(['breaker', 'retry', 'stream', 'capture', 'affinity', 'pricing'] as Section[]).map(sec => (
             <div
               key={sec}
               onClick={() => setActiveSection(sec)}
@@ -358,58 +339,6 @@ export default function Settings() {
               >
                 <InputNumber min={0.01} max={10000} step={0.01} style={{ width: '100%' }} />
               </Form.Item>
-            )}
-
-            {/* 兜底模型 */}
-            {activeSection === 'fallback' && (
-              <>
-                <Form.Item
-                  label={<span>启用兜底模型<HelpIcon tip="当路由配置的所有模型失败时，自动使用兜底模型（单次尝试，不重试）" /></span>}
-                  name="fallback.enabled"
-                  valuePropName="checked"
-                >
-                  <Switch />
-                </Form.Item>
-                {fallbackOn && (
-                  <>
-                    <Alert
-                      type="info"
-                      showIcon
-                      style={{ marginBottom: 16 }}
-                      message="每种端点可各配一个兜底模型：路由下所有模型与密钥都不可用时，使用对应端点的兜底模型（单次尝试，不重试）。建议选择稳定且成本较低的模型。"
-                    />
-                    {FALLBACK_SLOTS.map((slot) => {
-                      const options = fallbackOptions(slot)
-                      // 已配置的模型可能因禁用/协议变更不再匹配，补进选项保证回显名称而非裸 ID。
-                      const current = form.getFieldValue(slot.key)
-                      if (current && !options.some((o) => o.value === current)) {
-                        const m = models.find((x) => x.id === current)
-                        if (m) options.unshift({
-                          value: m.id,
-                          label: `${providerName(m.provider_id)} / ${m.name} (${m.type || 'chat'} / ${m.protocol})`,
-                        })
-                      }
-                      return (
-                        <Form.Item
-                          key={slot.key}
-                          label={<span>{slot.label}<HelpIcon tip={`${slot.path} 请求全部失败时使用此模型（需有可用密钥）`} /></span>}
-                          name={slot.key}
-                        >
-                          <Select
-                            showSearch
-                            placeholder={options.length === 0 ? '无可用的匹配模型' : `选择 ${slot.path} 的兜底模型`}
-                            optionFilterProp="label"
-                            filterOption={(input, option) =>
-                              (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
-                            }
-                            options={[{ value: 0, label: '不启用' }, ...options]}
-                          />
-                        </Form.Item>
-                      )
-                    })}
-                  </>
-                )}
-              </>
             )}
 
             {/* 危险操作 */}

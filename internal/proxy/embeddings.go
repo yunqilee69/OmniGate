@@ -210,24 +210,22 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 		att, ok := h.sel.PickTyped(snap, tried, time.Now(), kind.modelType)
 		if !ok {
 			if attempt == 0 {
-				if rt.FallbackEnabled {
-					if fbID := rt.FallbackModels[kind.modelType]; fbID > 0 {
-						fallbackAtt, fallbackOK := h.sel.PickFallback(fbID, time.Now())
-						if fallbackOK {
-							slog.Info("using fallback model", "route", routeName, "fallback_model_id", fbID, "type", kind.modelType)
-							attemptStart := time.Now()
-							res := h.typedAttempt(w, r, req, fallbackAtt, kind, rt)
-							res.latencyMs = time.Since(attemptStart).Milliseconds()
-							h.record(res, rt)
-							attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
-							h.writeLog(start, requestID, routeName, fallbackAtt, false,
-								res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
-							cw.setAttempt(res)
-							h.maybeCapture(requestID, routeName, cw)
-							return
-						}
-						slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", fbID, "type", kind.modelType)
+				if fbID := snap.Route.FallbackModelID; fbID > 0 {
+					fallbackAtt, fallbackOK := h.sel.PickFallback(fbID, time.Now())
+					if fallbackOK {
+						slog.Info("using fallback model", "route", routeName, "fallback_model_id", fbID, "type", kind.modelType)
+						attemptStart := time.Now()
+						res := h.typedAttempt(w, r, req, fallbackAtt, kind, rt)
+						res.latencyMs = time.Since(attemptStart).Milliseconds()
+						h.record(res, rt)
+						attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
+						h.writeLog(start, requestID, routeName, fallbackAtt, false,
+							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
+						cw.setAttempt(res)
+						h.maybeCapture(requestID, routeName, cw)
+						return
 					}
+					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", fbID, "type", kind.modelType)
 				}
 
 				// all_backends 错误：没有可用模型，仍需记录尝试

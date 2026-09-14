@@ -46,11 +46,13 @@ type routeMcpTargetReq struct {
 }
 
 type routeCreateReq struct {
-	Name       string              `json:"name"`
-	Endpoint   string              `json:"endpoint"`
-	Remark     string              `json:"remark"`
-	Targets    []routeTargetReq    `json:"targets"`
-	McpTargets []routeMcpTargetReq `json:"mcp_targets"`
+	Name     string `json:"name"`
+	Endpoint string `json:"endpoint"`
+	// FallbackModelID 路由级兜底模型（0=不兜底）；协议/类型必须匹配 Endpoint。
+	FallbackModelID *int64              `json:"fallback_model_id"`
+	Remark          string              `json:"remark"`
+	Targets         []routeTargetReq    `json:"targets"`
+	McpTargets      []routeMcpTargetReq `json:"mcp_targets"`
 }
 
 func (s *Server) enrichTargets(targets []store.RouteTarget) []routeTargetResp {
@@ -156,6 +158,43 @@ func (s *Server) validateTargets(endpoint string, targets []routeTargetReq) (boo
 	return true, ""
 }
 
+// validateFallbackModel 校验路由级兜底模型：nil/0 通过（不兜底），否则必须存在且
+// 协议/类型匹配端点（口径与 validateTargets 相同）。mcp 端点不支持兜底。
+func (s *Server) validateFallbackModel(endpoint string, id *int64) (bool, string) {
+	if id == nil || *id == 0 {
+		return true, ""
+	}
+	if *id < 0 {
+		return false, "fallback_model_id must be >= 0"
+	}
+	var m store.Model
+	if err := s.store.DB.First(&m, *id).Error; err != nil {
+		return false, "兜底模型不存在"
+	}
+	if endpoint == "mcp" {
+		return false, "mcp 路由不支持兜底模型"
+	}
+	expectedProtocol := endpointToProtocol(endpoint)
+	if m.Protocol != expectedProtocol {
+		return false, "兜底模型 '" + m.Name + "' 使用协议 '" + m.Protocol + "'，但路由端点 '" + endpoint + "' 需要协议 '" + expectedProtocol + "'"
+	}
+	var wantType string
+	switch endpoint {
+	case "embedding":
+		wantType = "embedding"
+	case "rerank":
+		wantType = "rerank"
+	case "image":
+		wantType = "image"
+	default:
+		wantType = "chat"
+	}
+	if (m.Type == "" && wantType != "chat") || (m.Type != "" && m.Type != wantType) {
+		return false, "兜底模型 '" + m.Name + "' 类型为 '" + m.Type + "'，但路由端点 '" + endpoint + "' 需要类型 '" + wantType + "'"
+	}
+	return true, ""
+}
+
 // validateMcpTargets 校验 MCP 后端存在、无重复后端。
 func (s *Server) validateMcpTargets(targets []routeMcpTargetReq) (bool, string) {
 	if len(targets) == 0 {
@@ -215,7 +254,10 @@ func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses, embedding, rerank, image, mcp")
 		return
 	}
-
+	if ok, msg := s.validateFallbackModel(req.Endpoint, req.FallbackModelID); !ok {
+		writeErr(w, http.StatusBadRequest, "bad_request", msg)
+		return
+	}
 	// MCP 路由使用 mcp_targets，其他端点使用 targets
 	if req.Endpoint == "mcp" {
 		if ok, msg := s.validateMcpTargets(req.McpTargets); !ok {
@@ -229,7 +271,11 @@ func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rt := store.Route{Name: req.Name, Endpoint: req.Endpoint, Remark: req.Remark}
+	fallbackID := int64(0)
+	if req.FallbackModelID != nil {
+		fallbackID = *req.FallbackModelID
+	}
+	rt := store.Route{Name: req.Name, Endpoint: req.Endpoint, FallbackModelID: fallbackID, Remark: req.Remark}
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&rt).Error; err != nil {
 			return err
@@ -270,11 +316,13 @@ func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 type routeUpdateReq struct {
-	Name       *string             `json:"name"`
-	Endpoint   *string             `json:"endpoint"`
-	Remark     *string             `json:"remark"`
-	Targets    []routeTargetReq    `json:"targets"`
-	McpTargets []routeMcpTargetReq `json:"mcp_targets"`
+	Name     *string `json:"name"`
+	Endpoint *string `json:"endpoint"`
+	// FallbackModelID nil=不修改；显式 0=清除兜底。
+	FallbackModelID *int64              `json:"fallback_model_id"`
+	Remark          *string             `json:"remark"`
+	Targets         []routeTargetReq    `json:"targets"`
+	McpTargets      []routeMcpTargetReq `json:"mcp_targets"`
 }
 
 func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
@@ -312,7 +360,9 @@ func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses, embedding, rerank, image, mcp")
 			return
 		}
-		simple["endpoint"] = v
+	}
+	if req.FallbackModelID != nil {
+		simple["fallback_model_id"] = *req.FallbackModelID
 	}
 	if req.Remark != nil {
 		simple["remark"] = *req.Remark
@@ -327,7 +377,10 @@ func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
 		effectiveEndpoint = strings.TrimSpace(*req.Endpoint)
 	}
 
-	// 根据有效端点类型验证相应的目标
+	if ok, msg := s.validateFallbackModel(effectiveEndpoint, req.FallbackModelID); !ok {
+		writeErr(w, http.StatusBadRequest, "bad_request", msg)
+		return
+	}
 	if effectiveEndpoint == "mcp" {
 		if req.McpTargets != nil {
 			if ok, msg := s.validateMcpTargets(req.McpTargets); !ok {
