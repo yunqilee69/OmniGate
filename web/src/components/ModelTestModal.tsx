@@ -102,11 +102,13 @@ function KeyResultTable({ result, onSetBan }: {
 }
 
 // 模型测试弹窗：逐密钥并发探测。单个模型直接出表格；多个模型时 Tabs 切换。
-export default function ModelTestModal({ open, targets, onClose, onKeysChanged }: {
+export default function ModelTestModal({ open, targets, onClose, onKeysChanged, initialResult }: {
   open: boolean
   targets: TestTarget[]
   onClose: () => void
   onKeysChanged?: () => void
+  // provider/model 直达：调用方已探测出结果，打开时直接展示、不再重复探测
+  initialResult?: ModelTestResult
 }) {
   const [results, setResults] = useState<Record<number, ModelTestResult>>({})
   const [pending, setPending] = useState<Set<number>>(new Set())
@@ -142,13 +144,21 @@ export default function ModelTestModal({ open, targets, onClose, onKeysChanged }
 
   useEffect(() => {
     if (open) {
+      if (initialResult && targets.length === 1 && targets[0].id === initialResult.model_id) {
+        // 直达路径：探测结果已在 initialResult 里，直接 seed，跳过重复探测
+        ++runIdRef.current // 使在途 run() 的旧结果失效
+        setResults({ [initialResult.model_id]: initialResult })
+        setPending(new Set())
+
+        return
+      }
       void run()
     } else {
       runIdRef.current++
       setResults({})
       setPending(new Set())
     }
-    // targets 由调用方在打开前设置，这里仅响应开合
+    // targets / initialResult 由调用方在打开前设置，这里仅响应开合
   }, [open])
 
   const setBan = async (modelId: number, keyId: number, banned: boolean) => {

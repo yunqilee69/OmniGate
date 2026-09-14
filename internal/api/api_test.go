@@ -387,7 +387,6 @@ func TestV1ModelsIncludesProviderModelIDs(t *testing.T) {
 	}
 }
 
-
 func TestProviderProxyURLIsPersisted(t *testing.T) {
 	h, st, _ := newTestServerWithStore(t)
 
@@ -1139,6 +1138,51 @@ func TestModelTestKeysEndpoint(t *testing.T) {
 	}
 	if rec = do(t, h, "GET", "/api/models/99999/bans", nil, "test-token"); rec.Code != http.StatusNotFound {
 		t.Fatalf("missing model bans should 404, got %d", rec.Code)
+	}
+}
+
+// TestModelTestKeysByNameEndpoint provider/model 直达测试：
+// 模型名可含 /（仅第一个 / 作为分隔），提供商或模型缺失给 404，无 / 给 400。
+func TestModelTestKeysByNameEndpoint(t *testing.T) {
+	h, _ := newTestServer(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`))
+	}))
+	defer up.Close()
+
+	rec := do(t, h, "POST", "/api/providers", map[string]any{"name": "tn-prov", "base_url": up.URL}, "test-token")
+	provID := idOf(t, decodeObj(t, rec))
+	rec = do(t, h, "POST", "/api/keys", map[string]any{"provider_id": provID, "key_value": "sk-tn-good", "name": "k1"}, "test-token")
+	keyID := idOf(t, decodeObj(t, rec))
+	rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": provID, "name": "dir/a/b", "key_ids": []int64{keyID},
+	}, "test-token")
+	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Fatalf("create model: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 名字含多个 / ：按第一个 / 拆，匹配 dir/a/b
+	res := decodeObj(t, do(t, h, "POST", "/api/models/test-by-name", map[string]any{"name": "tn-prov/dir/a/b"}, "test-token"))
+	if res["model"] != "dir/a/b" || res["provider"] != "tn-prov" {
+		t.Fatalf("test-by-name result wrong: %v", res)
+	}
+	if keys, ok := res["keys"].([]any); !ok || len(keys) != 1 {
+		t.Fatalf("expect 1 key result, got %v", res["keys"])
+	}
+
+	// 提供商存在但模型不存在 → 404
+	if rec = do(t, h, "POST", "/api/models/test-by-name", map[string]any{"name": "tn-prov/nope"}, "test-token"); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing model should 404, got %d", rec.Code)
+	}
+	// 提供商不存在 → 404
+	if rec = do(t, h, "POST", "/api/models/test-by-name", map[string]any{"name": "nope/m"}, "test-token"); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing provider should 404, got %d", rec.Code)
+	}
+	// 无 / 或空 → 400
+	for _, bad := range []string{"nope", "", "/m", "p/", "  "} {
+		if rec = do(t, h, "POST", "/api/models/test-by-name", map[string]any{"name": bad}, "test-token"); rec.Code != http.StatusBadRequest {
+			t.Fatalf("name %q should 400, got %d", bad, rec.Code)
+		}
 	}
 }
 

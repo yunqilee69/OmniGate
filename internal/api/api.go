@@ -104,6 +104,7 @@ func (s *Server) Router() http.Handler {
 		ar.Route("/models", func(er chi.Router) {
 			er.Get("/", s.listModels)
 			er.Post("/", s.createModel)
+			er.Post("/test-by-name", s.testModelKeysByName)
 			er.Route("/{id}", func(ir chi.Router) {
 				ir.Put("/", s.updateModel)
 				ir.Delete("/", s.deleteModel)

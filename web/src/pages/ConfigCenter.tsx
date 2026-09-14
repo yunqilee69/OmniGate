@@ -11,7 +11,7 @@ import {
 import dayjs from 'dayjs'
 import { api } from '../api'
 import StatusTag from '../components/StatusTag'
-import ModelTestModal, { type TestTarget } from '../components/ModelTestModal'
+import ModelTestModal, { type ModelTestResult, type TestTarget } from '../components/ModelTestModal'
 import BanManagerModal from '../components/BanManagerModal'
 
 interface Provider {
@@ -734,6 +734,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Model | null>(null)
   const [testTargets, setTestTargets] = useState<TestTarget[] | null>(null)
+  const [directResult, setDirectResult] = useState<ModelTestResult | null>(null)
   const [banModel, setBanModel] = useState<Model | null>(null)
   const [fetchingModels, setFetchingModels] = useState(false)
   const [availableModels, setAvailableModels] = useState<string[]>([])
@@ -764,9 +765,28 @@ function ModelsTab({ provider, keys, models, onSaved }: {
     }
   }
 
-  const testOne = (m: Model) => setTestTargets([{ id: m.id, name: m.name }])
+  const testOne = (m: Model) => {
+    setDirectResult(null)
+    setTestTargets([{ id: m.id, name: m.name }])
+  }
 
-  const runBatchTest = () => setTestTargets(models.map((m) => ({ id: m.id, name: m.name })))
+  const runBatchTest = () => {
+    setDirectResult(null)
+    setTestTargets(models.map((m) => ({ id: m.id, name: m.name })))
+  }
+
+  // provider/model 直达测试：后端定位物理模型并完成逐密钥探测，seed 进弹窗
+  const testByName = async (name: string) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    try {
+      const res = await api<ModelTestResult>('POST', '/api/models/test-by-name', { name: trimmed })
+      setDirectResult(res)
+      setTestTargets([{ id: res.model_id, name: res.model }])
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   const openForm = (m?: Model) => {
     setEditing(m ?? null)
@@ -815,6 +835,13 @@ function ModelsTab({ provider, keys, models, onSaved }: {
       <Space style={{ marginBottom: 16 }}>
         <Button type="primary" onClick={() => openForm()}>新增模型</Button>
         <Button onClick={runBatchTest} disabled={models.length === 0}>测试全部模型</Button>
+        <Input.Search
+          placeholder="provider/model 直达测试"
+          allowClear
+          enterButton="测试"
+          style={{ width: 320 }}
+          onSearch={(v) => void testByName(v)}
+        />
       </Space>
       <Table<Model> rowKey="id" dataSource={models} tableLayout="fixed" size="small" scroll={{ x: true }}>
         <Table.Column title="模型名" dataIndex="name" width={160} />
@@ -1041,7 +1068,11 @@ function ModelsTab({ provider, keys, models, onSaved }: {
       <ModelTestModal
         open={!!testTargets}
         targets={testTargets ?? []}
-        onClose={() => setTestTargets(null)}
+        initialResult={directResult ?? undefined}
+        onClose={() => {
+          setTestTargets(null)
+          setDirectResult(null)
+        }}
         onKeysChanged={() => onSaved()}
       />
       <BanManagerModal

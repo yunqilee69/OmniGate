@@ -115,8 +115,8 @@ func (s *Selector) snapshotFromRoute(route store.Route) (*Snapshot, bool, error)
 	return snap, true, nil
 }
 
-// splitProviderModel 仅用第一个 / 分割：提供商名不含 /，模型名可以含 /（openrouter 风格）。
-func splitProviderModel(name string) (provider, model string, ok bool) {
+// SplitProviderModel 仅用第一个 / 分割：提供商名不含 /，模型名可以含 /（openrouter 风格）。
+func SplitProviderModel(name string) (provider, model string, ok bool) {
 	i := strings.IndexByte(name, '/')
 	if i <= 0 || i == len(name)-1 {
 		return "", "", false
@@ -128,7 +128,7 @@ func splitProviderModel(name string) (provider, model string, ok bool) {
 // 合成快照 Route.ID=0（VK 白名单按路由 ID 校验时，受限 key 会拒绝直达）；
 // Endpoint 跟模型 protocol 对齐，供 /v1/messages|/v1/responses 做端点匹配。
 func (s *Selector) loadSnapshotByProviderModel(name string) (*Snapshot, bool, error) {
-	provName, modelName, ok := splitProviderModel(name)
+	provName, modelName, ok := SplitProviderModel(name)
 	if !ok {
 		return nil, false, nil
 	}

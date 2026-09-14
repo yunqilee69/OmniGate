@@ -163,6 +163,24 @@ func ProbeModelKeys(db *store.Store, rt *config.RuntimeManager, modelID int64) (
 	return out, true
 }
 
+// ProbeModelKeysByName 按 provider/model 定位模型后逐密钥探测（管理台直达测试入口）。
+// 解析或模型定位失败返回 found=false；探测本身失败由 result.Keys 表达。
+func ProbeModelKeysByName(db *store.Store, rt *config.RuntimeManager, name string) (ModelKeysTestResult, bool) {
+	provName, modelName, ok := router.SplitProviderModel(name)
+	if !ok {
+		return ModelKeysTestResult{}, false
+	}
+	var p store.Provider
+	if err := db.DB.Where("name = ?", provName).First(&p).Error; err != nil {
+		return ModelKeysTestResult{}, false
+	}
+	var m store.Model
+	if err := db.DB.Where("provider_id = ? AND name = ?", p.ID, modelName).First(&m).Error; err != nil {
+		return ModelKeysTestResult{}, false
+	}
+	return ProbeModelKeys(db, rt, m.ID)
+}
+
 // probeModelKey 用指定密钥发起一次极小真实请求（探测核心，不写 request_log）。
 // 按模型类型构造最小载荷：chat → 一条 ping 消息；embedding → 单串输入；rerank → 单文档重排；image → 一句生图提示。
 func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) ProbeResult {
