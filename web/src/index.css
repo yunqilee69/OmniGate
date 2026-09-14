@@ -62,9 +62,15 @@ code,
   color: #8f8f8f;
 }
 
+/* 错误行浅红底必须用不透明色：sticky 首列靠背景盖住横向滚动内容。
+   半透明 rgba + !important 会把 ant-table 固定列的白底打穿，时间列与后列叠在一起。 */
 .log-row-error > td {
-  background: rgba(238, 0, 0, 0.04) !important;
+  background: #fdf2f2 !important;
 }
 .log-row-error:hover > td {
-  background: rgba(238, 0, 0, 0.08) !important;
+  background: #fae6e6 !important;
+}
+.log-row-error > td.ant-table-cell-fix-left,
+.log-row-error > td.ant-table-cell-fix-right {
+  z-index: 2;
 }
