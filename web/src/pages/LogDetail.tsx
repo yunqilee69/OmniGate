@@ -13,6 +13,7 @@ interface LogRow {
   model: string
   provider: string
   key_id: number
+  vk_id?: number
   status: string
   error_code: string
   error_body?: string
@@ -49,6 +50,7 @@ interface DetailResp {
   log: LogRow
   key_value_masked: string
   key_name?: string
+  vk_name?: string
   attempts: Attempt[]
 }
 
@@ -93,7 +95,7 @@ export default function LogDetail() {
     return <div style={{ padding: 40, textAlign: 'center' }}><Spin /></div>
   }
 
-  const { log, key_value_masked, key_name, attempts } = data
+  const { log, key_value_masked, key_name, vk_name, attempts } = data
 
   return (
     <div>
@@ -113,6 +115,7 @@ export default function LogDetail() {
       <Card title="请求详情" style={{ marginBottom: 16 }}>
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small">
           <Descriptions.Item label="路由"><code>{log.route}</code></Descriptions.Item>
+          <Descriptions.Item label="虚拟密钥">{vk_name || (log.vk_id ? `#${log.vk_id}` : '-')}</Descriptions.Item>
           <Descriptions.Item label="提供商/模型">{log.provider ? `${log.provider}/${log.model}` : log.model}</Descriptions.Item>
           <Descriptions.Item label="密钥">
             <code style={{ fontSize: 12, color: '#8f8f8f' }}>{key_name || key_value_masked || (log.key_id ? `#${log.key_id}` : '-')}</code>

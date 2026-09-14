@@ -584,6 +584,15 @@ func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
 		conds = append(conds, "r.endpoint = ?")
 		args = append(args, v)
 	}
+	if v := q.Get("vk_id"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id <= 0 {
+			writeErr(w, http.StatusBadRequest, "bad_request", "vk_id must be a positive integer")
+			return
+		}
+		conds = append(conds, "r.vk_id = ?")
+		args = append(args, id)
+	}
 	from, to := parseTimeRange(r)
 	conds = append(conds, "r.created_at BETWEEN ? AND ?")
 	args = append(args, from, to)
@@ -607,11 +616,13 @@ func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
 		store.RequestLog
 		RawKey  string `gorm:"column:raw_key"`
 		KeyName string `gorm:"column:key_name"`
+		VKName  string `gorm:"column:vk_name"`
 	}
 	var rows []logRow
 	if err := s.store.DB.Table("request_log r").
-		Select("r.*, COALESCE(k.key_value, '') AS raw_key, COALESCE(k.name, '') AS key_name").
+		Select("r.*, COALESCE(k.key_value, '') AS raw_key, COALESCE(k.name, '') AS key_name, COALESCE(vk.name, '') AS vk_name").
 		Joins("LEFT JOIN api_key k ON r.key_id = k.id").
+		Joins("LEFT JOIN virtual_key vk ON r.vk_id = vk.id").
 		Where(where, args...).Order("r.id DESC").Limit(pageSize).Offset(offset).Find(&rows).Error; err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
@@ -620,10 +631,11 @@ func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
 		store.RequestLog
 		KeyValueMasked string `json:"key_value_masked"`
 		KeyName        string `json:"key_name"`
+		VKName         string `json:"vk_name"`
 	}
 	items := make([]logItem, 0, len(rows))
 	for _, r := range rows {
-		item := logItem{RequestLog: r.RequestLog, KeyValueMasked: maskKey(r.RawKey), KeyName: r.KeyName}
+		item := logItem{RequestLog: r.RequestLog, KeyValueMasked: maskKey(r.RawKey), KeyName: r.KeyName, VKName: r.VKName}
 		items = append(items, item)
 	}
 	if items == nil {
@@ -668,6 +680,13 @@ func (s *Server) getLogByID(w http.ResponseWriter, r *http.Request) {
 			keyName = k.Name
 		}
 	}
+	vkName := ""
+	if log.VKID > 0 {
+		var vk store.VirtualKey
+		if err := s.store.DB.First(&vk, log.VKID).Error; err == nil {
+			vkName = vk.Name
+		}
+	}
 	attempts, err := s.loadAttempts(requestID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
@@ -677,6 +696,7 @@ func (s *Server) getLogByID(w http.ResponseWriter, r *http.Request) {
 		"log":              log,
 		"key_value_masked": maskedKey,
 		"key_name":         keyName,
+		"vk_name":          vkName,
 		"attempts":         attempts,
 	})
 }
