@@ -29,6 +29,24 @@ import (
 
 const maxBodyBytes = 32 << 20
 
+// 网关自造错误码：日志 request_log.error_code 与客户端 error.code 同一套可读全称。
+// 上游 HTTP 状态码仍记数字字符串（"401"/"429"/"500" 等），不在此列。
+const (
+	errConnectionFailed       = "connection_failed"
+	errTimeout                = "timeout"
+	errAllBackendsUnavailable = "all_backends_unavailable"
+	errAllRetriesFailed       = "all_retries_failed"
+	errReadFailed             = "read_failed"
+	errStreamSetupFailed      = "stream_setup_failed"
+	errEmptyStream            = "empty_stream"
+	errStreamBroken           = "stream_broken"
+	errClientDisconnected     = "client_disconnected"
+	errProtocolConvertFailed  = "protocol_convert_failed"
+	errResponseConvertFailed  = "response_convert_failed"
+	errMarshalFailed          = "marshal_failed"
+	errBadUpstreamURL         = "bad_upstream_url"
+)
+
 type Handler struct {
 	db          *store.Store
 	rt          *config.RuntimeManager
@@ -265,7 +283,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if err != nil {
-		openAIError(w, 400, "read_error", "failed to read request body", nil)
+		openAIError(w, 400, errReadFailed, "failed to read request body", nil)
 		return
 	}
 	if len(body) > maxBodyBytes {
@@ -360,15 +378,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", fbID)
 				}
 
-				// all_backends 错误：没有可用模型，仍需记录尝试
+				// all_backends_unavailable：没有可用模型，仍需记录尝试
 				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
 					status:  "error",
-					errCode: "all_backends",
+					errCode: errAllBackendsUnavailable,
 				}, start))
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
-				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
+					"error", errAllBackendsUnavailable, usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
+				openAIError(w, http.StatusServiceUnavailable, errAllBackendsUnavailable,
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
 				h.maybeCapture(requestID, routeName, cw)
 				return
@@ -405,7 +423,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 所有重试都失败且可重试（没有提交响应），返回 502 Bad Gateway
 	if last.att.Model.ID != 0 && !last.committed && last.retryable {
-		openAIError(w, http.StatusBadGateway, "all_retries_failed",
+		openAIError(w, http.StatusBadGateway, errAllRetriesFailed,
 			fmt.Sprintf("route '%s': all backend attempts failed", routeName), nil)
 	}
 
@@ -447,7 +465,7 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 	req["model"] = att.Model.Name
 	converted, err := adapter.buildBody(req)
 	if err != nil {
-		res.errCode, res.status = "protocol_convert_error", "error"
+		res.errCode, res.status = errProtocolConvertFailed, "error"
 		return res
 	}
 	// 应用 body_override：合并覆盖字段到转换后的请求体
@@ -469,7 +487,7 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 	}
 	outBody, err := json.Marshal(converted)
 	if err != nil {
-		res.errCode, res.status = "marshal_error", "error"
+		res.errCode, res.status = errMarshalFailed, "error"
 		return res
 	}
 
@@ -488,7 +506,7 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 
 	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, adapter.endpoint(att.Provider.BaseURL, &att.Model), bytes.NewReader(outBody))
 	if err != nil {
-		res.errCode, res.status = "bad_upstream_url", "error"
+		res.errCode, res.status = errBadUpstreamURL, "error"
 		return res
 	}
 	upReq.Header.Set("Content-Type", "application/json")
@@ -534,9 +552,9 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, req map[string
 		}
 		res.retryable, res.status = true, "error"
 		if timedOut.Load() || errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
-			res.errCode = "timeout"
+			res.errCode = errTimeout
 		} else {
-			res.errCode = "conn"
+			res.errCode = errConnectionFailed
 		}
 		return res
 	}
@@ -617,9 +635,9 @@ func (h *Handler) bufferedResponse(w http.ResponseWriter, resp *http.Response,
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
 		if timedOut.Load() {
-			res.errCode, res.status, res.retryable = "timeout", "error", true
+			res.errCode, res.status, res.retryable = errTimeout, "error", true
 		} else {
-			res.errCode, res.status, res.retryable = "read_error", "error", true
+			res.errCode, res.status, res.retryable = errReadFailed, "error", true
 		}
 		return res
 	}
@@ -639,7 +657,7 @@ func (h *Handler) bufferedResponse(w http.ResponseWriter, resp *http.Response,
 
 	out, u, convErr := adapter.convertBuffered(body)
 	if convErr != nil {
-		res.errCode, res.status, res.retryable = "convert_error", "error", true
+		res.errCode, res.status, res.retryable = errResponseConvertFailed, "error", true
 		return res
 	}
 	if u.prompt > 0 || u.completion > 0 {
@@ -699,7 +717,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 	writeToClient := func(lines []string) bool {
 		for _, ln := range lines {
 			if _, wErr := w.Write([]byte(ln + "\n\n")); wErr != nil {
-				res.status, res.errCode = "error", "client_disconnected"
+				res.status, res.errCode = "error", errClientDisconnected
 				return false
 			}
 		}
@@ -737,7 +755,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 			if passthrough {
 				scan.Write(buf[:n])
 				if _, wErr := w.Write(buf[:n]); wErr != nil {
-					res.status, res.errCode = "error", "client_disconnected"
+					res.status, res.errCode = "error", errClientDisconnected
 					return res
 				}
 				if flusher != nil {
@@ -767,7 +785,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 					scan.Finish()
 				}
 				if !committed {
-					res.status, res.errCode, res.retryable = "error", "empty_stream", true
+					res.status, res.errCode, res.retryable = "error", errEmptyStream, true
 					return res
 				}
 				if u := adapter.streamUsage(); u != nil {
@@ -791,9 +809,9 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 			if !committed {
 				// deadline 在首字节前触发会 cancel 流：区分超时与上游建连失败
 				if timedOut.Load() {
-					res.status, res.errCode, res.retryable = "error", "timeout", true
+					res.status, res.errCode, res.retryable = "error", errTimeout, true
 				} else {
-					res.status, res.errCode, res.retryable = "error", "stream_setup_failed", true
+					res.status, res.errCode, res.retryable = "error", errStreamSetupFailed, true
 				}
 				return res
 			}
@@ -832,7 +850,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, att
 				res.status = "success"
 			} else {
 				// usage 缺失，确实是流中断
-				res.status, res.errCode, res.streamBroke = "error", "stream_broken", true
+				res.status, res.errCode, res.streamBroke = "error", errStreamBroken, true
 				// 只记录真正的错误
 				if h.rt.Snapshot().DebugStreamLog {
 					slog.Info("[DEBUG] Stream broken",
@@ -881,7 +899,7 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 
 // attemptRow 构造一次转发尝试的完整明细行（含成功与失败），由调用方累积后随
 // writeLog 统一落库，便于排查重试链路。
-// 对于 all_backends 错误（没有可用模型），model 和 provider 字段为空字符串。
+// 对于 all_backends_unavailable 错误（没有可用模型），model 和 provider 字段为空字符串。
 func (h *Handler) attemptRow(requestID, routeName string, attempt int, att router.Attempt,
 	res attemptResult, start time.Time) store.RequestAttempt {
 	return store.RequestAttempt{
@@ -1167,7 +1185,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if err != nil {
-		openAIError(w, 400, "read_error", "failed to read request body", nil)
+		openAIError(w, 400, errReadFailed, "failed to read request body", nil)
 		return
 	}
 	if len(body) > maxBodyBytes {
@@ -1243,7 +1261,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 		att, ok := h.sel.Pick(snap, tried, time.Now(), 0)
 		if !ok {
 			if attempt == 0 {
-				// 首跳即无可用候选：先尝试路由级兜底模型，再落 all_backends 503。
+				// 首跳即无可用候选：先尝试路由级兜底模型，再落 all_backends_unavailable 503。
 				if fbID := snap.Route.FallbackModelID; fbID > 0 {
 					fallbackAtt, fallbackOK := h.sel.PickFallback(fbID, time.Now())
 					if fallbackOK {
@@ -1262,15 +1280,15 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", fbID, "endpoint", endpoint)
 				}
 
-				// all_backends 错误：没有可用模型，仍需记录尝试
+				// all_backends_unavailable：没有可用模型，仍需记录尝试
 				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
 					status:  "error",
-					errCode: "all_backends",
+					errCode: errAllBackendsUnavailable,
 				}, start))
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
-				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
+					"error", errAllBackendsUnavailable, usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
+				openAIError(w, http.StatusServiceUnavailable, errAllBackendsUnavailable,
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
 				h.maybeCapture(requestID, routeName, cw)
 				return
@@ -1278,7 +1296,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 			// 转移途中无候选：记录后跳出，由尾部统一收尾。
 			attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
 				status:  "error",
-				errCode: "all_backends",
+				errCode: errAllBackendsUnavailable,
 			}, start))
 			break
 		}
@@ -1308,7 +1326,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 	}
 
 	if !last.committed {
-		openAIError(w, http.StatusBadGateway, "all_attempts_failed",
+		openAIError(w, http.StatusBadGateway, errAllRetriesFailed,
 			fmt.Sprintf("all attempts failed after %d retries (error sequence: %s)", priorFails, strings.Join(errCodes, " → ")), nil)
 		h.maybeCapture(requestID, routeName, cw)
 		return
@@ -1339,7 +1357,7 @@ func (h *Handler) nativeAttempt(w http.ResponseWriter, r *http.Request, reqBody 
 
 	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, adapter.endpoint(att.Provider.BaseURL, &att.Model), bytes.NewReader(reqBody))
 	if err != nil {
-		res.errCode, res.status = "bad_upstream_url", "error"
+		res.errCode, res.status = errBadUpstreamURL, "error"
 		return res
 	}
 	upReq.Header.Set("Content-Type", "application/json")
@@ -1361,9 +1379,9 @@ func (h *Handler) nativeAttempt(w http.ResponseWriter, r *http.Request, reqBody 
 	if err != nil {
 		res.retryable, res.status = true, "error"
 		if timedOut.Load() || errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
-			res.errCode = "timeout"
+			res.errCode = errTimeout
 		} else {
-			res.errCode = "conn"
+			res.errCode = errConnectionFailed
 		}
 		return res
 	}
@@ -1421,9 +1439,9 @@ func (h *Handler) nativeBufferedResponse(w http.ResponseWriter, resp *http.Respo
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
 		if timedOut.Load() {
-			res.errCode, res.status, res.retryable = "timeout", "error", true
+			res.errCode, res.status, res.retryable = errTimeout, "error", true
 		} else {
-			res.errCode, res.status, res.retryable = "read_error", "error", true
+			res.errCode, res.status, res.retryable = errReadFailed, "error", true
 		}
 		return res
 	}
@@ -1482,7 +1500,7 @@ func (h *Handler) nativeStreamResponse(w http.ResponseWriter, resp *http.Respons
 				w.WriteHeader(http.StatusOK)
 			}
 			if _, wErr := w.Write(buf[:n]); wErr != nil {
-				res.status, res.errCode = "error", "client_disconnected"
+				res.status, res.errCode = "error", errClientDisconnected
 				return res
 			}
 			if flusher != nil {
@@ -1496,9 +1514,9 @@ func (h *Handler) nativeStreamResponse(w http.ResponseWriter, resp *http.Respons
 			}
 			if !committed {
 				if timedOut.Load() {
-					res.errCode, res.status, res.retryable = "timeout", "error", true
+					res.errCode, res.status, res.retryable = errTimeout, "error", true
 				} else {
-					res.errCode, res.status, res.retryable = "stream_setup_failed", "error", true
+					res.errCode, res.status, res.retryable = errStreamSetupFailed, "error", true
 				}
 				return res
 			}
@@ -1509,7 +1527,7 @@ func (h *Handler) nativeStreamResponse(w http.ResponseWriter, resp *http.Respons
 			if res.usage.prompt > 0 || res.usage.completion > 0 {
 				res.status = "success"
 			} else {
-				res.status, res.errCode, res.streamBroke = "error", "stream_broken", true
+				res.status, res.errCode, res.streamBroke = "error", errStreamBroken, true
 			}
 			return res
 		}

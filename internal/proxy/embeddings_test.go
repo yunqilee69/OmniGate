@@ -316,8 +316,8 @@ func TestTypedEndpointsFilterModelType(t *testing.T) {
 		t.Fatalf("chat-only route on embeddings: status = %d, want 503", resp.StatusCode)
 	}
 	b, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(b), "all_backends") {
-		t.Errorf("want all_backends error, got %s", b)
+	if !strings.Contains(string(b), "all_backends_unavailable") {
+		t.Errorf("want all_backends_unavailable error, got %s", b)
 	}
 }
 

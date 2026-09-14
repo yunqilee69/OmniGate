@@ -698,7 +698,7 @@ func TestStatsErrorCodeBreakdown(t *testing.T) {
 		{RequestID: "s1", Route: "r", Model: "m", Provider: "p", Status: "success", CreatedAt: now},
 		{RequestID: "s2", Route: "r", Model: "m", Provider: "p", Status: "success", CreatedAt: now},
 		{RequestID: "e1", Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "timeout", CreatedAt: now},
-		{RequestID: "e2", Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "conn", CreatedAt: now},
+		{RequestID: "e2", Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "connection_failed", CreatedAt: now},
 	}
 	for i := range rows {
 		if err := st.DB.Create(&rows[i]).Error; err != nil {
@@ -721,7 +721,7 @@ func TestStatsErrorCodeBreakdown(t *testing.T) {
 		row := it.(map[string]any)
 		got[row["dim"].(string)] = row["total"].(float64)
 	}
-	if got[""] != 2 || got["timeout"] != 1 || got["conn"] != 1 {
+	if got[""] != 2 || got["timeout"] != 1 || got["connection_failed"] != 1 {
 		t.Fatalf("error_code rows wrong: %v", got)
 	}
 }

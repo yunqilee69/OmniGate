@@ -61,6 +61,9 @@ func Open(path string) (*Store, error) {
 	if err := migrateProtocolRenameAndFields(db); err != nil {
 		return nil, fmt.Errorf("migrate protocol rename and fields: %w", err)
 	}
+	if err := migrateErrorCodeRename(db); err != nil {
+		return nil, fmt.Errorf("migrate error_code rename: %w", err)
+	}
 	return &Store{DB: db}, nil
 }
 
@@ -212,4 +215,29 @@ CREATE TABLE content_log (
 		}
 	}
 	return db.Exec(`CREATE INDEX IF NOT EXISTS idx_cl_time ON content_log(created_at)`).Error
+}
+
+// migrateErrorCodeRename 把历史缩写错误码改成可读全称。幂等：新库无旧值则 0 行更新。
+func migrateErrorCodeRename(db *gorm.DB) error {
+	renames := [][2]string{
+		{"conn", "connection_failed"},
+		{"all_backends", "all_backends_unavailable"},
+		{"read_error", "read_failed"},
+		{"protocol_convert_error", "protocol_convert_failed"},
+		{"convert_error", "response_convert_failed"},
+		{"marshal_error", "marshal_failed"},
+		{"bad_url", "bad_upstream_url"},
+	}
+	tables := []string{"request_log", "request_attempt"}
+	for _, table := range tables {
+		if !db.Migrator().HasTable(table) {
+			continue
+		}
+		for _, pair := range renames {
+			if err := db.Exec(`UPDATE `+table+` SET error_code = ? WHERE error_code = ?`, pair[1], pair[0]).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

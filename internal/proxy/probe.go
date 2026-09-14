@@ -75,23 +75,23 @@ func truncateMsg(s string, n int) string {
 func ProbeModel(db *store.Store, rt *config.RuntimeManager, modelID int64) ProbeResult {
 	var m store.Model
 	if err := db.DB.First(&m, modelID).Error; err != nil {
-		return ProbeResult{ModelID: modelID, ErrCode: "not_found", Message: "模型不存在"}
+		return ProbeResult{ModelID: modelID, ErrCode: "model_not_found", Message: "模型不存在"}
 	}
 	var provider store.Provider
 	if err := db.DB.First(&provider, m.ProviderID).Error; err != nil {
-		return ProbeResult{ModelID: m.ID, Model: m.Name, ErrCode: "no_provider", Message: "提供商不存在"}
+		return ProbeResult{ModelID: m.ID, Model: m.Name, ErrCode: "provider_not_found", Message: "提供商不存在"}
 	}
 
 	sel := router.NewSelector(db)
 	snap, found, err := sel.LoadSnapshotByModel(m.ID)
 	if err != nil || !found {
 		return ProbeResult{ModelID: m.ID, Model: m.Name, Provider: provider.Name, Protocol: m.Protocol,
-			ErrCode: "no_key", Message: "未绑定密钥"}
+			ErrCode: "no_key_bound", Message: "未绑定密钥"}
 	}
 	att, ok := sel.PickForModel(snap, time.Now())
 	if !ok {
 		return ProbeResult{ModelID: m.ID, Model: m.Name, Provider: provider.Name, Protocol: m.Protocol,
-			ErrCode: "no_key", Message: "全部密钥不可用（禁用/冷却中）"}
+			ErrCode: "no_key_available", Message: "全部密钥不可用（禁用/冷却中）"}
 	}
 	return probeModelKey(m, provider, att.Key)
 }
@@ -195,7 +195,7 @@ func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) Pro
 	}
 	converted, err := adapter.buildBody(req)
 	if err != nil {
-		res.ErrCode, res.Message = "convert_error", err.Error()
+		res.ErrCode, res.Message = errProtocolConvertFailed, err.Error()
 		return res
 	}
 	// 应用 body_override：合并覆盖字段到转换后的请求体
@@ -209,7 +209,7 @@ func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) Pro
 	}
 	body, err := marshalJSON(converted)
 	if err != nil {
-		res.ErrCode, res.Message = "marshal_error", err.Error()
+		res.ErrCode, res.Message = errMarshalFailed, err.Error()
 		return res
 	}
 
@@ -220,7 +220,7 @@ func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) Pro
 	client := HTTPClientFor(provider, time.Duration(timeoutMs)*time.Millisecond)
 	httpReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		res.ErrCode, res.Message = "bad_url", err.Error()
+		res.ErrCode, res.Message = errBadUpstreamURL, err.Error()
 		return res
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -235,7 +235,7 @@ func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) Pro
 	resp, err := client.Do(httpReq)
 	res.LatencyMs = time.Since(start).Milliseconds()
 	if err != nil {
-		res.ErrCode, res.Message = "conn", truncateMsg(err.Error(), probeMessageTrunc)
+		res.ErrCode, res.Message = errConnectionFailed, truncateMsg(err.Error(), probeMessageTrunc)
 		return res
 	}
 	defer func() { _, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, probeBodyLimit)); _ = resp.Body.Close() }()

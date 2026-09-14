@@ -144,7 +144,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if err != nil {
-		openAIError(w, 400, "read_error", "failed to read request body", nil)
+		openAIError(w, 400, errReadFailed, "failed to read request body", nil)
 		return
 	}
 	if len(body) > maxBodyBytes {
@@ -228,15 +228,15 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", fbID, "type", kind.modelType)
 				}
 
-				// all_backends 错误：没有可用模型，仍需记录尝试
+				// all_backends_unavailable：没有可用模型，仍需记录尝试
 				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
 					status:  "error",
-					errCode: "all_backends",
+					errCode: errAllBackendsUnavailable,
 				}, start))
 				statuses := h.sel.BackendStatuses(snap, time.Now())
 				h.writeLog(start, requestID, routeName, router.Attempt{}, false,
-					"error", "all_backends", usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
-				openAIError(w, http.StatusServiceUnavailable, "all_backends_unavailable",
+					"error", errAllBackendsUnavailable, usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
+				openAIError(w, http.StatusServiceUnavailable, errAllBackendsUnavailable,
 					"route '"+routeName+"' has no available "+kind.modelType+" type backends", statuses)
 				h.maybeCapture(requestID, routeName, cw)
 				return
@@ -266,7 +266,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 	}
 
 	if !last.committed {
-		openAIError(w, http.StatusBadGateway, "all_attempts_failed",
+		openAIError(w, http.StatusBadGateway, errAllRetriesFailed,
 			"all attempts failed after "+strconv.Itoa(priorFails)+" retries (error sequence: "+strings.Join(errCodes, " → ")+")", nil)
 		h.maybeCapture(requestID, routeName, cw)
 		return
@@ -298,7 +298,7 @@ func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[s
 	}
 	outBody, err := json.Marshal(req)
 	if err != nil {
-		res.errCode, res.status = "marshal_error", "error"
+		res.errCode, res.status = errMarshalFailed, "error"
 		return res
 	}
 
@@ -312,7 +312,7 @@ func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[s
 	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		strings.TrimRight(att.Provider.BaseURL, "/")+kind.path, bytes.NewReader(outBody))
 	if err != nil {
-		res.errCode, res.status = "bad_upstream_url", "error"
+		res.errCode, res.status = errBadUpstreamURL, "error"
 		return res
 	}
 	upReq.Header.Set("Content-Type", "application/json")
@@ -327,9 +327,9 @@ func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[s
 	if err != nil {
 		res.retryable, res.status = true, "error"
 		if ctx.Err() == context.DeadlineExceeded {
-			res.errCode = "timeout"
+			res.errCode = errTimeout
 		} else {
-			res.errCode = "conn"
+			res.errCode = errConnectionFailed
 		}
 		return res
 	}
@@ -379,7 +379,7 @@ func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[s
 	}
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
-		res.errCode, res.status, res.retryable = "read_error", "error", true
+		res.errCode, res.status, res.retryable = errReadFailed, "error", true
 		return res
 	}
 	res.usage = kind.parseUsage(respBody)

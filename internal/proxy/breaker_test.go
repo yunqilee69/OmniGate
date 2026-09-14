@@ -172,13 +172,13 @@ func TestComboBreakerEscalationThroughProxy(t *testing.T) {
 		t.Fatalf("first ladder step should be ~30s, got %d", remain)
 	}
 
-	// 冷却中：无其他后端 → 503 all_backends（证明组合被跳过）
+	// 冷却中：无其他后端 → 503 all_backends_unavailable（证明组合被跳过）
 	if resp := postWithAuth(t, h, chatBody(false), vkToken); resp.StatusCode != 503 {
 		t.Fatalf("cooldown combo must be skipped (503), got %d", resp.StatusCode)
 	}
 	ls := logs(t, st)
-	if ls[1].ErrorCode != "all_backends" {
-		t.Fatalf("expected all_backends, got %+v", ls[1])
+	if ls[1].ErrorCode != "all_backends_unavailable" {
+		t.Fatalf("expected all_backends_unavailable, got %+v", ls[1])
 	}
 
 	// 半开探测失败 → 升级第 2 档（60s）

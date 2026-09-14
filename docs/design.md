@@ -177,7 +177,7 @@ CREATE TABLE request_log (
   provider           TEXT NOT NULL,
   key_id             INTEGER NOT NULL DEFAULT 0,  -- 命中的密钥 id（脱敏，不存 key 值）
   status             TEXT NOT NULL,               -- success | error | client_error
-  error_code         TEXT NOT NULL DEFAULT '',    -- http 状态码 / timeout / conn / all_backends
+  error_code         TEXT NOT NULL DEFAULT '',    -- http 状态码 / timeout / connection_failed / all_backends_unavailable / ...
   error_body         TEXT NOT NULL DEFAULT '',    -- 上游错误体截断（≤2KB），诊断用；不含请求正文
   is_stream          INTEGER NOT NULL DEFAULT 0,
   prompt_tokens      INTEGER NOT NULL DEFAULT 0,
@@ -303,7 +303,7 @@ glm-4.6 的 key 全部冷却时，glm-4.6 临时不可用，流量自然全部�
 默认配置：阶梯 `30s, 1m, 3m`；禁用阈值 3（均可改，见 §9）。
 
 ```
-             失败(超时/5xx/conn)                 失败                失败
+             失败(超时/5xx/connection_failed)         失败                失败
   ┌──────┐ ──────────────────▶ ┌──────┐ ─────▶ ┌──────┐ ─────▶ ┌──────────┐
   │active│                     │cool30│         │cool60│         │ DISABLED │
   └──────┘ ◀─────────────────  └──────┘         └──────┘         └──────────┘
@@ -339,7 +339,7 @@ HTTP 503
 }
 ```
 
-明确告诉调用方**哪个后端因什么不可用**，而非无限挂起或含糊报错。记一条 `error_code=all_backends` 的请求日志。
+明确告诉调用方**哪个后端因什么不可用**，而非无限挂起或含糊报错。记一条 `error_code=all_backends_unavailable` 的请求日志。
 
 **路由级兜底模型**（`route.fallback_model_id`，路由 CRUD 各自配置，无全局开关）：
 
@@ -358,7 +358,7 @@ HTTP 503
   ├─ 解析逻辑 modelId（body.model）→ 未配置 → 404 model_not_found
   ├─ 转移预算检查（max_hops 默认 3 次）
   ├─ 【尝试】选目标模型 → 选 key → 改写 body.model 为真实模型名 → 转发
-  │    ├─ 首字节前失败（超时/conn/5xx/429/401/403）
+  │    ├─ 首字节前失败（超时/connection_failed/5xx/429/401/403）
   │    │     ├─ 按 §5 归因更新状态
   │    │     ├─ 429/401/403/5xx/超时 → 消耗一跳，回到【尝试】
   │    │     │    转移顺序：同模型下一个 key → 下一个目标模型

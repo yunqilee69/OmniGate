@@ -103,7 +103,7 @@ func TestRouteFallbackDisabled(t *testing.T) {
 		t.Fatalf("expect 503, got %d", resp.StatusCode)
 	}
 	ls := logs(t, st)
-	if len(ls) != 1 || ls[0].ErrorCode != "all_backends" || ls[0].IsFallback {
+	if len(ls) != 1 || ls[0].ErrorCode != "all_backends_unavailable" || ls[0].IsFallback {
 		t.Fatalf("log wrong: %+v", ls[0])
 	}
 }

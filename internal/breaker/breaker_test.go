@@ -67,7 +67,7 @@ func TestLadderProgression(t *testing.T) {
 		t.Fatalf("fail2 cooldown should be ~60s, got %d", remain)
 	}
 
-	rec.RecordModelKeyFailure(mID, kID, "conn", true, rt)
+	rec.RecordModelKeyFailure(mID, kID, "connection_failed", true, rt)
 	ban = banOf(t, st, mID, kID)
 	if ban.Status != "perm_banned" || ban.BanReason == "" {
 		t.Fatalf("fail3 should perm-ban: %+v", ban)

@@ -143,3 +143,81 @@ func TestOpenCreatesContentLogOnFreshDB(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 }
+
+func TestMigrateErrorCodeRename(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "errcodes.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	now := int64(1)
+	logs := []RequestLog{
+		{RequestID: "a", Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "conn", CreatedAt: now},
+		{RequestID: "b", Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "all_backends", CreatedAt: now},
+		{RequestID: "c", Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "timeout", CreatedAt: now},
+		{RequestID: "d", Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "read_error", CreatedAt: now},
+		{RequestID: "e", Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "500", CreatedAt: now},
+	}
+	for i := range logs {
+		if err := st.DB.Create(&logs[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	attempts := []RequestAttempt{
+		{RequestID: "a", Attempt: 0, Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "conn", CreatedAt: now},
+		{RequestID: "b", Attempt: 0, Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "convert_error", CreatedAt: now},
+		{RequestID: "c", Attempt: 0, Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "marshal_error", CreatedAt: now},
+		{RequestID: "d", Attempt: 0, Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "bad_url", CreatedAt: now},
+		{RequestID: "e", Attempt: 0, Route: "r", Model: "m", Provider: "p", Status: "error", ErrorCode: "protocol_convert_error", CreatedAt: now},
+	}
+	for i := range attempts {
+		if err := st.DB.Create(&attempts[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := migrateErrorCodeRename(st.DB); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := migrateErrorCodeRename(st.DB); err != nil {
+		t.Fatalf("migrate twice: %v", err)
+	}
+
+	wantLog := map[string]string{
+		"a": "connection_failed",
+		"b": "all_backends_unavailable",
+		"c": "timeout",
+		"d": "read_failed",
+		"e": "500",
+	}
+	var gotLogs []RequestLog
+	if err := st.DB.Order("request_id").Find(&gotLogs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(gotLogs) != len(wantLog) {
+		t.Fatalf("log count %d", len(gotLogs))
+	}
+	for _, row := range gotLogs {
+		if row.ErrorCode != wantLog[row.RequestID] {
+			t.Errorf("log %s: got %q want %q", row.RequestID, row.ErrorCode, wantLog[row.RequestID])
+		}
+	}
+
+	wantAttempt := map[string]string{
+		"a": "connection_failed",
+		"b": "response_convert_failed",
+		"c": "marshal_failed",
+		"d": "bad_upstream_url",
+		"e": "protocol_convert_failed",
+	}
+	var gotAttempts []RequestAttempt
+	if err := st.DB.Order("request_id").Find(&gotAttempts).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range gotAttempts {
+		if row.ErrorCode != wantAttempt[row.RequestID] {
+			t.Errorf("attempt %s: got %q want %q", row.RequestID, row.ErrorCode, wantAttempt[row.RequestID])
+		}
+	}
+}

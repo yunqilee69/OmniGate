@@ -76,7 +76,7 @@ const dimensionRows: Record<StatsDimension, readonly string[]> = {
   key: ['key-01', 'key-02', 'key-03', 'key-04'],
   virtual_key: ['vk-prod-api', 'vk-dev-test', 'vk-mobile-app', 'vk-web-client'],
   status: ['success', 'error', 'client_error', 'cooldown'],
-  error_code: ['429', '500', '502', 'timeout', 'context_length'],
+  error_code: ['429', '500', '502', 'timeout', 'connection_failed'],
 }
 
 const filterFactor = (request: FixtureRequest): number => {

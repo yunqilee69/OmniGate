@@ -448,7 +448,7 @@ func TestAllBackendsUnavailable(t *testing.T) {
 		t.Fatalf("detail wrong: %v", detail)
 	}
 	ls := logs(t, st)
-	if ls[0].ErrorCode != "all_backends" {
+	if ls[0].ErrorCode != "all_backends_unavailable" {
 		t.Fatalf("log wrong: %+v", ls[0])
 	}
 }
@@ -575,7 +575,7 @@ func TestStreamLongOutputSurvivesTimeout(t *testing.T) {
 	}
 }
 
-// 非流式请求：响应头已到但 body 慢于 provider 超时 → 必须记为 timeout（而非 read_error）
+// 非流式请求：响应头已到但 body 慢于 provider 超时 → 必须记为 timeout（而非 read_failed）
 func TestNonStreamBodyTimeout(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

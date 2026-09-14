@@ -73,7 +73,7 @@ func TestProbeModelUpstreamError(t *testing.T) {
 func TestProbeModelNoKey(t *testing.T) {
 	st, _ := newProbeStack(t)
 	id := seedProbeTarget(t, st, "http://127.0.0.1:1", "completions")
-	// 密钥级禁用已移除：全部可用密钥被组合禁用同样应 no_key
+	// 密钥级禁用已移除：全部可用密钥被组合禁用同样应 no_key_available
 	var mk store.ModelKey
 	st.DB.First(&mk)
 	st.DB.Create(&store.ModelKeyBan{
@@ -82,7 +82,7 @@ func TestProbeModelNoKey(t *testing.T) {
 	})
 	rtm, _ := config.NewRuntimeManager(st)
 	res := proxy.ProbeModel(st, rtm, id)
-	if res.Ok || res.ErrCode != "no_key" {
+	if res.Ok || res.ErrCode != "no_key_available" {
 		t.Fatalf("no available key should fail fast: %+v", res)
 	}
 }
@@ -288,8 +288,8 @@ func TestProbeModelHonorsProviderTimeout(t *testing.T) {
 	if res.Ok {
 		t.Fatalf("slow upstream should timeout: %+v", res)
 	}
-	if res.ErrCode != "conn" {
-		t.Fatalf("timeout should surface as conn: %+v", res)
+	if res.ErrCode != "connection_failed" {
+		t.Fatalf("timeout should surface as connection_failed: %+v", res)
 	}
 	if elapsed > 2*time.Second {
 		t.Fatalf("probe waited %s, should honor 100ms timeout", elapsed)
