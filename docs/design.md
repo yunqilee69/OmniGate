@@ -185,6 +185,7 @@ CREATE TABLE request_log (
   tokens_estimated   INTEGER NOT NULL DEFAULT 0,  -- 1=上游未返回 usage，为估算值
   ttft_ms            INTEGER NOT NULL DEFAULT 0,  -- 首 token 延迟（非流式=总耗时）
   total_ms           INTEGER NOT NULL DEFAULT 0,
+  tps                REAL NOT NULL DEFAULT 0,     -- 流式输出速度 tok/s = completion/(total-ttft)；仅流式成功、非估算且生成窗口≥500ms 时记录，否则 0
   cost               REAL NOT NULL DEFAULT 0,     -- 按 model 价格计算
   retries            INTEGER NOT NULL DEFAULT 0,  -- 本次请求发生的目标/key 转移次数
   created_at         INTEGER NOT NULL
@@ -210,6 +211,7 @@ CREATE TABLE request_attempt (
   error_body        TEXT NOT NULL DEFAULT '',       -- 上游错误体截断（≤2KB）
   latency_ms        INTEGER NOT NULL DEFAULT 0,
   ttft_ms           INTEGER NOT NULL DEFAULT 0,
+  tps               REAL NOT NULL DEFAULT 0,      -- 该次尝试的流式输出速度（口径同 request_log.tps）
   prompt_tokens     INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
   created_at        INTEGER NOT NULL
@@ -232,6 +234,7 @@ CREATE TABLE request_log_daily (
   retries_sum       INTEGER NOT NULL DEFAULT 0,
   ttftb0..ttftb9    INTEGER NOT NULL DEFAULT 0,      -- TTFT 10 桶直方图（桶边界见 store.TTFTBucketBounds）
   totalb0..totalb9  INTEGER NOT NULL DEFAULT 0,      -- 总耗时 10 桶直方图（桶边界见 store.TotalBucketBounds）
+  tpsb0..tpsb9      INTEGER NOT NULL DEFAULT 0,      -- 流式生成速度 10 桶直方图（tok/s，边界见 store.TPSBucketBounds；无有效样本的请求不入桶）
   updated_at        INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (day, route, model, provider, status)
 );
@@ -366,6 +369,7 @@ HTTP 503
   │    ├─ 首字节到达（流式：首个 SSE data；非流式：响应完整）
   │    │     ├─ 记录 ttft_ms —— ⚠️ 从此不可再换后端重试
   │    │     └─ SSE 逐块透传给客户端，边转发边累计 token
+  │    │        收尾按 completion/(total-ttft) 计算流式速度 tps
   │    └─ 流中途上游断开：无法重试，记 error(stream_broken)，客户端收到已截断的流结束
   └─ 收尾：写 request_log（成功/失败均写），更新 key.last_used_at、成本计算
 ```
@@ -444,7 +448,7 @@ POST             /api/models/{id}/test-keys  # 逐密钥并发探测：返回绑
 
 # 统计查询（三个接口均支持 &currency=USD|CNY，CNY 时费用按 pricing.usd_cny 汇率换算输出）
 GET  /api/stats/overview?from=&to=            # 总次数/成功率/token/费用/平均TTFT/平均耗时/p95（优先走每日预聚合）
-GET  /api/stats/timeseries?dim=&from=&to=&bucket=1h   # 时间桶聚合；points 含 avg_ttft_ms/avg_total_ms
+GET  /api/stats/timeseries?dim=&from=&to=&bucket=1h   # 时间桶聚合；points 含 avg_ttft_ms/avg_total_ms/avg_tps
 GET  /api/stats/breakdown?dim=&from=&to=     # 按维度分组聚合（含错误率、token、费用、延迟分位）；dim: route|model|provider|key|status|error_code
 
 # 请求日志
@@ -476,7 +480,7 @@ POST /api/maintenance/clear-stats             # body {"confirm":true}；清空�
 | 密钥 | key_id（可算单 key 错误率、使用倾斜） |
 | 成败 | status（success/error/client_error）+ error_code |
 | token | prompt_tokens / completion_tokens / cached_tokens / tokens_estimated |
-| 延迟 | ttft_ms（首 token）/ total_ms |
+| 延迟 | ttft_ms（首 token）/ total_ms / tps（流式输出速度，tok/s） |
 | 费用 | cost（按 model 价格表计算，未配价格则为 0） |
 | 重试 | retries |
 
@@ -484,7 +488,7 @@ POST /api/maintenance/clear-stats             # body {"confirm":true}；清空�
 
 **缓存命中计费**（仅 `billing_mode=token`）：`cached_tokens` 单价取 `model.cached_price`，未配置（0 或负值）回退 `input_price`——历史行为即命中量按输入价计费，回退保持兼容。命中量口径随协议而异：`completions`/`responses` 的 `prompt_tokens_details.cached_tokens` 含在 `prompt_tokens` 内（需扣除后分别计价），`messages` 的 `input_tokens` 与 `cache_read_input_tokens` 互斥（直接相加）。
 
-统计查询优先走每日预聚合表 `request_log_daily`（写入路径同步 UPSERT，`day × route × model × provider × status` 粒度 + 10 桶延迟直方图，均值/p95 由桶反查）；延迟类指标（平均首字响应/平均耗时/p95）只统计 `status='success'` 的行——错误行延迟恒为 0，混入会把计数堆进 0 号桶；p95 自低桶累加定位所在桶后，按桶内均匀分布线性插值出具体值（开区间尾桶以末边界 ×2 作插值上界），故仍是桶粒度近似值，但不会像直接取桶上界那样被 2~3 倍宽的尾桶系统性抬高。当日增量、`error_code` 维度等 rollup 未覆盖的查询回退 `request_log` 现算（索引已按维度建好）。清空统计与保留期清理同时覆盖两类表；仅清明细而不动统计可走 `POST /api/maintenance/clear-logs`（日聚合随后台 UPSERT 独立维护，不受明细删除影响）。
+统计查询优先走每日预聚合表 `request_log_daily`（写入路径同步 UPSERT，`day × route × model × provider × status` 粒度 + 10 桶延迟直方图与 10 桶生成速度直方图，均值/p95 由桶反查）；延迟类指标（平均首字响应/平均耗时/p95）只统计 `status='success'` 的行——错误行延迟恒为 0，混入会把计数堆进 0 号桶；p95 自低桶累加定位所在桶后，按桶内均匀分布线性插值出具体值（开区间尾桶以末边界 ×2 作插值上界），故仍是...
 
 ### 8.2 隐私设计
 

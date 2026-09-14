@@ -111,6 +111,7 @@ func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64,
 	}
 	ttftCounts := [10]int64{}
 	totalCounts := [10]int64{}
+	tpsCounts := [10]int64{}
 
 	row := s.store.DB.Raw(`SELECT
 		COALESCE(SUM(total),0), COALESCE(SUM(success),0), COALESCE(SUM(errors),0),
@@ -130,13 +131,18 @@ func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64,
 		COALESCE(SUM(ttftb8),0), COALESCE(SUM(ttftb9),0),
 		COALESCE(SUM(totalb0),0), COALESCE(SUM(totalb1),0), COALESCE(SUM(totalb2),0), COALESCE(SUM(totalb3),0),
 		COALESCE(SUM(totalb4),0), COALESCE(SUM(totalb5),0), COALESCE(SUM(totalb6),0), COALESCE(SUM(totalb7),0),
-		COALESCE(SUM(totalb8),0), COALESCE(SUM(totalb9),0)
+		COALESCE(SUM(totalb8),0), COALESCE(SUM(totalb9),0),
+		COALESCE(SUM(tpsb0),0), COALESCE(SUM(tpsb1),0), COALESCE(SUM(tpsb2),0), COALESCE(SUM(tpsb3),0),
+		COALESCE(SUM(tpsb4),0), COALESCE(SUM(tpsb5),0), COALESCE(SUM(tpsb6),0), COALESCE(SUM(tpsb7),0),
+		COALESCE(SUM(tpsb8),0), COALESCE(SUM(tpsb9),0)
 		FROM request_log_daily WHERE day BETWEEN ? AND ? AND status = 'success'`, dayFrom, dayTo).Row()
 	if err := bucketRow.Scan(
 		&ttftCounts[0], &ttftCounts[1], &ttftCounts[2], &ttftCounts[3], &ttftCounts[4],
 		&ttftCounts[5], &ttftCounts[6], &ttftCounts[7], &ttftCounts[8], &ttftCounts[9],
 		&totalCounts[0], &totalCounts[1], &totalCounts[2], &totalCounts[3], &totalCounts[4],
 		&totalCounts[5], &totalCounts[6], &totalCounts[7], &totalCounts[8], &totalCounts[9],
+		&tpsCounts[0], &tpsCounts[1], &tpsCounts[2], &tpsCounts[3], &tpsCounts[4],
+		&tpsCounts[5], &tpsCounts[6], &tpsCounts[7], &tpsCounts[8], &tpsCounts[9],
 	); err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
@@ -162,6 +168,8 @@ func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64,
 	avgTotal := avgFromBuckets(totalCounts, store.TotalBucketBounds)
 	p95TTFT := store.P95FromBuckets(ttftCounts, store.TTFTBucketBounds)
 	p95Total := store.P95FromBuckets(totalCounts, store.TotalBucketBounds)
+	avgTPS := avgFromBuckets(tpsCounts, store.TPSBucketBounds)
+	p95TPS := store.P95FromBuckets(tpsCounts, store.TPSBucketBounds)
 
 	cacheRate := 0.0
 	if agg.PTok > 0 {
@@ -176,6 +184,7 @@ func (s *Server) overviewFromRollup(w http.ResponseWriter, dayFrom, dayTo int64,
 		"cost":           agg.Cost * rate,
 		"avg_ttft_ms":    avgTTFT, "avg_total_ms": avgTotal,
 		"p95_ttft_ms": p95TTFT, "p95_total_ms": p95Total,
+		"avg_tps": avgTPS, "p95_tps": p95TPS,
 		"fallback_count": fallbackCount,
 		"fallback_rate":  fallbackRate,
 	})
@@ -196,6 +205,7 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate flo
 		Cost         float64
 		AvgTTFT      sql.NullFloat64
 		AvgTotal     sql.NullFloat64
+		AvgTPS       sql.NullFloat64
 	}
 	row := s.store.DB.Raw(`SELECT COUNT(*),
 		COALESCE(SUM(CASE WHEN status='success' THEN 1 ELSE 0 END),0),
@@ -205,10 +215,11 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate flo
 		COALESCE(SUM(cached_tokens),0),
 		COALESCE(SUM(cost),0),
 		AVG(CASE WHEN status='success' THEN ttft_ms END),
-		AVG(CASE WHEN status='success' THEN total_ms END)
+		AVG(CASE WHEN status='success' THEN total_ms END),
+		AVG(CASE WHEN tps > 0 THEN tps END)
 		FROM request_log WHERE `+where, args...).Row()
 	if err := row.Scan(&agg.Total, &agg.Success, &agg.Errors, &agg.PTokens, &agg.CTokens, &agg.CachedTokens, &agg.Cost,
-		&agg.AvgTTFT, &agg.AvgTotal); err != nil {
+		&agg.AvgTTFT, &agg.AvgTotal, &agg.AvgTPS); err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
@@ -224,7 +235,13 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate flo
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-
+	// TPS 直接取落库列（计算时已过滤估算/窗口过短的样本，tps>0 即有效）
+	var tpsVals []int64
+	if err := s.store.DB.Raw(`SELECT CAST(tps AS INTEGER) FROM request_log WHERE tps > 0 AND `+where, args...).
+		Scan(&tpsVals).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
 	var fallbackCount int64
 	fallbackRow := s.store.DB.Raw(`SELECT COALESCE(COUNT(*),0) FROM request_log WHERE is_fallback = 1 AND `+where, args...).Row()
 	if err := fallbackRow.Scan(&fallbackCount); err != nil {
@@ -251,6 +268,7 @@ func (s *Server) overviewFromRaw(w http.ResponseWriter, from, to int64, rate flo
 		"cost":           agg.Cost * rate,
 		"avg_ttft_ms":    agg.AvgTTFT.Float64, "avg_total_ms": agg.AvgTotal.Float64,
 		"p95_ttft_ms": percentile95(ttfts), "p95_total_ms": percentile95(totals),
+		"avg_tps": agg.AvgTPS.Float64, "p95_tps": percentile95(tpsVals),
 		"fallback_count": fallbackCount,
 		"fallback_rate":  fallbackRate,
 	})
@@ -296,6 +314,7 @@ func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom,
 		Cost       float64 `json:"cost"`
 		AvgTTFT    float64 `json:"avg_ttft_ms"`
 		AvgTotal   float64 `json:"avg_total_ms"`
+		AvgTPS     float64 `json:"avg_tps"`
 		AvgRetries float64 `json:"avg_retries"`
 	}
 
@@ -313,6 +332,8 @@ func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom,
 			SUM(ttftb5) AS tb5, SUM(ttftb6) AS tb6, SUM(ttftb7) AS tb7, SUM(ttftb8) AS tb8, SUM(ttftb9) AS tb9,
 			SUM(totalb0) AS ob0, SUM(totalb1) AS ob1, SUM(totalb2) AS ob2, SUM(totalb3) AS ob3, SUM(totalb4) AS ob4,
 			SUM(totalb5) AS ob5, SUM(totalb6) AS ob6, SUM(totalb7) AS ob7, SUM(totalb8) AS ob8, SUM(totalb9) AS ob9,
+			SUM(tpsb0) AS pb0, SUM(tpsb1) AS pb1, SUM(tpsb2) AS pb2, SUM(tpsb3) AS pb3, SUM(tpsb4) AS pb4,
+			SUM(tpsb5) AS pb5, SUM(tpsb6) AS pb6, SUM(tpsb7) AS pb7, SUM(tpsb8) AS pb8, SUM(tpsb9) AS pb9,
 			SUM(retries_sum) AS retries_sum
 			FROM request_log_daily WHERE day BETWEEN ? AND ?
 			GROUP BY provider, model ORDER BY total DESC LIMIT 200`
@@ -328,6 +349,8 @@ func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom,
 			SUM(ttftb5) AS tb5, SUM(ttftb6) AS tb6, SUM(ttftb7) AS tb7, SUM(ttftb8) AS tb8, SUM(ttftb9) AS tb9,
 			SUM(totalb0) AS ob0, SUM(totalb1) AS ob1, SUM(totalb2) AS ob2, SUM(totalb3) AS ob3, SUM(totalb4) AS ob4,
 			SUM(totalb5) AS ob5, SUM(totalb6) AS ob6, SUM(totalb7) AS ob7, SUM(totalb8) AS ob8, SUM(totalb9) AS ob9,
+			SUM(tpsb0) AS pb0, SUM(tpsb1) AS pb1, SUM(tpsb2) AS pb2, SUM(tpsb3) AS pb3, SUM(tpsb4) AS pb4,
+			SUM(tpsb5) AS pb5, SUM(tpsb6) AS pb6, SUM(tpsb7) AS pb7, SUM(tpsb8) AS pb8, SUM(tpsb9) AS pb9,
 			SUM(retries_sum) AS retries_sum
 			FROM request_log_daily WHERE day BETWEEN ? AND ?
 			GROUP BY dim ORDER BY total DESC LIMIT 200`
@@ -345,11 +368,13 @@ func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom,
 		var dim sql.NullString
 		var t [10]int64
 		var o [10]int64
+		var p [10]int64
 		var retriesSum int64
 		if err := rows.Scan(&dim, &it.Total, &it.Success, &it.Errors, &it.PromptTok, &it.ComplTok,
 			&it.Cost,
 			&t[0], &t[1], &t[2], &t[3], &t[4], &t[5], &t[6], &t[7], &t[8], &t[9],
 			&o[0], &o[1], &o[2], &o[3], &o[4], &o[5], &o[6], &o[7], &o[8], &o[9],
+			&p[0], &p[1], &p[2], &p[3], &p[4], &p[5], &p[6], &p[7], &p[8], &p[9],
 			&retriesSum); err != nil {
 			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
@@ -357,6 +382,7 @@ func (s *Server) breakdownFromRollup(w http.ResponseWriter, col string, dayFrom,
 		it.Dim = dim.String
 		it.AvgTTFT = avgFromBuckets(t, store.TTFTBucketBounds)
 		it.AvgTotal = avgFromBuckets(o, store.TotalBucketBounds)
+		it.AvgTPS = avgFromBuckets(p, store.TPSBucketBounds)
 		if it.Total > 0 {
 			it.AvgRetries = float64(retriesSum) / float64(it.Total)
 		}
@@ -379,6 +405,7 @@ func (s *Server) breakdownFromRaw(w http.ResponseWriter, col string, from, to in
 			COALESCE(SUM(cost),0) AS cost,
 			AVG(CASE WHEN status='success' THEN ttft_ms END) AS avg_ttft,
 			AVG(CASE WHEN status='success' THEN total_ms END) AS avg_total,
+			AVG(CASE WHEN tps > 0 THEN tps END) AS avg_tps,
 			COALESCE(AVG(retries),0) AS avg_retries
 			FROM request_log WHERE created_at BETWEEN ? AND ?
 			GROUP BY provider, model ORDER BY total DESC LIMIT 200`
@@ -391,6 +418,7 @@ func (s *Server) breakdownFromRaw(w http.ResponseWriter, col string, from, to in
 			COALESCE(SUM(cost),0) AS cost,
 			AVG(CASE WHEN status='success' THEN ttft_ms END) AS avg_ttft,
 			AVG(CASE WHEN status='success' THEN total_ms END) AS avg_total,
+			AVG(CASE WHEN tps > 0 THEN tps END) AS avg_tps,
 			COALESCE(AVG(retries),0) AS avg_retries
 			FROM request_log WHERE created_at BETWEEN ? AND ?
 			GROUP BY dim ORDER BY total DESC LIMIT 200`
@@ -412,6 +440,7 @@ func (s *Server) breakdownFromRaw(w http.ResponseWriter, col string, from, to in
 		Cost       float64 `json:"cost"`
 		AvgTTFT    float64 `json:"avg_ttft_ms"`
 		AvgTotal   float64 `json:"avg_total_ms"`
+		AvgTPS     float64 `json:"avg_tps"`
 		AvgRetries float64 `json:"avg_retries"`
 		KeyMasked  string  `json:"key_masked,omitempty"`
 		KeyName    string  `json:"key_name,omitempty"`
@@ -420,14 +449,16 @@ func (s *Server) breakdownFromRaw(w http.ResponseWriter, col string, from, to in
 	for rows.Next() {
 		var it item
 		var ttft, total sql.NullFloat64
+		var tps sql.NullFloat64
 		var dim sql.NullString
 		if err := rows.Scan(&dim, &it.Total, &it.Success, &it.Errors, &it.PromptTok, &it.ComplTok,
-			&it.Cost, &ttft, &total, &it.AvgRetries); err != nil {
+			&it.Cost, &ttft, &total, &tps, &it.AvgRetries); err != nil {
 			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
 		it.Dim = dim.String
 		it.AvgTTFT, it.AvgTotal = ttft.Float64, total.Float64
+		it.AvgTPS = tps.Float64
 		it.Cost *= rate
 		items = append(items, it)
 	}
@@ -524,7 +555,8 @@ func (s *Server) getStatsTimeseries(w http.ResponseWriter, r *http.Request) {
 		COALESCE(SUM(prompt_tokens+completion_tokens),0) AS total_tokens,
 		SUM(CASE WHEN is_fallback = 1 THEN 1 ELSE 0 END) AS fallback_count,
 		AVG(CASE WHEN status='success' THEN ttft_ms END) AS avg_ttft,
-		AVG(CASE WHEN status='success' THEN total_ms END) AS avg_total
+		AVG(CASE WHEN status='success' THEN total_ms END) AS avg_total,
+		AVG(CASE WHEN tps > 0 THEN tps END) AS avg_tps
 		FROM request_log WHERE `+where+` GROUP BY bucket ORDER BY bucket`, args...).Rows()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
@@ -543,17 +575,20 @@ func (s *Server) getStatsTimeseries(w http.ResponseWriter, r *http.Request) {
 		FallbackCount    int64   `json:"fallback_count"`
 		AvgTTFT          float64 `json:"avg_ttft_ms"`
 		AvgTotal         float64 `json:"avg_total_ms"`
+		AvgTPS           float64 `json:"avg_tps"`
 	}
 	points := []point{}
 	for rows.Next() {
 		var p point
 		var ttft, total sql.NullFloat64
+		var tps sql.NullFloat64
 		if err := rows.Scan(&p.Bucket, &p.Total, &p.Success, &p.Errors, &p.PromptTokens,
-			&p.CompletionTokens, &p.Cost, &p.TotalTokens, &p.FallbackCount, &ttft, &total); err != nil {
+			&p.CompletionTokens, &p.Cost, &p.TotalTokens, &p.FallbackCount, &ttft, &total, &tps); err != nil {
 			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
 		p.AvgTTFT, p.AvgTotal = ttft.Float64, total.Float64
+		p.AvgTPS = tps.Float64
 		p.Cost *= rate
 		points = append(points, p)
 	}

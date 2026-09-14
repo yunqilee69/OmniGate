@@ -62,7 +62,7 @@ function chartData(points: TimeseriesPoint[], bucket: BucketSize): TimeseriesPoi
     return pointMap.get(start + index * step) ?? {
       bucket: start + index * step, total: 0, success: 0, errors: 0,
       prompt_tokens: 0, completion_tokens: 0, cost: 0, total_tokens: 0,
-      fallback_count: 0, avg_ttft_ms: 0, avg_total_ms: 0,
+      fallback_count: 0, avg_ttft_ms: 0, avg_total_ms: 0, avg_tps: 0,
     }
   })
 }
@@ -145,6 +145,7 @@ export default function Stats() {
         <Col xs={24} sm={12} md={8} lg={6}><StatTile title="输入 / 输出" value={`${formatNumber(ov?.prompt_tokens ?? 0)} / ${formatNumber(ov?.completion_tokens ?? 0)}`} tint="#e8fbf4" suffix="tok" /></Col>
         <Col xs={24} sm={12} md={8} lg={6}><StatTile title="P95 首字响应" value={`${Math.round(ov?.p95_ttft_ms ?? 0)}`} tint="#fff4e6" suffix="ms" /></Col>
         <Col xs={24} sm={12} md={8} lg={6}><StatTile title="P95 总耗时" value={`${Math.round(ov?.p95_total_ms ?? 0)}`} tint="#fff4e6" suffix="ms" /></Col>
+        <Col xs={24} sm={12} md={8} lg={6}><StatTile title="平均生成速度" value={`${(ov?.avg_tps ?? 0).toFixed(1)}`} tint="#eefbf9" suffix="tok/s" /></Col>
         {(ov?.fallback_count ?? 0) > 0 && <Col xs={24} sm={12} md={8} lg={6}><StatTile title="兜底使用" value={formatNumber(ov?.fallback_count ?? 0)} tint="#fff0f0" suffix={`${((ov?.fallback_rate ?? 0) * 100).toFixed(1)}%`} /></Col>}
       </Row>
 
@@ -175,17 +176,18 @@ export default function Stats() {
       {errorDistribution.length > 0 && <Card title="错误码分布" style={{ marginBottom: 16 }}><Chart option={distributionOption(errorDistribution, ['#c50000', '#ee0000', '#ab570a', '#7928ca'])} height={300} /></Card>}
 
       <Card title="维度明细">
-        <Table<Item> rowKey="dim" dataSource={items} size="small" tableLayout="fixed" scroll={{ x: 1160 }} pagination={{ pageSize: 20 }}>
+        <Table<Item> rowKey="dim" dataSource={items} size="small" tableLayout="fixed" scroll={{ x: 1270 }} pagination={{ pageSize: 20 }}>
           <Table.Column title="维度值" dataIndex="dim" render={(_, item: Item) => dim === 'key' ? <code style={{ fontSize: 12 }}>{item.key_name || item.key_masked || `key#${item.dim}`}</code> : dim === 'virtual_key' ? <code style={{ fontSize: 12 }}>{item.key_name || `vk#${item.dim}`}</code> : item.dim} />
           <Table.Column title="请求" dataIndex="total" sorter={(a: Item, b: Item) => a.total - b.total} render={(value) => formatNumber(Number(value))} />
           <Table.Column title="成功" dataIndex="success" render={(value) => formatNumber(Number(value))} />
           <Table.Column title="错误" dataIndex="errors" render={(value) => formatNumber(Number(value))} />
           <Table.Column title="错误率" render={(_, item: Item) => item.total ? `${((1 - item.success / item.total) * 100).toFixed(1)}%` : '-'} />
-          <Table.Column title="Prompt" dataIndex="prompt_tokens" render={(value) => formatNumber(Number(value))} />
-          <Table.Column title="Completion" dataIndex="completion_tokens" render={(value) => formatNumber(Number(value))} />
+          <Table.Column title="输入 Tokens" dataIndex="prompt_tokens" render={(value) => formatNumber(Number(value))} />
+          <Table.Column title="输出 Tokens" dataIndex="completion_tokens" render={(value) => formatNumber(Number(value))} />
           <Table.Column title="费用" dataIndex="cost" render={(value) => formatCost(Number(value), currency)} />
           <Table.Column title="平均首字响应" dataIndex="avg_ttft_ms" render={(value) => `${Math.round(Number(value))}ms`} />
           <Table.Column title="平均耗时" dataIndex="avg_total_ms" render={(value) => `${Math.round(Number(value))}ms`} />
+          <Table.Column title="平均生成速度" dataIndex="avg_tps" render={(value) => `${Number(value).toFixed(1)} tok/s`} />
           <Table.Column title="平均重试" dataIndex="avg_retries" render={(value) => Number(value).toFixed(2)} />
         </Table>
       </Card>

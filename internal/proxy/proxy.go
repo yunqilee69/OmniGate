@@ -143,6 +143,7 @@ type attemptResult struct {
 	usage       usageInfo
 	ttft        time.Duration
 	latencyMs   int64
+	elapsed     time.Duration // attempt 开始到结束的总耗时（与 latencyMs 同时刻采集，供 TPS 计算）
 	retryAfterS int
 	streamBroke bool
 	errorBody   string      // 上游错误响应体摘要（< 2KB）；仅错误路径填充
@@ -366,7 +367,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						slog.Info("using fallback model", "route", routeName, "fallback_model_id", fbID)
 						attemptStart := time.Now()
 						res := h.attempt(w, r, req, fallbackAtt, isStream, rt)
-						res.latencyMs = time.Since(attemptStart).Milliseconds()
+						res.latencyMs, res.elapsed = time.Since(attemptStart).Milliseconds(), time.Since(attemptStart)
 						h.record(res, rt)
 						attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
@@ -396,7 +397,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		tried[att.Combo()] = true
 		attemptStart := time.Now()
 		res := h.attempt(w, r, req, att, isStream, rt)
-		res.latencyMs = time.Since(attemptStart).Milliseconds()
+		res.latencyMs, res.elapsed = time.Since(attemptStart).Milliseconds(), time.Since(attemptStart)
 		h.record(res, rt)
 		attempts = append(attempts, h.attemptRow(requestID, routeName, attempt, att, res, attemptStart))
 		last = res
@@ -878,6 +879,7 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 		IsFallback:   isFallback,
 		PromptTokens: u.prompt, CompletionTokens: u.completion, CachedTokens: u.cached, TokensEstimated: u.estimated,
 		TTFTMs: ttft.Milliseconds(), TotalMs: total.Milliseconds(),
+		Tps:  streamTPS(isStream, status, u, ttft, total),
 		Cost: cost(att.Model, u, h.rt.Snapshot().USDCNY, status), Retries: retries,
 		VKID: vkID,
 	}
@@ -897,11 +899,29 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 	}
 }
 
+// streamTPS 计算流式输出速度（tok/s）：completion_tokens / 生成窗口（total - ttft）。
+// 仅流式成功、usage 非估算且生成时长 >= 500ms 时有意义：非流式（ttft==total，窗口为 0）、
+// token 估算、以及极短生成都会产生误导值，一律记 0，不进入统计。
+func streamTPS(isStream bool, status string, u usageInfo, ttft, total time.Duration) float64 {
+	if !isStream || status != "success" || u.estimated || u.completion <= 0 {
+		return 0
+	}
+	genMs := (total - ttft).Milliseconds()
+	if genMs < 500 {
+		return 0
+	}
+	return float64(u.completion) * 1000 / float64(genMs)
+}
+
 // attemptRow 构造一次转发尝试的完整明细行（含成功与失败），由调用方累积后随
 // writeLog 统一落库，便于排查重试链路。
 // 对于 all_backends_unavailable 错误（没有可用模型），model 和 provider 字段为空字符串。
 func (h *Handler) attemptRow(requestID, routeName string, attempt int, att router.Attempt,
 	res attemptResult, start time.Time) store.RequestAttempt {
+	elapsed := res.elapsed
+	if elapsed == 0 {
+		elapsed = time.Since(start)
+	}
 	return store.RequestAttempt{
 		RequestID:        requestID,
 		Route:            routeName,
@@ -913,8 +933,9 @@ func (h *Handler) attemptRow(requestID, routeName string, attempt int, att route
 		HTTPStatus:       res.httpStatus,
 		ErrorCode:        res.errCode,
 		ErrorBody:        res.errorBody,
-		LatencyMs:        time.Since(start).Milliseconds(),
+		LatencyMs:        elapsed.Milliseconds(),
 		TTFTMs:           res.ttft.Milliseconds(),
+		Tps:              streamTPS(res.ttft > 0, res.status, res.usage, res.ttft, elapsed),
 		PromptTokens:     res.usage.prompt,
 		CompletionTokens: res.usage.completion,
 	}
@@ -1268,7 +1289,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 						slog.Info("using fallback model", "route", routeName, "fallback_model_id", fbID, "endpoint", endpoint)
 						attemptStart := time.Now()
 						res := h.nativeAttempt(w, r, body, fallbackAtt, isStream, rt, endpoint)
-						res.latencyMs = time.Since(attemptStart).Milliseconds()
+						res.latencyMs, res.elapsed = time.Since(attemptStart).Milliseconds(), time.Since(attemptStart)
 						h.record(res, rt)
 						attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
 						h.writeLog(start, requestID, routeName, fallbackAtt, isStream,
@@ -1304,7 +1325,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 		tried[att.Combo()] = true
 		attemptStart := time.Now()
 		res := h.nativeAttempt(w, r, body, att, isStream, rt, endpoint)
-		res.latencyMs = time.Since(attemptStart).Milliseconds()
+		res.latencyMs, res.elapsed = time.Since(attemptStart).Milliseconds(), time.Since(attemptStart)
 		h.record(res, rt)
 		attempts = append(attempts, h.attemptRow(requestID, routeName, attempt, att, res, attemptStart))
 		last = res

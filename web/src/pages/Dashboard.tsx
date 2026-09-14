@@ -45,6 +45,7 @@ interface TopModelRow {
   prompt_tokens: number
   completion_tokens: number
   cost: number
+  avg_tps: number
 }
 
 const modelStatusTag = (m: HealthModel) => {
@@ -278,6 +279,7 @@ export default function Dashboard() {
             <Table.Column title="总 Tokens" width={120} sorter={(a, b) => (b.prompt_tokens + b.completion_tokens) - (a.prompt_tokens + a.completion_tokens)} render={(_, r) => formatNumber(r.prompt_tokens + r.completion_tokens)} />
             <Table.Column title="输入 Tokens" dataIndex="prompt_tokens" width={110} sorter={(a, b) => a.prompt_tokens - b.prompt_tokens} render={(v) => formatNumber(+v)} />
             <Table.Column title="输出 Tokens" dataIndex="completion_tokens" width={110} sorter={(a, b) => a.completion_tokens - b.completion_tokens} render={(v) => formatNumber(+v)} />
+            <Table.Column title="生成速度" width={110} sorter={(a, b) => a.avg_tps - b.avg_tps} render={(_, r) => r.avg_tps > 0 ? `${r.avg_tps.toFixed(1)} tok/s` : '-'} />
             <Table.Column title="费用" dataIndex="cost" width={100} sorter={(a, b) => a.cost - b.cost} render={(v) => formatCost(+v, currency)} />
           </Table>
         )}

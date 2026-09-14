@@ -22,6 +22,7 @@ interface LogRow {
   tokens_estimated: boolean
   ttft_ms: number
   total_ms: number
+  tps: number
   cost: number
   retries: number
   created_at: number
@@ -41,6 +42,7 @@ interface Attempt {
   error_body?: string
   latency_ms: number
   ttft_ms: number
+  tps: number
   prompt_tokens: number
   completion_tokens: number
   created_at: number
@@ -126,6 +128,7 @@ export default function LogDetail() {
           </Descriptions.Item>
           <Descriptions.Item label="首字响应">{log.ttft_ms} ms</Descriptions.Item>
           <Descriptions.Item label="总耗时">{log.total_ms} ms</Descriptions.Item>
+          <Descriptions.Item label="生成速度">{log.tps > 0 ? `${log.tps.toFixed(1)} tok/s` : '-'}</Descriptions.Item>
           <Descriptions.Item label="费用">{log.cost.toFixed(6)}</Descriptions.Item>
           <Descriptions.Item label="重试转移">{log.retries}</Descriptions.Item>
           <Descriptions.Item label="时间" span={3}>{dayjs(log.created_at * 1000).format('YYYY-MM-DD HH:mm:ss')}</Descriptions.Item>
@@ -166,7 +169,9 @@ export default function LogDetail() {
             <Table.Column title="状态" dataIndex="status" width={90} render={statusTag} />
             <Table.Column title="HTTP" dataIndex="http_status" width={70} />
             <Table.Column title="错误码" dataIndex="error_code" width={90} />
-            <Table.Column title="首字/耗时" width={120} render={(_, a) => `${a.ttft_ms}/${a.latency_ms}ms`} />
+            <Table.Column title="首字/耗时" width={130} render={(_, a) => (
+              <span>{a.ttft_ms}/{a.latency_ms}ms{a.tps > 0 ? ` · ${a.tps.toFixed(0)} tok/s` : ''}</span>
+            )} />
             <Table.Column
               title="Tokens"
               width={96}

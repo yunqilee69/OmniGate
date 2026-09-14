@@ -15,6 +15,7 @@ export interface TimeseriesPoint {
   fallback_count: number
   avg_ttft_ms: number
   avg_total_ms: number
+  avg_tps: number
 }
 
 export interface TimeseriesResponse {
@@ -33,6 +34,8 @@ export interface Overview {
   cost: number
   p95_ttft_ms: number
   p95_total_ms: number
+  avg_tps: number
+  p95_tps: number
   fallback_count: number
   fallback_rate: number
 }
@@ -49,6 +52,7 @@ export interface Item {
   cost: number
   avg_ttft_ms: number
   avg_total_ms: number
+  avg_tps: number
   avg_retries: number
 }
 
@@ -108,6 +112,7 @@ const pointFor = (bucket: number, index: number, request: FixtureRequest): Times
     fallback_count: fallbackCount,
     avg_ttft_ms: 290 + (index % 7) * 18 + (hourly ? 12 : 0),
     avg_total_ms: 1320 + (index % 6) * 105 + (hourly ? 60 : 0),
+    avg_tps: 28 + (index % 5) * 6 - (hourly ? 3 : 0),
   }
 }
 
@@ -145,6 +150,7 @@ const buildBreakdown = (request: FixtureRequest, points: TimeseriesPoint[]): Ite
       cost: cost * share,
       avg_ttft_ms: 260 + index * 31,
       avg_total_ms: 1180 + index * 145,
+      avg_tps: 32 - index * 5,
       avg_retries: 0.06 + index * 0.08,
     }
   })
@@ -173,6 +179,8 @@ export function makeStatsFixture(request: FixtureRequest): FixturePayload {
       cost,
       p95_ttft_ms: 510,
       p95_total_ms: 2140,
+      avg_tps: 30,
+      p95_tps: 58,
       fallback_count: fallbackCount,
       fallback_rate: total ? fallbackCount / total : 0,
     },

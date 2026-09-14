@@ -61,15 +61,19 @@ export function costTokenOption(points: TimeseriesPoint[], bucket: string): ECha
 
 export function latencyOption(points: TimeseriesPoint[], bucket: string): EChartsOption {
   return {
-    color: [colors.link, colors.ink],
-    tooltip: { trigger: 'axis', valueFormatter: (value) => `${Math.round(Number(value))} ms` },
-    legend: { top: 0, data: ['首字响应', '总耗时'], textStyle: { color: colors.body } },
+    color: [colors.link, colors.ink, colors.success],
+    tooltip: { trigger: 'axis' },
+    legend: { top: 0, data: ['首字响应', '总耗时', '生成速度'], textStyle: { color: colors.body } },
     grid: baseGrid,
     xAxis: { type: 'category', data: points.map((point) => bucketLabel(point.bucket, bucket)), axisLabel: { ...axisStyle.axisLabel, interval: Math.max(0, Math.floor(points.length / 8) - 1) }, axisLine: axisStyle.axisLine },
-    yAxis: { type: 'value', name: '毫秒', axisLabel: axisStyle.axisLabel, splitLine: { lineStyle: { color: colors.hairline } } },
+    yAxis: [
+      { type: 'value', name: '毫秒', axisLabel: axisStyle.axisLabel, splitLine: { lineStyle: { color: colors.hairline } } },
+      { type: 'value', name: 'tok/s', axisLabel: axisStyle.axisLabel, splitLine: { show: false } },
+    ],
     series: [
       { name: '首字响应', type: 'line', smooth: true, showSymbol: false, data: points.map((point) => point.avg_ttft_ms) },
       { name: '总耗时', type: 'line', smooth: true, showSymbol: false, data: points.map((point) => point.avg_total_ms) },
+      { name: '生成速度', type: 'line', smooth: true, showSymbol: false, yAxisIndex: 1, data: points.map((point) => point.avg_tps ?? 0) },
     ],
   }
 }

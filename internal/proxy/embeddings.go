@@ -216,7 +216,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 						slog.Info("using fallback model", "route", routeName, "fallback_model_id", fbID, "type", kind.modelType)
 						attemptStart := time.Now()
 						res := h.typedAttempt(w, r, req, fallbackAtt, kind, rt)
-						res.latencyMs = time.Since(attemptStart).Milliseconds()
+						res.latencyMs, res.elapsed = time.Since(attemptStart).Milliseconds(), time.Since(attemptStart)
 						h.record(res, rt)
 						attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
 						h.writeLog(start, requestID, routeName, fallbackAtt, false,
@@ -246,7 +246,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 		tried[att.Combo()] = true
 		attemptStart := time.Now()
 		res := h.typedAttempt(w, r, req, att, kind, rt)
-		res.latencyMs = time.Since(attemptStart).Milliseconds()
+		res.latencyMs, res.elapsed = time.Since(attemptStart).Milliseconds(), time.Since(attemptStart)
 		h.record(res, rt)
 		attempts = append(attempts, h.attemptRow(requestID, routeName, attempt, att, res, attemptStart))
 		last = res

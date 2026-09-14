@@ -1162,3 +1162,74 @@ func TestFirstLevelNamespaces(t *testing.T) {
 		}
 	})
 }
+
+// TestStatsOverviewTPSRawPath 原始表回退路径：avg_tps 取 tps>0 行的均值，p95_tps 取分位（截断为整数毫秒口径）。
+func TestStatsOverviewTPSRawPath(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	rows := []store.RequestLog{
+		{RequestID: "tps-a", Route: "r", Model: "m", Provider: "p", Status: "success",
+			IsStream: true, CompletionTokens: 150, TTFTMs: 200, TotalMs: 1700, Tps: 100, CreatedAt: now},
+		// 非流式：tps=0，不进统计
+		{RequestID: "tps-c", Route: "r", Model: "m", Provider: "p", Status: "success",
+			CompletionTokens: 50, TTFTMs: 900, TotalMs: 900, CreatedAt: now},
+	}
+	for i := range rows {
+		if err := st.DB.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec := do(t, h, "GET", "/api/stats/overview", nil, "test-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("overview failed: %d — %s", rec.Code, rec.Body.String())
+	}
+	ov := decodeObj(t, rec)
+	if avg := ov["avg_tps"].(float64); avg < 99.9 || avg > 100.1 {
+		t.Fatalf("avg_tps want 100, got %v", avg)
+	}
+	if p95 := ov["p95_tps"].(float64); p95 != 100 {
+		t.Fatalf("p95_tps want 100, got %v", p95)
+	}
+}
+
+// TestStatsTimeseriesAndBreakdownTPS 时间序列与维度聚合的 avg_tps：只对 tps>0 行求均值。
+func TestStatsTimeseriesAndBreakdownTPS(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	rows := []store.RequestLog{
+		{RequestID: "ts-a", Route: "r1", Model: "m", Provider: "p", Status: "success",
+			IsStream: true, CompletionTokens: 30, TTFTMs: 200, TotalMs: 1200, Tps: 30, CreatedAt: now},
+		{RequestID: "ts-b", Route: "r1", Model: "m", Provider: "p", Status: "success",
+			IsStream: true, CompletionTokens: 10, TTFTMs: 200, TotalMs: 1200, Tps: 10, CreatedAt: now},
+		{RequestID: "ts-c", Route: "r2", Model: "m", Provider: "p", Status: "success",
+			CompletionTokens: 10, TTFTMs: 300, TotalMs: 300, CreatedAt: now},
+	}
+	for i := range rows {
+		if err := st.DB.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ts := decodeObj(t, do(t, h, "GET", "/api/stats/timeseries", nil, "test-token"))
+	points := ts["points"].([]any)
+	if len(points) != 1 {
+		t.Fatalf("expect 1 bucket, got %d", len(points))
+	}
+	if avg := points[0].(map[string]any)["avg_tps"].(float64); avg < 19.9 || avg > 20.1 {
+		t.Fatalf("timeseries avg_tps want 20, got %v", avg)
+	}
+
+	items := decodeArr(t, do(t, h, "GET", "/api/stats/breakdown?dim=route", nil, "test-token"))
+	got := map[string]float64{}
+	for _, it := range items {
+		row := it.(map[string]any)
+		got[row["dim"].(string)] = row["avg_tps"].(float64)
+	}
+	if got["r1"] < 19.9 || got["r1"] > 20.1 {
+		t.Fatalf("r1 avg_tps want 20, got %v", got["r1"])
+	}
+	if got["r2"] != 0 {
+		t.Fatalf("r2 avg_tps want 0 (no samples), got %v", got["r2"])
+	}
+}

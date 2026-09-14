@@ -13,6 +13,9 @@ import (
 var (
 	TTFTBucketBounds  = [9]int64{50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000}
 	TotalBucketBounds = [9]int64{100, 300, 1000, 3000, 10000, 30000, 60000, 120000, 300000}
+	// TPSBucketBounds 生成速度直方桶（tok/s，左开右闭按上界）。0 值（非流式/无有效样本）
+	// 不入桶：见 UpsertDaily 与 Backfill 的过滤条件。
+	TPSBucketBounds = [9]int64{1, 5, 10, 20, 40, 80, 150, 300, 600}
 )
 
 func ttftBucketIdx(ms int64) int {
@@ -27,6 +30,19 @@ func ttftBucketIdx(ms int64) int {
 func totalBucketIdx(ms int64) int {
 	for i, b := range TotalBucketBounds {
 		if ms < b {
+			return i
+		}
+	}
+	return 9
+}
+
+// tpsBucketIdx 返回生成速度所在桶；tps<=0（无有效样本：非流式/估算/失败）返回 -1，不落入任何桶。
+func tpsBucketIdx(tps float64) int {
+	if tps <= 0 {
+		return -1
+	}
+	for i, b := range TPSBucketBounds {
+		if tps < float64(b) {
 			return i
 		}
 	}
@@ -49,6 +65,7 @@ func UpsertDaily(db *gorm.DB, log *RequestLog) {
 	status := log.Status
 	ti := ttftBucketIdx(log.TTFTMs)
 	tb := totalBucketIdx(log.TotalMs)
+	pb := tpsBucketIdx(log.Tps)
 	successDelta := int64(0)
 	errorDelta := int64(0)
 	if status == "success" {
@@ -64,9 +81,11 @@ INSERT INTO request_log_daily
    total, success, errors, prompt_tokens, completion_tokens, cached_tokens, cost, retries_sum,
    ttftb0, ttftb1, ttftb2, ttftb3, ttftb4, ttftb5, ttftb6, ttftb7, ttftb8, ttftb9,
    totalb0, totalb1, totalb2, totalb3, totalb4, totalb5, totalb6, totalb7, totalb8, totalb9,
+   tpsb0, tpsb1, tpsb2, tpsb3, tpsb4, tpsb5, tpsb6, tpsb7, tpsb8, tpsb9,
    updated_at)
 VALUES (?,?,?,?,?,
         1,?,?,?,?,?,?,?,
+        ?,?,?,?,?,?,?,?,?,?,
         ?,?,?,?,?,?,?,?,?,?,
         ?,?,?,?,?,?,?,?,?,?,
         ?)
@@ -89,6 +108,11 @@ ON CONFLICT(day, route, model, provider, status) DO UPDATE SET
   totalb4 = totalb4 + excluded.totalb4, totalb5 = totalb5 + excluded.totalb5,
   totalb6 = totalb6 + excluded.totalb6, totalb7 = totalb7 + excluded.totalb7,
   totalb8 = totalb8 + excluded.totalb8, totalb9 = totalb9 + excluded.totalb9,
+  tpsb0 = tpsb0 + excluded.tpsb0, tpsb1 = tpsb1 + excluded.tpsb1,
+  tpsb2 = tpsb2 + excluded.tpsb2, tpsb3 = tpsb3 + excluded.tpsb3,
+  tpsb4 = tpsb4 + excluded.tpsb4, tpsb5 = tpsb5 + excluded.tpsb5,
+  tpsb6 = tpsb6 + excluded.tpsb6, tpsb7 = tpsb7 + excluded.tpsb7,
+  tpsb8 = tpsb8 + excluded.tpsb8, tpsb9 = tpsb9 + excluded.tpsb9,
   updated_at       = excluded.updated_at
 `,
 		day, log.Route, log.Model, log.Provider, status,
@@ -99,6 +123,9 @@ ON CONFLICT(day, route, model, provider, status) DO UPDATE SET
 		boolToInt64(tb == 0), boolToInt64(tb == 1), boolToInt64(tb == 2), boolToInt64(tb == 3),
 		boolToInt64(tb == 4), boolToInt64(tb == 5), boolToInt64(tb == 6), boolToInt64(tb == 7),
 		boolToInt64(tb == 8), boolToInt64(tb == 9),
+		boolToInt64(pb == 0), boolToInt64(pb == 1), boolToInt64(pb == 2), boolToInt64(pb == 3),
+		boolToInt64(pb == 4), boolToInt64(pb == 5), boolToInt64(pb == 6), boolToInt64(pb == 7),
+		boolToInt64(pb == 8), boolToInt64(pb == 9),
 		now,
 	).Error
 	if err != nil {
@@ -160,7 +187,7 @@ GROUP BY day, route, model, provider, status`).Rows()
 		return err
 	}
 
-	// 第二遍：把每行的 ttft/total 直方桶计算出来（同 SQL 用 SUM(CASE) 一次性生成）。
+	// 第二遍：把每行的 ttft/total/tps 直方桶计算出来（同 SQL 用 SUM(CASE) 一次性生成）。
 	histRows, err := db.Raw(`
 SELECT
   (CAST(strftime('%Y', created_at, 'unixepoch') AS INTEGER)) * 10000
@@ -186,7 +213,27 @@ SELECT
   SUM(CASE WHEN total_ms >= 30000  AND total_ms < 60000  THEN 1 ELSE 0 END) AS T6,
   SUM(CASE WHEN total_ms >= 60000  AND total_ms < 120000 THEN 1 ELSE 0 END) AS T7,
   SUM(CASE WHEN total_ms >= 120000 AND total_ms < 300000 THEN 1 ELSE 0 END) AS T8,
-  SUM(CASE WHEN total_ms >= 300000                       THEN 1 ELSE 0 END) AS T9
+  SUM(CASE WHEN total_ms >= 300000                       THEN 1 ELSE 0 END) AS T9,
+  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+            AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 1   THEN 1 ELSE 0 END) AS p0,
+  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+            AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 1   AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 5   THEN 1 ELSE 0 END) AS p1,
+  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+            AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 5   AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 10  THEN 1 ELSE 0 END) AS p2,
+  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+            AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 10  AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 20  THEN 1 ELSE 0 END) AS p3,
+  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+            AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 20  AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 40  THEN 1 ELSE 0 END) AS p4,
+  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+            AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 40  AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 80  THEN 1 ELSE 0 END) AS p5,
+  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+            AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 80  AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 150 THEN 1 ELSE 0 END) AS p6,
+  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+            AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 150 AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 300 THEN 1 ELSE 0 END) AS p7,
+  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+            AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 300 AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 600 THEN 1 ELSE 0 END) AS p8,
+  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+            AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 600 THEN 1 ELSE 0 END) AS p9
 FROM request_log
 GROUP BY day, route, model, provider, status`).Rows()
 	if err != nil {
@@ -196,14 +243,15 @@ GROUP BY day, route, model, provider, status`).Rows()
 		Day                            int64
 		Route, Model, Provider, Status string
 	}
-	hists := map[histKey][20]int64{}
+	hists := map[histKey][30]int64{}
 	defer histRows.Close()
 	for histRows.Next() {
 		var k histKey
-		var h [20]int64
+		var h [30]int64
 		if err := histRows.Scan(&k.Day, &k.Route, &k.Model, &k.Provider, &k.Status,
 			&h[0], &h[1], &h[2], &h[3], &h[4], &h[5], &h[6], &h[7], &h[8], &h[9],
-			&h[10], &h[11], &h[12], &h[13], &h[14], &h[15], &h[16], &h[17], &h[18], &h[19]); err != nil {
+			&h[10], &h[11], &h[12], &h[13], &h[14], &h[15], &h[16], &h[17], &h[18], &h[19],
+			&h[20], &h[21], &h[22], &h[23], &h[24], &h[25], &h[26], &h[27], &h[28], &h[29]); err != nil {
 			return err
 		}
 		hists[k] = h
@@ -220,13 +268,15 @@ INSERT INTO request_log_daily
    total, success, errors, prompt_tokens, completion_tokens, cached_tokens, cost, retries_sum,
    ttftb0, ttftb1, ttftb2, ttftb3, ttftb4, ttftb5, ttftb6, ttftb7, ttftb8, ttftb9,
    totalb0, totalb1, totalb2, totalb3, totalb4, totalb5, totalb6, totalb7, totalb8, totalb9,
+   tpsb0, tpsb1, tpsb2, tpsb3, tpsb4, tpsb5, tpsb6, tpsb7, tpsb8, tpsb9,
    updated_at)
-VALUES (?,?,?,?,?, ?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?, ?)
+VALUES (?,?,?,?,?, ?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?, ?)
 ON CONFLICT(day, route, model, provider, status) DO NOTHING`,
 			a.Day, a.Route, a.Model, a.Provider, a.Status,
 			a.Total, a.Success, a.Errors, a.PTok, a.CTok, a.CachedTok, a.Cost, a.RetriesSum,
 			h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8], h[9],
 			h[10], h[11], h[12], h[13], h[14], h[15], h[16], h[17], h[18], h[19],
+			h[20], h[21], h[22], h[23], h[24], h[25], h[26], h[27], h[28], h[29],
 			now,
 		).Error
 		if err != nil {

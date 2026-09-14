@@ -157,9 +157,9 @@ type ModelKeyBan struct {
 // Route 逻辑路由（客户端请求的 modelId）。
 // Endpoint 决定协议族：completions(/v1/chat/completions) | messages(/v1/messages) | responses(/v1/responses) | mcp(/v1/mcp/{name})。
 type Route struct {
-	ID           int64            `json:"id" gorm:"primaryKey;autoIncrement"`
-	Name         string           `json:"name" gorm:"size:191;not null;uniqueIndex"`
-	Endpoint     string           `json:"endpoint" gorm:"size:32;not null;default:completions"` // completions | messages | responses | mcp
+	ID       int64  `json:"id" gorm:"primaryKey;autoIncrement"`
+	Name     string `json:"name" gorm:"size:191;not null;uniqueIndex"`
+	Endpoint string `json:"endpoint" gorm:"size:32;not null;default:completions"` // completions | messages | responses | mcp
 	// FallbackModelID 路由级兜底模型：目标后端全灭时单次尝试的目标（0=不兜底）。
 	// 协议/类型必须匹配 Endpoint（创建/更新时校验），触发条件与统计口径不变（is_fallback）。
 	FallbackModelID int64            `json:"fallback_model_id" gorm:"not null;default:0"`
@@ -236,28 +236,31 @@ func (AppConfig) TableName() string { return "app_config" }
 // Endpoint 记录请求进入的端点类型（completions/messages/responses/embedding/rerank/image），
 // 在入口创建 pending 行时写入；路由删除后日志仍自包含。
 type RequestLog struct {
-	ID               int64   `json:"id" gorm:"primaryKey;autoIncrement"`
-	CreatedAt        int64   `json:"created_at" gorm:"autoCreateTime;index:idx_rl_time_route,priority:1;index:idx_rl_time_provider,priority:1"`
-	Status           string  `json:"status" gorm:"size:32;not null"`
-	Endpoint         string  `json:"endpoint" gorm:"size:32;not null;default:''"`
-	Route            string  `json:"route" gorm:"size:191;not null;index:idx_rl_route;index:idx_rl_time_route,priority:2"`
-	Provider         string  `json:"provider" gorm:"size:191;not null;index:idx_rl_provider;index:idx_rl_time_provider,priority:2"`
-	Model            string  `json:"model" gorm:"size:191;not null"`
-	KeyID            int64   `json:"key_id" gorm:"not null;default:0;index:idx_rl_key"`
-	VKID             int64   `json:"vk_id" gorm:"column:vk_id;not null;default:0;index:idx_rl_vk"`
-	RequestID        string  `json:"request_id" gorm:"size:64;not null"`
-	ErrorCode        string  `json:"error_code" gorm:"size:64;not null;default:''"`
-	IsStream         bool    `json:"is_stream" gorm:"not null;default:false"`
-	IsFallback       bool    `json:"is_fallback" gorm:"not null;default:false"`
-	TokensEstimated  bool    `json:"tokens_estimated" gorm:"not null;default:false"`
-	Retries          int     `json:"retries" gorm:"not null;default:0"`
-	PromptTokens     int     `json:"prompt_tokens" gorm:"not null;default:0"`
-	CompletionTokens int     `json:"completion_tokens" gorm:"not null;default:0"`
-	CachedTokens     int     `json:"cached_tokens" gorm:"not null;default:0"`
-	TTFTMs           int64   `json:"ttft_ms" gorm:"not null;default:0"`
-	TotalMs          int64   `json:"total_ms" gorm:"not null;default:0"`
-	Cost             float64 `json:"cost" gorm:"not null;default:0"`
-	ErrorBody        string  `json:"error_body,omitempty" gorm:"type:text"`
+	ID               int64  `json:"id" gorm:"primaryKey;autoIncrement"`
+	CreatedAt        int64  `json:"created_at" gorm:"autoCreateTime;index:idx_rl_time_route,priority:1;index:idx_rl_time_provider,priority:1"`
+	Status           string `json:"status" gorm:"size:32;not null"`
+	Endpoint         string `json:"endpoint" gorm:"size:32;not null;default:''"`
+	Route            string `json:"route" gorm:"size:191;not null;index:idx_rl_route;index:idx_rl_time_route,priority:2"`
+	Provider         string `json:"provider" gorm:"size:191;not null;index:idx_rl_provider;index:idx_rl_time_provider,priority:2"`
+	Model            string `json:"model" gorm:"size:191;not null"`
+	KeyID            int64  `json:"key_id" gorm:"not null;default:0;index:idx_rl_key"`
+	VKID             int64  `json:"vk_id" gorm:"column:vk_id;not null;default:0;index:idx_rl_vk"`
+	RequestID        string `json:"request_id" gorm:"size:64;not null"`
+	ErrorCode        string `json:"error_code" gorm:"size:64;not null;default:''"`
+	IsStream         bool   `json:"is_stream" gorm:"not null;default:false"`
+	IsFallback       bool   `json:"is_fallback" gorm:"not null;default:false"`
+	TokensEstimated  bool   `json:"tokens_estimated" gorm:"not null;default:false"`
+	Retries          int    `json:"retries" gorm:"not null;default:0"`
+	PromptTokens     int    `json:"prompt_tokens" gorm:"not null;default:0"`
+	CompletionTokens int    `json:"completion_tokens" gorm:"not null;default:0"`
+	CachedTokens     int    `json:"cached_tokens" gorm:"not null;default:0"`
+	TTFTMs           int64  `json:"ttft_ms" gorm:"not null;default:0"`
+	TotalMs          int64  `json:"total_ms" gorm:"not null;default:0"`
+	// Tps 流式输出速度（tok/s）= completion_tokens / ((total_ms - ttft_ms)/1000)。
+	// 仅流式成功、usage 非估算且生成时长 >= 500ms 时记录，否则为 0。
+	Tps       float64 `json:"tps" gorm:"not null;default:0"`
+	Cost      float64 `json:"cost" gorm:"not null;default:0"`
+	ErrorBody string  `json:"error_body,omitempty" gorm:"type:text"`
 }
 
 // ContentLog 内容日志（可选；全局与路由白名单开关均开启时才写入）。
@@ -281,22 +284,23 @@ type ContentLog struct {
 // RequestAttempt 单次尝试的明细记录（含中间失败与最终成功）。request_log 仍记最终结果与总重试次数，
 // attempt 表逐次落盘：失败重试链路可在日志详情里完整回放。
 type RequestAttempt struct {
-	ID               int64  `json:"id" gorm:"primaryKey;autoIncrement"`
-	RequestID        string `json:"request_id" gorm:"size:64;not null;index:idx_ra_request,priority:1"`
-	Attempt          int    `json:"attempt" gorm:"not null;index:idx_ra_request,priority:2"`
-	Route            string `json:"route" gorm:"size:191;not null"`
-	Model            string `json:"model" gorm:"size:191;not null"`
-	Provider         string `json:"provider" gorm:"size:191;not null"`
-	KeyID            int64  `json:"key_id" gorm:"not null;default:0"`
-	Status           string `json:"status" gorm:"size:32;not null"`
-	HTTPStatus       int    `json:"http_status" gorm:"not null;default:0"`
-	ErrorCode        string `json:"error_code" gorm:"size:64;not null;default:''"`
-	ErrorBody        string `json:"error_body,omitempty" gorm:"type:text"`
-	LatencyMs        int64  `json:"latency_ms" gorm:"not null;default:0"`
-	TTFTMs           int64  `json:"ttft_ms" gorm:"not null;default:0"`
-	PromptTokens     int    `json:"prompt_tokens" gorm:"not null;default:0"`
-	CompletionTokens int    `json:"completion_tokens" gorm:"not null;default:0"`
-	CreatedAt        int64  `json:"created_at" gorm:"autoCreateTime;index"`
+	ID               int64   `json:"id" gorm:"primaryKey;autoIncrement"`
+	RequestID        string  `json:"request_id" gorm:"size:64;not null;index:idx_ra_request,priority:1"`
+	Attempt          int     `json:"attempt" gorm:"not null;index:idx_ra_request,priority:2"`
+	Route            string  `json:"route" gorm:"size:191;not null"`
+	Model            string  `json:"model" gorm:"size:191;not null"`
+	Provider         string  `json:"provider" gorm:"size:191;not null"`
+	KeyID            int64   `json:"key_id" gorm:"not null;default:0"`
+	Status           string  `json:"status" gorm:"size:32;not null"`
+	HTTPStatus       int     `json:"http_status" gorm:"not null;default:0"`
+	ErrorCode        string  `json:"error_code" gorm:"size:64;not null;default:''"`
+	ErrorBody        string  `json:"error_body,omitempty" gorm:"type:text"`
+	LatencyMs        int64   `json:"latency_ms" gorm:"not null;default:0"`
+	TTFTMs           int64   `json:"ttft_ms" gorm:"not null;default:0"`
+	Tps              float64 `json:"tps" gorm:"not null;default:0"`
+	PromptTokens     int     `json:"prompt_tokens" gorm:"not null;default:0"`
+	CompletionTokens int     `json:"completion_tokens" gorm:"not null;default:0"`
+	CreatedAt        int64   `json:"created_at" gorm:"autoCreateTime;index"`
 }
 
 // RequestLogDaily 请求日志按“天 × 全维度 × 状态”的预聚合表（每行一条 UPSERT）。
@@ -336,6 +340,16 @@ type RequestLogDaily struct {
 	TotalB7          int64   `gorm:"not null;default:0;column:totalb7"`
 	TotalB8          int64   `gorm:"not null;default:0;column:totalb8"`
 	TotalB9          int64   `gorm:"not null;default:0;column:totalb9"`
+	TpsB0            int64   `gorm:"not null;default:0;column:tpsb0"`
+	TpsB1            int64   `gorm:"not null;default:0;column:tpsb1"`
+	TpsB2            int64   `gorm:"not null;default:0;column:tpsb2"`
+	TpsB3            int64   `gorm:"not null;default:0;column:tpsb3"`
+	TpsB4            int64   `gorm:"not null;default:0;column:tpsb4"`
+	TpsB5            int64   `gorm:"not null;default:0;column:tpsb5"`
+	TpsB6            int64   `gorm:"not null;default:0;column:tpsb6"`
+	TpsB7            int64   `gorm:"not null;default:0;column:tpsb7"`
+	TpsB8            int64   `gorm:"not null;default:0;column:tpsb8"`
+	TpsB9            int64   `gorm:"not null;default:0;column:tpsb9"`
 	UpdatedAt        int64   `gorm:"not null;default:0"`
 }
 
