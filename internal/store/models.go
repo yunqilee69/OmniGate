@@ -117,9 +117,11 @@ type Model struct {
 	Protocol      string  `json:"protocol" gorm:"size:32;not null;default:completions"` // completions | responses | messages
 	ApiPath       string  `json:"api_path" gorm:"size:512;not null;default:''"`         // 自定义 API 路径覆盖
 	BodyOverride  string  `json:"body_override" gorm:"type:text;not null;default:''"`   // 请求体覆盖 JSON
-	InputPrice    float64 `json:"input_price" gorm:"not null;default:0"`                // 每 1M prompt token 价格
+	InputPrice    float64 `json:"input_price" gorm:"not null;default:0"`                // 每 1M prompt token 价格（billing_mode=token）
 	CachedPrice   float64 `json:"cached_price" gorm:"not null;default:0"`               // 每 1M 命中缓存输入 token 价格；<=0 回退输入价
-	OutputPrice   float64 `json:"output_price" gorm:"not null;default:0"`               // 每 1M completion token 价格
+	OutputPrice   float64 `json:"output_price" gorm:"not null;default:0"`               // 每 1M completion token 价格（billing_mode=token）
+	PerCallPrice  float64 `json:"per_call_price" gorm:"not null;default:0"`             // 每次调用价格（billing_mode=per_call）
+	BillingMode   string  `json:"billing_mode" gorm:"size:16;not null;default:'token'"` // token=按量 | per_call=按次
 	PriceCurrency string  `json:"price_currency" gorm:"size:8;not null;default:'USD'"`  // 价格币种：USD | CNY；计费时统一折算为 USD 入库
 	// （保留字段，熔断状态机已退役，不再被写入/读取——禁用粒度见 ModelKeyBan）
 	Status        string `json:"status" gorm:"size:32;not null;default:active"`

@@ -120,9 +120,11 @@ CREATE TABLE model (
   name           TEXT NOT NULL,                   -- 真实模型名，如 glm-4.6
   type           TEXT NOT NULL DEFAULT 'chat',    -- chat(/v1/chat/completions) | embedding(/v1/embeddings) | rerank(/v1/rerank) | image(/v1/images/generations)；非 chat 仅支持 openai 协议
   protocol       TEXT NOT NULL DEFAULT 'openai',  -- openai(chat/completions) | responses(/responses) | anthropic(/v1/messages)
-  input_price    REAL NOT NULL DEFAULT 0,         -- 每 1M prompt token 价格
+  input_price    REAL NOT NULL DEFAULT 0,         -- 每 1M prompt token 价格（billing_mode=token）
   cached_price   REAL NOT NULL DEFAULT 0,         -- 每 1M 命中缓存输入 token 价格；<=0 回退输入价
-  output_price   REAL NOT NULL DEFAULT 0,         -- 每 1M completion token 价格
+  output_price   REAL NOT NULL DEFAULT 0,         -- 每 1M completion token 价格（billing_mode=token）
+  per_call_price REAL NOT NULL DEFAULT 0,         -- 每次调用价格（billing_mode=per_call）
+  billing_mode   TEXT NOT NULL DEFAULT 'token',   -- token=按量 | per_call=按次；缺省/历史行按量
   price_currency TEXT NOT NULL DEFAULT 'USD',     -- 价格币种：USD | CNY；计费统一折算为 USD 入库（汇率见 pricing.usd_cny）
   -- 熔断状态机（模型级，跨路由共享）
   status         TEXT NOT NULL DEFAULT 'active',  -- active | cooldown | disabled
@@ -403,7 +405,7 @@ HTTP 503
 实现约定：
 
 - **模型按 `type` 归属端点**：路由内只有同类型后端会被选中（embedding 请求绝不落到 chat 模型上）；请求体仅重写 `model` 字段（逻辑路由名 → 物理模型名），其余字段与响应体**原样直通**——rerank 无标准可归一，改写必踩厂商字段差异（vLLM 另有 `/v2/rerank`、Jina 多 `instruction`、`top_n`/`top_k` 混用），故不做任何转换。
-- **usage 提取（尽力而为）**：embeddings 读 `usage.prompt_tokens/total_tokens`；rerank 依次尝试 `meta.tokens` → `meta.billed_units` → `usage.total_tokens`；images 读 `usage.input_tokens/output_tokens`（OpenRouter 形状 `prompt_tokens/completion_tokens` 兜底；按图计费的厂商如 CogView 无 token 用量记 0）。计费与 chat 一致（下同）：`prompt × input_price + completion × output_price`。
+- **usage 提取（尽力而为）**：embeddings 读 `usage.prompt_tokens/total_tokens`；rerank 依次尝试 `meta.tokens` → `meta.billed_units` → `usage.total_tokens`；images 读 `usage.input_tokens/output_tokens`（OpenRouter 形状 `prompt_tokens/completion_tokens` 兜底；按图计费的厂商如 CogView 无 token 用量记 0）。计费与 chat 一致：`billing_mode=token` 时 `prompt × input_price + completion × output_price`（含缓存命中拆分，见 §8.1）；`per_call` 时成功调用记 `per_call_price`。
 - **流式**：embeddings/rerank 忽略 `stream` 字段（业界均无流式语义）；images 将 `stream` 原样透传（上游 gpt-image 系可能返回 SSE 渐进预览），网关为缓冲式转发，响应体与 Content-Type 原样回写，流式响应 usage 记 0。typed 端点同样走失败转移/熔断/统计/request_log 全链路，网关自身错误统一以 OpenAI error envelope 返回。
 - **出站路径版本段**：base 由用户填写且必须自带版本前缀（OpenAI 式 `/v1`、智谱 `/v4`），出站一律 `baseURL + /<resource>`：chat `/chat/completions`、messages `/messages`、responses `/responses`、typed `/embeddings` `/rerank` `/images/generations`。网关不推断版本段，故 base 填 `https://api.anthropic.com/v1` 得到 `.../v1/messages`，填 `https://api.anthropic.com` 得到 `.../messages`。
 
@@ -470,7 +472,9 @@ POST /api/maintenance/clear-stats             # body {"confirm":true}；清空�
 | 费用 | cost（按 model 价格表计算，未配价格则为 0） |
 | 重试 | retries |
 
-**缓存命中计费**：`cached_tokens` 单价取 `model.cached_price`，未配置（0 或负值）回退 `input_price`——历史行为即命中量按输入价计费，回退保持兼容。命中量口径随协议而异：`completions`/`responses` 的 `prompt_tokens_details.cached_tokens` 含在 `prompt_tokens` 内（需扣除后分别计价），`messages` 的 `input_tokens` 与 `cache_read_input_tokens` 互斥（直接相加）。故 `cost = 未命中输入 × input_price + 命中输入 × cached_price + 输出 × output_price`，CNY 定价再按 `pricing.usd_cny` 折算为 USD 入库。
+**计费模式**：`model.billing_mode` 为 `token`（缺省/历史行）或 `per_call`。按量：`cost = 未命中输入 × input_price + 命中输入 × cached_price + 输出 × output_price`（单价均为每 1M token）。按次：成功调用记 `per_call_price`，失败/客户端错误为 0，忽略 token 用量。CNY 定价再按 `pricing.usd_cny` 折算为 USD 入库。
+
+**缓存命中计费**（仅 `billing_mode=token`）：`cached_tokens` 单价取 `model.cached_price`，未配置（0 或负值）回退 `input_price`——历史行为即命中量按输入价计费，回退保持兼容。命中量口径随协议而异：`completions`/`responses` 的 `prompt_tokens_details.cached_tokens` 含在 `prompt_tokens` 内（需扣除后分别计价），`messages` 的 `input_tokens` 与 `cache_read_input_tokens` 互斥（直接相加）。
 
 统计查询优先走每日预聚合表 `request_log_daily`（写入路径同步 UPSERT，`day × route × model × provider × status` 粒度 + 10 桶延迟直方图，均值/p95 由桶反查）；延迟类指标（平均首字响应/平均耗时/p95）只统计 `status='success'` 的行——错误行延迟恒为 0，混入会把计数堆进 0 号桶；p95 自低桶累加定位所在桶后，按桶内均匀分布线性插值出具体值（开区间尾桶以末边界 ×2 作插值上界），故仍是桶粒度近似值，但不会像直接取桶上界那样被 2~3 倍宽的尾桶系统性抬高。当日增量、`error_code` 维度等 rollup 未覆盖的查询回退 `request_log` 现算（索引已按维度建好）。清空统计与保留期清理同时覆盖两类表；仅清明细而不动统计可走 `POST /api/maintenance/clear-logs`（日聚合随后台 UPSERT 独立维护，不受明细删除影响）。
 

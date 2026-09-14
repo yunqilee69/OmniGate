@@ -862,7 +862,7 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 		IsFallback:   isFallback,
 		PromptTokens: u.prompt, CompletionTokens: u.completion, CachedTokens: u.cached, TokensEstimated: u.estimated,
 		TTFTMs: ttft.Milliseconds(), TotalMs: total.Milliseconds(),
-		Cost: cost(att.Model, u, h.rt.Snapshot().USDCNY), Retries: retries,
+		Cost: cost(att.Model, u, h.rt.Snapshot().USDCNY, status), Retries: retries,
 		VKID: vkID,
 	}
 	if att.Model.ID != 0 {
@@ -905,24 +905,33 @@ func (h *Handler) attemptRow(requestID, routeName string, attempt int, att route
 }
 
 // cost 计费基准为 USD：CNY 定价模型按快照汇率折算入库，保证跨币种模型聚合一致。
-// 缓存命中 token 单价取 cached_price，未配置（<=0）回退输入价——OpenAI 系
-// prompt_tokens 本就把命中量包含在内，历史上即按输入价计费，回退保持兼容。
+// billing_mode=per_call 时忽略 token 用量，仅成功调用记 per_call_price（失败/客户端错误为 0）。
+// billing_mode=token（缺省/历史行）按 token 计价：缓存命中 token 单价取 cached_price，
+// 未配置（<=0）回退输入价——OpenAI 系 prompt_tokens 本就把命中量包含在内，历史上即按输入价计费，回退保持兼容。
 // 缓存量的口径随协议而异：completions/responses 的 cached ⊆ prompt_tokens，需先扣除
 // 命中量再分别计价；messages 的 input_tokens 不含 cache_read（两者互斥），直接相加。
-func cost(m store.Model, u usageInfo, usdCNY float64) float64 {
-	prompt, cached := u.prompt, u.cached
-	if m.Protocol != "messages" {
-		prompt -= cached
-		if prompt < 0 {
-			prompt = 0
+func cost(m store.Model, u usageInfo, usdCNY float64, status string) float64 {
+	var raw float64
+	if m.BillingMode == "per_call" {
+		if status != "success" {
+			return 0
 		}
+		raw = m.PerCallPrice
+	} else {
+		prompt, cached := u.prompt, u.cached
+		if m.Protocol != "messages" {
+			prompt -= cached
+			if prompt < 0 {
+				prompt = 0
+			}
+		}
+		cachedPrice := m.CachedPrice
+		if cachedPrice <= 0 {
+			cachedPrice = m.InputPrice
+		}
+		raw = (float64(prompt)*m.InputPrice + float64(cached)*cachedPrice +
+			float64(u.completion)*m.OutputPrice) / 1e6
 	}
-	cachedPrice := m.CachedPrice
-	if cachedPrice <= 0 {
-		cachedPrice = m.InputPrice
-	}
-	raw := (float64(prompt)*m.InputPrice + float64(cached)*cachedPrice +
-		float64(u.completion)*m.OutputPrice) / 1e6
 	if m.PriceCurrency == "CNY" {
 		if usdCNY <= 0 {
 			usdCNY = 7.25

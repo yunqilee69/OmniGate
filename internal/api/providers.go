@@ -266,6 +266,8 @@ type exportModelData struct {
 	InputPrice    float64  `json:"input_price"`
 	CachedPrice   float64  `json:"cached_price"`
 	OutputPrice   float64  `json:"output_price"`
+	PerCallPrice  float64  `json:"per_call_price"`
+	BillingMode   string   `json:"billing_mode"`
 	PriceCurrency string   `json:"price_currency"`
 	KeyNames      []string `json:"key_names"` // 使用密钥名称而不是ID
 }
@@ -322,6 +324,8 @@ func (s *Server) exportProviders(w http.ResponseWriter, _ *http.Request) {
 				InputPrice:    m.InputPrice,
 				CachedPrice:   m.CachedPrice,
 				OutputPrice:   m.OutputPrice,
+				PerCallPrice:  m.PerCallPrice,
+				BillingMode:   m.BillingMode,
 				PriceCurrency: m.PriceCurrency,
 				KeyNames:      keyNames,
 			})
@@ -399,6 +403,9 @@ func (s *Server) importProviders(w http.ResponseWriter, r *http.Request) {
 
 		// 创建模型
 		for _, md := range pd.Models {
+			if md.BillingMode == "" {
+				md.BillingMode = "token"
+			}
 			model := store.Model{
 				ProviderID:    provider.ID,
 				Name:          md.Name,
@@ -407,6 +414,8 @@ func (s *Server) importProviders(w http.ResponseWriter, r *http.Request) {
 				InputPrice:    md.InputPrice,
 				CachedPrice:   md.CachedPrice,
 				OutputPrice:   md.OutputPrice,
+				PerCallPrice:  md.PerCallPrice,
+				BillingMode:   md.BillingMode,
 				PriceCurrency: md.PriceCurrency,
 				Status:        "active",
 			}

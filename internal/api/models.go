@@ -25,6 +25,7 @@ type modelResp struct {
 var validProtocols = map[string]bool{"completions": true, "responses": true, "messages": true}
 var validCurrencies = map[string]bool{"USD": true, "CNY": true}
 var validModelTypes = map[string]bool{"chat": true, "embedding": true, "rerank": true, "image": true}
+var validBillingModes = map[string]bool{"token": true, "per_call": true}
 
 type modelCreateReq struct {
 	ProviderID    int64   `json:"provider_id"`
@@ -34,6 +35,8 @@ type modelCreateReq struct {
 	InputPrice    float64 `json:"input_price"`
 	CachedPrice   float64 `json:"cached_price"`
 	OutputPrice   float64 `json:"output_price"`
+	PerCallPrice  float64 `json:"per_call_price"`
+	BillingMode   string  `json:"billing_mode"`
 	PriceCurrency string  `json:"price_currency"`
 	KeyIDs        []int64 `json:"key_ids"`
 	ApiPath       string  `json:"api_path"`
@@ -155,7 +158,14 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "price_currency must be USD or CNY")
 		return
 	}
-	if req.InputPrice < 0 || req.CachedPrice < 0 || req.OutputPrice < 0 {
+	if req.BillingMode == "" {
+		req.BillingMode = "token"
+	}
+	if !validBillingModes[req.BillingMode] {
+		writeErr(w, http.StatusBadRequest, "bad_request", "billing_mode must be token or per_call")
+		return
+	}
+	if req.InputPrice < 0 || req.CachedPrice < 0 || req.OutputPrice < 0 || req.PerCallPrice < 0 {
 		writeErr(w, http.StatusBadRequest, "bad_request", "prices must not be negative")
 		return
 	}
@@ -194,7 +204,8 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 	m := store.Model{
 		ProviderID: req.ProviderID, Name: req.Name, Type: req.Type, Protocol: req.Protocol,
 		ApiPath: req.ApiPath, BodyOverride: req.BodyOverride,
-		InputPrice: req.InputPrice, CachedPrice: req.CachedPrice, OutputPrice: req.OutputPrice, PriceCurrency: req.PriceCurrency, Status: "active",
+		InputPrice: req.InputPrice, CachedPrice: req.CachedPrice, OutputPrice: req.OutputPrice,
+		PerCallPrice: req.PerCallPrice, BillingMode: req.BillingMode, PriceCurrency: req.PriceCurrency, Status: "active",
 	}
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&m).Error; err != nil {
@@ -230,6 +241,8 @@ type modelUpdateReq struct {
 	InputPrice    *float64 `json:"input_price"`
 	CachedPrice   *float64 `json:"cached_price"`
 	OutputPrice   *float64 `json:"output_price"`
+	PerCallPrice  *float64 `json:"per_call_price"`
+	BillingMode   *string  `json:"billing_mode"`
 	ApiPath       *string  `json:"api_path"`
 	BodyOverride  *string  `json:"body_override"`
 	PriceCurrency *string  `json:"price_currency"`
@@ -315,6 +328,20 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		simple["output_price"] = *req.OutputPrice
+	}
+	if req.PerCallPrice != nil {
+		if *req.PerCallPrice < 0 {
+			writeErr(w, http.StatusBadRequest, "bad_request", "per_call_price must not be negative")
+			return
+		}
+		simple["per_call_price"] = *req.PerCallPrice
+	}
+	if req.BillingMode != nil {
+		if !validBillingModes[*req.BillingMode] {
+			writeErr(w, http.StatusBadRequest, "bad_request", "billing_mode must be token or per_call")
+			return
+		}
+		simple["billing_mode"] = *req.BillingMode
 	}
 	if req.PriceCurrency != nil {
 		if !validCurrencies[*req.PriceCurrency] {

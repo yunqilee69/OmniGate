@@ -240,3 +240,74 @@ func TestCostAnthropicCacheRead(t *testing.T) {
 		t.Fatalf("anthropic cache read should bill at cached_price, got %v", ls[0].Cost)
 	}
 }
+
+// 按次计费：成功调用记 per_call_price，与 token 用量无关。
+func TestCostPerCall(t *testing.T) {
+	st, rtm, vkToken := newStackWithRTMAndVK(t)
+	h := hWithRTM(st, rtm)
+	up := usageUpstream(1000, 500)
+	defer up.Close()
+	seedCostModel(t, st, up.URL, "pc", store.Model{
+		BillingMode: "per_call", PerCallPrice: 0.02, InputPrice: 10, OutputPrice: 20,
+	})
+
+	postChat(t, h, "pc", vkToken)
+	ls := logs(t, st)
+	if len(ls) != 1 {
+		t.Fatalf("expect 1 log, got %d", len(ls))
+	}
+	if !approxEq(ls[0].Cost, 0.02) {
+		t.Fatalf("per-call cost should be 0.02, got %v", ls[0].Cost)
+	}
+}
+
+// 按次 + CNY：成功调用按汇率折成 USD 入库。
+func TestCostPerCallCNY(t *testing.T) {
+	st, rtm, vkToken := newStackWithRTMAndVK(t)
+	h := hWithRTM(st, rtm)
+	up := usageUpstream(10, 10)
+	defer up.Close()
+	seedCostModel(t, st, up.URL, "pccny", store.Model{
+		BillingMode: "per_call", PerCallPrice: 7.25, PriceCurrency: "CNY",
+	})
+
+	postChat(t, h, "pccny", vkToken)
+	ls := logs(t, st)
+	if !approxEq(ls[0].Cost, 1) {
+		t.Fatalf("CNY per-call 7.25 should convert to 1 USD, got %v", ls[0].Cost)
+	}
+}
+
+// 按次计费失败请求不计费。
+func TestCostPerCallErrorIsZero(t *testing.T) {
+	st, rtm, vkToken := newStackWithRTMAndVK(t)
+	h := hWithRTM(st, rtm)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"boom"}}`))
+	}))
+	defer up.Close()
+	seedCostModel(t, st, up.URL, "pcerr", store.Model{
+		BillingMode: "per_call", PerCallPrice: 0.5,
+	})
+
+	buf, _ := json.Marshal(map[string]any{
+		"model": "pcerr", "messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(buf))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+vkToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	ls := logs(t, st)
+	if len(ls) != 1 {
+		t.Fatalf("expect 1 log, got %d", len(ls))
+	}
+	if ls[0].Status == "success" {
+		t.Fatalf("expect error status, got success")
+	}
+	if ls[0].Cost != 0 {
+		t.Fatalf("failed per-call request should cost 0, got %v", ls[0].Cost)
+	}
+}

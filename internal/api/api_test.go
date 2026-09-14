@@ -855,6 +855,9 @@ func TestModelPriceCurrency(t *testing.T) {
 	if m["cached_price"] != float64(5) {
 		t.Fatalf("cached_price should echo 5, got %v", m["cached_price"])
 	}
+	if m["billing_mode"] != "token" {
+		t.Fatalf("billing_mode should default to token, got %v", m["billing_mode"])
+	}
 	if rec = do(t, h, "POST", "/api/models", map[string]any{
 		"provider_id": provID, "name": "m-neg", "cached_price": -1, "key_ids": []int64{keyID},
 	}, "test-token"); rec.Code != http.StatusBadRequest {
@@ -864,6 +867,16 @@ func TestModelPriceCurrency(t *testing.T) {
 		"provider_id": provID, "name": "m-eur", "key_ids": []int64{keyID}, "price_currency": "EUR",
 	}, "test-token"); rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid currency should 400, got %d", rec.Code)
+	}
+	if rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": provID, "name": "m-bad-mode", "key_ids": []int64{keyID}, "billing_mode": "hourly",
+	}, "test-token"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid billing_mode should 400, got %d", rec.Code)
+	}
+	if rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": provID, "name": "m-neg-call", "key_ids": []int64{keyID}, "per_call_price": -1,
+	}, "test-token"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("negative per_call_price should 400, got %d", rec.Code)
 	}
 
 	modelID := idOf(t, m)
@@ -875,6 +888,27 @@ func TestModelPriceCurrency(t *testing.T) {
 	}
 	if m = decodeObj(t, rec); m["price_currency"] != "USD" || m["cached_price"] != float64(3) {
 		t.Fatalf("updated price fields wrong: currency=%v cached=%v", m["price_currency"], m["cached_price"])
+	}
+
+	rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": provID, "name": "m-call", "billing_mode": "per_call", "per_call_price": 0.02,
+		"price_currency": "USD", "key_ids": []int64{keyID},
+	}, "test-token")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create per_call model failed: %d — %s", rec.Code, rec.Body.String())
+	}
+	m = decodeObj(t, rec)
+	if m["billing_mode"] != "per_call" || m["per_call_price"] != 0.02 {
+		t.Fatalf("per_call fields wrong: mode=%v price=%v", m["billing_mode"], m["per_call_price"])
+	}
+	rec = do(t, h, "PUT", fmt.Sprintf("/api/models/%d", idOf(t, m)), map[string]any{
+		"billing_mode": "token", "per_call_price": 0.05,
+	}, "test-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update billing_mode failed: %d", rec.Code)
+	}
+	if m = decodeObj(t, rec); m["billing_mode"] != "token" || m["per_call_price"] != 0.05 {
+		t.Fatalf("updated billing fields wrong: mode=%v price=%v", m["billing_mode"], m["per_call_price"])
 	}
 }
 

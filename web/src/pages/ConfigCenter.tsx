@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  Button, Card, Checkbox, Dropdown, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select,
+  Button, Card, Checkbox, Dropdown, Empty, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select,
   Space, Spin, Table, Tabs, Tag, Tooltip, message,
 } from 'antd'
 import { 
@@ -50,6 +50,8 @@ interface Model {
   input_price: number
   cached_price: number
   output_price: number
+  per_call_price: number
+  billing_mode: string
   price_currency: string
   status: string
   fail_count: number
@@ -772,6 +774,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
         name: m.name, type: m.type || 'chat', protocol: m.protocol,
         api_path: m.api_path, body_override: m.body_override,
         input_price: m.input_price, cached_price: m.cached_price ?? 0, output_price: m.output_price,
+        per_call_price: m.per_call_price ?? 0, billing_mode: m.billing_mode || 'token',
         price_currency: m.price_currency || 'USD', key_ids: m.key_ids,
       })
     } else {
@@ -829,13 +832,17 @@ function ModelsTab({ provider, keys, models, onSaved }: {
             ) : <Tag key={id}>{name}</Tag>
           })
         }} />
-        <Table.Column title="价格(1M)" width={210} render={(_, m: Model) => {
+        <Table.Column title="价格" width={150} render={(_, m: Model) => {
           const sym = m.price_currency === 'CNY' ? '¥' : '$'
+          if (m.billing_mode === 'per_call') {
+            return <div>{sym}{m.per_call_price}/次</div>
+          }
           return (
-            <div>
-              <div>输入 {sym}{m.input_price} / 输出 {sym}{m.output_price}</div>
-              <div style={{ color: '#8c8c8c', fontSize: 12 }}>
-                缓存 {m.cached_price > 0 ? `${sym}${m.cached_price}` : '按输入价'}
+            <div style={{ lineHeight: 1.45 }}>
+              <div>输入：{sym}{m.input_price}/1M</div>
+              <div>输出：{sym}{m.output_price}/1M</div>
+              <div style={{ color: '#8f8f8f', fontSize: 12 }}>
+                缓存：{m.cached_price > 0 ? `${sym}${m.cached_price}/1M` : '按输入价'}
               </div>
             </div>
           )
@@ -856,7 +863,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
         )} />
       </Table>
 
-      <Modal title={editing ? '编辑模型' : `新增模型（提供商：${provider.name}）`} open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose width={560}>
+      <Modal title={editing ? '编辑模型' : `新增模型（提供商：${provider.name}）`} open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose width={640}>
         <Form form={form} layout="vertical">
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 24 }}>
             <Form.Item name="name" label="真实模型名" rules={[{ required: true }]} style={{ flex: 1, minWidth: 200, marginBottom: 0 }}>
@@ -957,28 +964,63 @@ function ModelsTab({ provider, keys, models, onSaved }: {
             extra="JSON 对象，合并到转换后的请求体；可覆盖 model、temperature 等字段">
             <Input.TextArea rows={3} placeholder='{"temperature": 0.5, "max_tokens": 2000}' />
           </Form.Item>
-          <Form.Item label="价格（每 1M token）"
-            extra="三个单价共用右侧币种；缓存价指命中提示缓存（cache read）的输入 token 单价，0 表示按输入价计费">
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-              <Form.Item name="input_price" label="输入价" initialValue={0} style={{ marginBottom: 0, flex: 1, minWidth: 130 }}>
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-              <Form.Item name="cached_price" label="缓存价" initialValue={0} style={{ marginBottom: 0, flex: 1, minWidth: 130 }}>
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-              <Form.Item name="output_price" label="输出价" initialValue={0} style={{ marginBottom: 0, flex: 1, minWidth: 130 }}>
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-              <Form.Item name="price_currency" label="币种" initialValue="USD" style={{ marginBottom: 0, minWidth: 130 }}>
-                <Select
-                  style={{ width: '100%' }}
-                  options={[
-                    { value: 'USD', label: '$ 美元' },
-                    { value: 'CNY', label: '¥ 人民币' },
-                  ]}
-                />
-              </Form.Item>
-            </div>
+          <Form.Item name="billing_mode" label="计费方式" initialValue="token"
+            extra="按量按 token 计价；按次每次成功调用记固定费用">
+            <Radio.Group optionType="button">
+              <Radio.Button value="token">按量计费</Radio.Button>
+              <Radio.Button value="per_call">按次计费</Radio.Button>
+            </Radio.Group>
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.billing_mode !== cur.billing_mode}>
+            {({ getFieldValue }) => {
+              const mode = getFieldValue('billing_mode') as string | undefined
+              if (mode === 'per_call') {
+                return (
+                  <Form.Item label="价格（每次调用）"
+                    extra="每次成功调用记一次费用，与 token 用量无关；失败不计费">
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                      <Form.Item name="per_call_price" label="每次" initialValue={0} style={{ marginBottom: 0, flex: 1, minWidth: 160 }}>
+                        <InputNumber min={0} style={{ width: '100%' }} />
+                      </Form.Item>
+                      <Form.Item name="price_currency" label="币种" initialValue="USD" style={{ marginBottom: 0, minWidth: 130 }}>
+                        <Select
+                          style={{ width: '100%' }}
+                          options={[
+                            { value: 'USD', label: '$ 美元' },
+                            { value: 'CNY', label: '¥ 人民币' },
+                          ]}
+                        />
+                      </Form.Item>
+                    </div>
+                  </Form.Item>
+                )
+              }
+              return (
+                <Form.Item label="价格（每 1M token）"
+                  extra="三个单价共用输出价后的币种；缓存价指命中提示缓存（cache read）的输入 token 单价，0 表示按输入价计费">
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'nowrap' }}>
+                    <Form.Item name="input_price" label="输入价" initialValue={0} style={{ marginBottom: 0, flex: 1, minWidth: 0 }}>
+                      <InputNumber min={0} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item name="cached_price" label="缓存价" initialValue={0} style={{ marginBottom: 0, flex: 1, minWidth: 0 }}>
+                      <InputNumber min={0} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item name="output_price" label="输出价" initialValue={0} style={{ marginBottom: 0, flex: 1, minWidth: 0 }}>
+                      <InputNumber min={0} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item name="price_currency" label="币种" initialValue="USD" style={{ marginBottom: 0, width: 108, flex: 'none' }}>
+                      <Select
+                        style={{ width: '100%' }}
+                        options={[
+                          { value: 'USD', label: '$ 美元' },
+                          { value: 'CNY', label: '¥ 人民币' },
+                        ]}
+                      />
+                    </Form.Item>
+                  </div>
+                </Form.Item>
+              )
+            }}
           </Form.Item>
           <Form.Item name="key_ids" label="绑定密钥（多选）" extra="仅显示当前提供商下的密钥"
             rules={[{ required: true, message: '至少绑定一个密钥' }]}>
