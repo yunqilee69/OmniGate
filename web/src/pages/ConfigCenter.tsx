@@ -738,6 +738,8 @@ function ModelsTab({ provider, keys, models, onSaved }: {
   const [fetchingModels, setFetchingModels] = useState(false)
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [form] = Form.useForm()
+  let fetchModelsHintURL = '/v1/models'
+  try { fetchModelsHintURL = `${new URL(provider.base_url).origin}/v1/models` } catch { /* 非法 base_url 时只展示路径 */ }
 
   const handleFetchModels = async () => {
     if (keys.length === 0) {
@@ -869,7 +871,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
             <Form.Item name="name" label="真实模型名" rules={[{ required: true }]} style={{ flex: 1, minWidth: 200, marginBottom: 0 }}>
               <Input placeholder="如 glm-4.6 / claude-sonnet-4" />
             </Form.Item>
-            <Tooltip title={keys.length === 0 ? '需要至少一个密钥' : `从 ${provider.base_url.replace(/\/$/, '')}${provider.base_url.endsWith('/v1') ? '/models' : '/v1/models'} 获取可用模型列表`}>
+            <Tooltip title={keys.length === 0 ? '需要至少一个密钥' : `从 ${fetchModelsHintURL} 获取可用模型列表`}>
               <Button
                 icon={fetchingModels ? undefined : <ApiOutlined />}
                 loading={fetchingModels}
