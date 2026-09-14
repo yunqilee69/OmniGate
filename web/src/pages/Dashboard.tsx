@@ -296,10 +296,22 @@ export default function Dashboard() {
         {models.length === 0 ? (
           <Empty description="暂无模型" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         ) : (
-          <Table<HealthModel> rowKey="id" dataSource={models} pagination={false} size="small" tableLayout="fixed">
+          <Table<HealthModel> rowKey="id" dataSource={models} pagination={false} size="small">
             <Table.Column title="ID" dataIndex="id" width={60} />
-            <Table.Column title="提供商/模型" dataIndex="name" width={200} ellipsis
-              render={(_, m: HealthModel) => (m.provider ? `${m.provider}/${m.name}` : m.name)} />
+            <Table.Column
+              title="提供商/模型"
+              dataIndex="name"
+              render={(_, m: HealthModel) => {
+                const label = m.provider ? `${m.provider}/${m.name}` : m.name
+                return (
+                  <Tooltip title={label}>
+                    <span style={{ display: 'inline-block', maxWidth: 420, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}>
+                      {label}
+                    </span>
+                  </Tooltip>
+                )
+              }}
+            />
             <Table.Column 
               title="密钥状态" 
               width={140}
