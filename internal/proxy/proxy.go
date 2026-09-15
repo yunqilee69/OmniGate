@@ -45,6 +45,7 @@ const (
 	errResponseConvertFailed  = "response_convert_failed"
 	errMarshalFailed          = "marshal_failed"
 	errBadUpstreamURL         = "bad_upstream_url"
+	errAudioTooLarge          = "audio_too_large"
 )
 
 type Handler struct {
@@ -141,6 +142,8 @@ type usageInfo struct {
 	cached     int // cache 命中（OpenAI cached ⊆ prompt；Anthropic cache_read 独立）
 	cacheWrite int // Anthropic cache_creation_input_tokens；OpenAI 无此字段
 	estimated  bool
+	seconds    float64 // STT 音频时长（秒）
+	chars      int     // TTS 输入字符数
 }
 
 type attemptResult struct {
@@ -187,7 +190,8 @@ func newRequestID() string {
 
 // createPendingLog 在请求进入后立即创建 pending 状态的日志行，返回其 ID。
 // 后续 writeLog 通过该 ID 做 UPDATE 补充最终字段。
-func (h *Handler) createPendingLog(requestID, routeName, endpoint string, isStream bool, vkID int64) int64 {
+// 直达 provider/model 请求在 pending 阶段就写入物理提供商/模型，避免飞行中日志看起来像无名路由。
+func (h *Handler) createPendingLog(requestID, routeName, endpoint string, isStream bool, vkID int64, snap *router.Snapshot) int64 {
 	entry := store.RequestLog{
 		RequestID: requestID,
 		Route:     routeName,
@@ -196,11 +200,62 @@ func (h *Handler) createPendingLog(requestID, routeName, endpoint string, isStre
 		IsStream:  isStream,
 		VKID:      vkID,
 	}
+	if p, m, ok := snapshotDirectTarget(snap); ok {
+		entry.Provider = p
+		entry.Model = m
+	}
 	if err := h.db.DB.Create(&entry).Error; err != nil {
 		slog.Error("create pending request_log failed", "err", err, "request_id", requestID)
 		return 0
 	}
 	return entry.ID
+}
+
+// snapshotDirectTarget 直达快照只有一个物理目标且 Route.ID=0。
+// 逻辑路由仍可能有多目标，pending / all_backends 不提前填 provider/model。
+func snapshotDirectTarget(snap *router.Snapshot) (provider, model string, ok bool) {
+	if snap == nil || snap.Route.ID != 0 || len(snap.Targets) != 1 {
+		return "", "", false
+	}
+	m, mok := snap.Models[snap.Targets[0].ModelID]
+	if !mok {
+		return "", "", false
+	}
+	p, pok := snap.Providers[m.ProviderID]
+	if !pok {
+		return "", "", false
+	}
+	return p.Name, m.Name, true
+}
+
+// captureEnabled 内容捕获开关：全局开启且（白名单空=全捕获，或命中路由名 / 直达 provider/model）。
+// 直达请求 routeName 是 "SeekAI/deepseek-..."，白名单勾选逻辑路由或物理模型名都应命中。
+func captureEnabled(rt *config.Runtime, routeName string, snap *router.Snapshot) bool {
+	if rt == nil || !rt.CaptureEnabled {
+		return false
+	}
+	if len(rt.CaptureRoutes) == 0 {
+		return true
+	}
+	if containsStr(rt.CaptureRoutes, routeName) {
+		return true
+	}
+	if p, m, ok := snapshotDirectTarget(snap); ok {
+		return containsStr(rt.CaptureRoutes, p+"/"+m) || containsStr(rt.CaptureRoutes, m)
+	}
+	return false
+}
+
+// emptyAttemptFor 在没有实际转发时构造 Attempt：直达路径填快照里的物理提供商/模型，便于 all_backends 日志可筛。
+func emptyAttemptFor(snap *router.Snapshot) router.Attempt {
+	p, m, ok := snapshotDirectTarget(snap)
+	if !ok {
+		return router.Attempt{}
+	}
+	return router.Attempt{
+		Provider: store.Provider{Name: p},
+		Model:    store.Model{Name: m},
+	}
 }
 
 func requestTextChars(req map[string]any) int {
@@ -892,6 +947,7 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 		Status: status, ErrorCode: errCode, ErrorBody: errorBody, IsStream: isStream,
 		IsFallback:   isFallback,
 		PromptTokens: u.prompt, CompletionTokens: u.completion, CachedTokens: u.cached, TokensEstimated: u.estimated,
+		AudioSeconds: u.seconds, InputChars: u.chars,
 		TTFTMs: ttft.Milliseconds(), TotalMs: total.Milliseconds(),
 		Tps:  streamTPS(isStream, status, u, tpsTTFT, tpsTotal),
 		Cost: cost(att.Model, u, h.rt.Snapshot().USDCNY, status), Retries: retries,
@@ -967,12 +1023,20 @@ func cost(m store.Model, u usageInfo, usdCNY float64, status string) float64 {
 		return 0
 	}
 	var raw float64
-	if m.BillingMode == "per_call" {
-		if status != "success" {
+	switch m.BillingMode {
+	case "per_call":
+		raw = m.PerCallPrice
+	case "audio_second":
+		if u.seconds <= 0 {
 			return 0
 		}
-		raw = m.PerCallPrice
-	} else {
+		raw = u.seconds * m.AudioSecPrice
+	case "char":
+		if u.chars <= 0 {
+			return 0
+		}
+		raw = float64(u.chars) * m.CharPrice / 1e6
+	default:
 		prompt := u.prompt - u.cached - u.cacheWrite
 		if prompt < 0 {
 			prompt = 0
@@ -1049,6 +1113,8 @@ type captureWriter struct {
 	reqHeaders       string // 出站请求头快照（OmniGate → 上游，格式化+脱敏）；最终 attempt 完成后回填
 	reqBody          string // 出站请求体快照（最终 attempt 实际发送的内容）；随响应体一并落 content_log
 	respHeaders      string // 上游响应头快照（格式化+脱敏）；attempt 完成后回填
+	skipBody         bool   // TTS 二进制/SSE 不落 response_body，避免把音频塞进 SQLite
+	bodyNote         string // skipBody 时写入 content_log 的占位摘要
 }
 
 func newCaptureWriter(w http.ResponseWriter, limit int) *captureWriter {
@@ -1064,6 +1130,13 @@ func (cw *captureWriter) setAttempt(res attemptResult) {
 	cw.reqHeaders = res.reqHeaders
 	cw.reqBody = string(res.reqBody)
 	cw.respHeaders = formatHeaders(res.respHeaders)
+}
+func (cw *captureWriter) skipResponseBody(note string) {
+	if cw == nil {
+		return
+	}
+	cw.skipBody = true
+	cw.bodyNote = note
 }
 
 // setClientReq 回填客户端入站请求快照（客户端 → OmniGate 的原始数据，未做任何修改）。
@@ -1108,21 +1181,31 @@ func (cw *captureWriter) WriteHeader(code int) { cw.w.WriteHeader(code) }
 func (cw *captureWriter) Write(b []byte) (int, error) {
 	cw.mu.Lock()
 	defer cw.mu.Unlock()
-	if cw.overflow {
-		return cw.w.Write(b)
-	}
-	if len(cw.buf)+len(b) <= cw.limit {
-		cw.buf = append(cw.buf, b...)
-	} else {
-		cw.overflow = true
-		cw.buf = append([]byte(nil), fmt.Sprintf("[truncated: response exceeds %d bytes]", cw.limit)...)
+	if !cw.skipBody {
+		if cw.overflow {
+			return cw.w.Write(b)
+		}
+		if len(cw.buf)+len(b) <= cw.limit {
+			cw.buf = append(cw.buf, b...)
+		} else {
+			cw.overflow = true
+			cw.buf = append([]byte(nil), fmt.Sprintf("[truncated: response exceeds %d bytes]", cw.limit)...)
+		}
 	}
 	return cw.w.Write(b)
+}
+func (cw *captureWriter) Flush() {
+	if f, ok := cw.w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func (cw *captureWriter) Body() string {
 	cw.mu.Lock()
 	defer cw.mu.Unlock()
+	if cw.skipBody && cw.bodyNote != "" {
+		return cw.bodyNote
+	}
 	return string(cw.buf)
 }
 

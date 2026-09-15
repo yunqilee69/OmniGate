@@ -25,6 +25,7 @@ const numericRanges: Record<string, [number, number]> = {
   'capture.retention_days': [1, 365],
   'log.retention_days': [0, 3650],
   'affinity.ttl_s': [10, 86400],
+  'audio.max_upload_mb': [1, 200],
 }
 
 type Section =
@@ -333,12 +334,20 @@ export default function Settings() {
 
             {/* 计费设置 */}
             {activeSection === 'pricing' && (
-              <Form.Item
-                label={<span>美元兑人民币汇率（1 USD = ? CNY）<HelpIcon tip="人民币定价的模型按此汇率折算为美元计费入库；仪表盘/统计页可切换展示币种" /></span>}
-                name="pricing.usd_cny"
-              >
-                <InputNumber min={0.01} max={10000} step={0.01} style={{ width: '100%' }} />
-              </Form.Item>
+              <>
+                <Form.Item
+                  label={<span>美元兑人民币汇率（1 USD = ? CNY）<HelpIcon tip="人民币定价的模型按此汇率折算为美元计费入库；仪表盘/统计页可切换展示币种" /></span>}
+                  name="pricing.usd_cny"
+                >
+                  <InputNumber min={0.01} max={10000} step={0.01} style={{ width: '100%' }} />
+                </Form.Item>
+                <Form.Item
+                  label={<span>STT 上传上限（MB）<HelpIcon tip="语音识别 multipart 请求体上限，默认 25（OpenAI 官方上限）；Groq 等兼容端点可调高" /></span>}
+                  name="audio.max_upload_mb"
+                >
+                  <InputNumber min={1} max={200} style={{ width: '100%' }} />
+                </Form.Item>
+              </>
             )}
 
             {/* 危险操作 */}

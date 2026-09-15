@@ -24,8 +24,8 @@ type modelResp struct {
 
 var validProtocols = map[string]bool{"completions": true, "responses": true, "messages": true}
 var validCurrencies = map[string]bool{"USD": true, "CNY": true}
-var validModelTypes = map[string]bool{"chat": true, "embedding": true, "rerank": true, "image": true}
-var validBillingModes = map[string]bool{"token": true, "per_call": true}
+var validModelTypes = map[string]bool{"chat": true, "embedding": true, "rerank": true, "image": true, "tts": true, "stt": true}
+var validBillingModes = map[string]bool{"token": true, "per_call": true, "audio_second": true, "char": true}
 
 type modelCreateReq struct {
 	ProviderID    int64   `json:"provider_id"`
@@ -36,6 +36,8 @@ type modelCreateReq struct {
 	CachedPrice   float64 `json:"cached_price"`
 	OutputPrice   float64 `json:"output_price"`
 	PerCallPrice  float64 `json:"per_call_price"`
+	AudioSecPrice float64 `json:"audio_sec_price"`
+	CharPrice     float64 `json:"char_price"`
 	BillingMode   string  `json:"billing_mode"`
 	PriceCurrency string  `json:"price_currency"`
 	KeyIDs        []int64 `json:"key_ids"`
@@ -143,12 +145,12 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		req.Type = "chat"
 	}
 	if !validModelTypes[req.Type] {
-		writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding, rerank or image")
+		writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding, rerank, image, tts or stt")
 		return
 	}
 	// 非 chat 类型出站固定 completions 风格直通（业界无可归一标准），不支持协议转换
 	if req.Type != "chat" && req.Protocol != "completions" {
-		writeErr(w, http.StatusBadRequest, "bad_request", "embedding/rerank/image 模型仅支持 completions 协议")
+		writeErr(w, http.StatusBadRequest, "bad_request", "非 chat 模型仅支持 completions 协议")
 		return
 	}
 	if req.PriceCurrency == "" {
@@ -162,10 +164,10 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		req.BillingMode = "token"
 	}
 	if !validBillingModes[req.BillingMode] {
-		writeErr(w, http.StatusBadRequest, "bad_request", "billing_mode must be token or per_call")
+		writeErr(w, http.StatusBadRequest, "bad_request", "billing_mode must be token, per_call, audio_second or char")
 		return
 	}
-	if req.InputPrice < 0 || req.CachedPrice < 0 || req.OutputPrice < 0 || req.PerCallPrice < 0 {
+	if req.InputPrice < 0 || req.CachedPrice < 0 || req.OutputPrice < 0 || req.PerCallPrice < 0 || req.AudioSecPrice < 0 || req.CharPrice < 0 {
 		writeErr(w, http.StatusBadRequest, "bad_request", "prices must not be negative")
 		return
 	}
@@ -205,7 +207,8 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		ProviderID: req.ProviderID, Name: req.Name, Type: req.Type, Protocol: req.Protocol,
 		ApiPath: req.ApiPath, BodyOverride: req.BodyOverride,
 		InputPrice: req.InputPrice, CachedPrice: req.CachedPrice, OutputPrice: req.OutputPrice,
-		PerCallPrice: req.PerCallPrice, BillingMode: req.BillingMode, PriceCurrency: req.PriceCurrency, Status: "active",
+		PerCallPrice: req.PerCallPrice, AudioSecPrice: req.AudioSecPrice, CharPrice: req.CharPrice,
+		BillingMode: req.BillingMode, PriceCurrency: req.PriceCurrency, Status: "active",
 	}
 	err := s.store.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&m).Error; err != nil {
@@ -242,6 +245,8 @@ type modelUpdateReq struct {
 	CachedPrice   *float64 `json:"cached_price"`
 	OutputPrice   *float64 `json:"output_price"`
 	PerCallPrice  *float64 `json:"per_call_price"`
+	AudioSecPrice *float64 `json:"audio_sec_price"`
+	CharPrice     *float64 `json:"char_price"`
 	BillingMode   *string  `json:"billing_mode"`
 	ApiPath       *string  `json:"api_path"`
 	BodyOverride  *string  `json:"body_override"`
@@ -291,7 +296,7 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Type != nil {
 		if !validModelTypes[*req.Type] {
-			writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding, rerank or image")
+			writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding, rerank, image, tts or stt")
 			return
 		}
 		simple["type"] = *req.Type
@@ -305,7 +310,7 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 		effProto = *req.Protocol
 	}
 	if effType != "" && effType != "chat" && effProto != "completions" {
-		writeErr(w, http.StatusBadRequest, "bad_request", "embedding/rerank/image 模型仅支持 completions 协议")
+		writeErr(w, http.StatusBadRequest, "bad_request", "非 chat 模型仅支持 completions 协议")
 		return
 	}
 	if req.InputPrice != nil {
@@ -336,9 +341,23 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 		}
 		simple["per_call_price"] = *req.PerCallPrice
 	}
+	if req.AudioSecPrice != nil {
+		if *req.AudioSecPrice < 0 {
+			writeErr(w, http.StatusBadRequest, "bad_request", "audio_sec_price must not be negative")
+			return
+		}
+		simple["audio_sec_price"] = *req.AudioSecPrice
+	}
+	if req.CharPrice != nil {
+		if *req.CharPrice < 0 {
+			writeErr(w, http.StatusBadRequest, "bad_request", "char_price must not be negative")
+			return
+		}
+		simple["char_price"] = *req.CharPrice
+	}
 	if req.BillingMode != nil {
 		if !validBillingModes[*req.BillingMode] {
-			writeErr(w, http.StatusBadRequest, "bad_request", "billing_mode must be token or per_call")
+			writeErr(w, http.StatusBadRequest, "bad_request", "billing_mode must be token, per_call, audio_second or char")
 			return
 		}
 		simple["billing_mode"] = *req.BillingMode

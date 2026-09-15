@@ -30,10 +30,11 @@ type Runtime struct {
 	AffinityEnabled         bool
 	AffinityHeaders         []string
 	AffinityTTL             time.Duration
-	USDCNY float64
-	DebugStreamLog bool
+	USDCNY                  float64
+	DebugStreamLog          bool
 	// HeaderProfilePresets 客户端模拟请求头模板库（JSON 数组文本，命名组供提供商表单一键插入）。
 	HeaderProfilePresets string
+	MaxAudioUploadMB     int // STT 上传上限（MB），默认 25
 }
 
 type settingSpec struct {
@@ -197,6 +198,7 @@ var settingSpecs = []settingSpec{
 	{key: "pricing.usd_cny", def: `7.25`, validate: floatRange(0.01, 10000)},
 	{key: "header_profile_presets", def: `[]`, validate: headerProfilePresets},
 	{key: "debug.stream_log", def: `false`, validate: boolVal},
+	{key: "audio.max_upload_mb", def: `25`, validate: intRange(1, 200)},
 }
 
 // RuntimeManager 管理运行层配置：DB 为事实来源，内存快照 atomic 替换（保存即热生效）。
@@ -283,7 +285,6 @@ func (m *RuntimeManager) migrateAffinityHeader() error {
 	return nil
 }
 
-
 // rawMap 返回「默认值 + DB 行覆盖」合并后的原始 JSON 串。
 func (m *RuntimeManager) rawMap() (map[string]string, error) {
 	raw := map[string]string{}
@@ -356,6 +357,10 @@ func (m *RuntimeManager) rebuild() error {
 	}
 	rt.USDCNY = rate
 	rt.DebugStreamLog = getBool("debug.stream_log")
+	rt.MaxAudioUploadMB = getInt("audio.max_upload_mb")
+	if rt.MaxAudioUploadMB <= 0 {
+		rt.MaxAudioUploadMB = 25
+	}
 	rt.HeaderProfilePresets = raw["header_profile_presets"]
 
 	m.snap.Store(rt)

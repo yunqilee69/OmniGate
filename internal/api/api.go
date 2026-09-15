@@ -37,11 +37,13 @@ type ChatPlane interface {
 	Mcp(w http.ResponseWriter, r *http.Request)
 }
 
-// TypedPlane 非 chat 端点族（/v1/embeddings、/v1/rerank、/v1/images/generations）的代理处理器集合。
+// TypedPlane 非 chat 端点族（embeddings/rerank/images/audio）的代理处理器集合。
 type TypedPlane interface {
 	Embeddings(w http.ResponseWriter, r *http.Request)
 	Rerank(w http.ResponseWriter, r *http.Request)
 	Images(w http.ResponseWriter, r *http.Request)
+	Speech(w http.ResponseWriter, r *http.Request)
+	Transcriptions(w http.ResponseWriter, r *http.Request)
 }
 
 // New 构造管理面服务。auth 为启动层静态鉴权配置（详见 AdminAuth）；
@@ -164,6 +166,8 @@ func (s *Server) Router() http.Handler {
 			vr.Post("/embeddings", s.typed.Embeddings)
 			vr.Post("/rerank", s.typed.Rerank)
 			vr.Post("/images/generations", s.typed.Images)
+			vr.Post("/audio/speech", s.typed.Speech)
+			vr.Post("/audio/transcriptions", s.typed.Transcriptions)
 		}
 		vr.NotFound(func(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", "endpoint not found")

@@ -1,11 +1,12 @@
 package store
 
-// EndpointFamilies 与前端路由页 tab 对齐：对话 / 向量 / 重排 / 生图 / MCP。
+// EndpointFamilies 与前端路由页 tab 对齐：对话 / 向量 / 重排 / 生图 / 语音 / MCP。
 var EndpointFamilies = map[string][]string{
 	"chat":      {"completions", "messages", "responses"},
 	"embedding": {"embedding"},
 	"rerank":    {"rerank"},
 	"image":     {"image"},
+	"audio":     {"tts", "stt"},
 	"mcp":       {"mcp"},
 }
 

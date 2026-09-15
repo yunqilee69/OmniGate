@@ -36,3 +36,4 @@
 Thumbs.db
 npm/node_modules/
 npm/package-lock.json
+/.vscode-ai-images/

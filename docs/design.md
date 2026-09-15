@@ -15,7 +15,7 @@
 
 | # | 能力 | 说明 |
 |---|------|------|
-| G1 | OpenAI 兼容代理 | 对下游暴露 `/v1/chat/completions`（含 SSE 流式）、`/v1/embeddings`、`/v1/rerank`、`/v1/images/generations`、`/v1/models` |
+| G1 | OpenAI 兼容代理 | 对下游暴露 `/v1/chat/completions`（含 SSE 流式）、`/v1/embeddings`、`/v1/rerank`、`/v1/images/generations`、`/v1/audio/speech`、`/v1/audio/transcriptions`、`/v1/models` |
 | G2 | 逻辑模型路由 | 请求一个逻辑 modelId（如 `glm`），按权重分发到 N 个真实模型（可以是不同模型）；也可直接用 `provider/model` 锁定物理模型 |
 | G3 | 提供商/密钥/模型实体 | Provider → ApiKey；模型与密钥多对多绑定（须同提供商）；模型内 key 轮询 |
 | G4 | 阶梯熔断 | 模型级：30s → 1m → 3m，连续 3 次禁用并明确报错；key 级：401/403 立即禁用，429 短冷却 |
@@ -28,7 +28,7 @@
 
 - 多实例集群 / 高可用（单机单进程）
 - 多用户 / RBAC / 多租户组织层级（v1 仅单管理员 + 虚拟密钥凭证体系：RPM 限流、美元预算、按路由授权）
-- 协议转换仅覆盖 chat/completions（openai ↔ responses ↔ anthropic，见 `model.protocol`）；embeddings/rerank/images 按业界事实格式**直通**（仅重写 model 字段），不做跨厂商转换；完整字段映射与限制见 [`protocol-conversion.md`](./protocol-conversion.md)
+- 协议转换仅覆盖 chat/completions（openai ↔ responses ↔ anthropic，见 `model.protocol`）；embeddings/rerank/images/tts/stt 按业界事实格式**直通**（仅重写 model 字段），不做跨厂商转换；完整字段映射与限制见 [`protocol-conversion.md`](./protocol-conversion.md)
 - 虚拟密钥仅 RPM 限流（进程内分钟窗口）与总预算；无 TPM、模型级限流与周期自动重置
 
 ---
@@ -118,13 +118,15 @@ CREATE TABLE model (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   provider_id    INTEGER NOT NULL REFERENCES provider(id) ON DELETE CASCADE,
   name           TEXT NOT NULL,                   -- 真实模型名，如 glm-4.6
-  type           TEXT NOT NULL DEFAULT 'chat',    -- chat(/v1/chat/completions) | embedding(/v1/embeddings) | rerank(/v1/rerank) | image(/v1/images/generations)；非 chat 仅支持 openai 协议
+  type           TEXT NOT NULL DEFAULT 'chat',    -- chat | embedding | rerank | image | tts | stt；非 chat 仅支持 completions 协议
   protocol       TEXT NOT NULL DEFAULT 'openai',  -- openai(chat/completions) | responses(/responses) | anthropic(/v1/messages)
   input_price    REAL NOT NULL DEFAULT 0,         -- 每 1M prompt token 价格（billing_mode=token）
   cached_price   REAL NOT NULL DEFAULT 0,         -- 每 1M 命中缓存输入 token 价格；<=0 回退输入价
   output_price   REAL NOT NULL DEFAULT 0,         -- 每 1M completion token 价格（billing_mode=token）
   per_call_price REAL NOT NULL DEFAULT 0,         -- 每次调用价格（billing_mode=per_call）
-  billing_mode   TEXT NOT NULL DEFAULT 'token',   -- token=按量 | per_call=按次；缺省/历史行按量
+  audio_sec_price REAL NOT NULL DEFAULT 0,        -- 每音频秒价格（billing_mode=audio_second；STT）
+  char_price     REAL NOT NULL DEFAULT 0,         -- 每 1M 字符价格（billing_mode=char；TTS）
+  billing_mode   TEXT NOT NULL DEFAULT 'token',   -- token | per_call | audio_second | char
   price_currency TEXT NOT NULL DEFAULT 'USD',     -- 价格币种：USD | CNY；计费统一折算为 USD 入库（汇率见 pricing.usd_cny）
   -- 熔断状态机（模型级，跨路由共享）
   status         TEXT NOT NULL DEFAULT 'active',  -- active | cooldown | disabled
@@ -183,6 +185,8 @@ CREATE TABLE request_log (
   prompt_tokens      INTEGER NOT NULL DEFAULT 0,
   completion_tokens  INTEGER NOT NULL DEFAULT 0,
   tokens_estimated   INTEGER NOT NULL DEFAULT 0,  -- 1=上游未返回 usage，为估算值
+  audio_seconds      REAL NOT NULL DEFAULT 0,     -- STT 输入音频时长（秒）
+  input_chars        INTEGER NOT NULL DEFAULT 0,  -- TTS 输入字符数
   ttft_ms            INTEGER NOT NULL DEFAULT 0,  -- 首 token 延迟（非流式=总耗时）
   total_ms           INTEGER NOT NULL DEFAULT 0,
   tps                REAL NOT NULL DEFAULT 0,     -- 流式输出速度 tok/s = completion/(total-ttft)；仅流式成功、非估算且生成窗口≥500ms 时记录，否则 0
@@ -230,6 +234,9 @@ CREATE TABLE request_log_daily (
   errors            INTEGER NOT NULL DEFAULT 0,
   prompt_tokens     INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
+  cached_tokens     INTEGER NOT NULL DEFAULT 0,
+  audio_seconds     REAL NOT NULL DEFAULT 0,
+  input_chars       INTEGER NOT NULL DEFAULT 0,
   cost              REAL NOT NULL DEFAULT 0,
   retries_sum       INTEGER NOT NULL DEFAULT 0,
   ttftb0..ttftb9    INTEGER NOT NULL DEFAULT 0,      -- TTFT 10 桶直方图（桶边界见 store.TTFTBucketBounds）
@@ -407,6 +414,8 @@ HTTP 503
 | POST | `/v1/embeddings` | 文本向量化（OpenAI embeddings 格式） |
 | POST | `/v1/rerank` | 文档重排（Cohere rerank 骨架） |
 | POST | `/v1/images/generations` | 生图（OpenAI Images 格式，缓冲式直通，`stream` 原样透传） |
+| POST | `/v1/audio/speech` | 语音合成 TTS（OpenAI Audio Speech；二进制或 SSE 流式透传） |
+| POST | `/v1/audio/transcriptions` | 语音识别 STT（OpenAI Audio Transcriptions；multipart 入站） |
 | GET  | `/v1/models` | 返回所有逻辑路由名（客户端模型列表） |
 
 上游鉴权：代理替换 `Authorization: Bearer <选中的key>`，客户端无需带真实 key。
@@ -419,13 +428,15 @@ HTTP 503
 | `/v1/embeddings` | OpenAI Embeddings —— 请求/响应格式被 OpenAI/vLLM/Ollama/硅基流动等广泛复制的的事实标准 | `baseURL + /embeddings` |
 | `/v1/rerank` | Cohere Rerank 骨架（`{model, query, documents, top_n}` → `results[].relevance_score`）—— OpenAI 无此 API，无官方标准；Jina/硅基流动/vLLM/HF TEI 均近似该形状但字段细节不一 | `baseURL + /rerank` |
 | `/v1/images/generations` | OpenAI Images API —— 事实标准，智谱 CogView、Azure OpenAI、硅基流动、OpenRouter Unified Image API 同形状 | `baseURL + /images/generations` |
+| `/v1/audio/speech` | OpenAI Audio Speech —— JSON 入、音频字节或 SSE 出；兼容端点（Groq/OpenRouter/SiliconFlow）同形状 | `baseURL + /audio/speech` |
+| `/v1/audio/transcriptions` | OpenAI Audio Transcriptions —— multipart `file`+`model` 入、JSON/文本出 | `baseURL + /audio/transcriptions` |
 
 实现约定：
 
-- **模型按 `type` 归属端点**：路由内只有同类型后端会被选中（embedding 请求绝不落到 chat 模型上）；请求体仅重写 `model` 字段（逻辑路由名 → 物理模型名），其余字段与响应体**原样直通**——rerank 无标准可归一，改写必踩厂商字段差异（vLLM 另有 `/v2/rerank`、Jina 多 `instruction`、`top_n`/`top_k` 混用），故不做任何转换。
-- **usage 提取（尽力而为）**：embeddings 读 `usage.prompt_tokens/total_tokens`；rerank 依次尝试 `meta.tokens` → `meta.billed_units` → `usage.total_tokens`；images 读 `usage.input_tokens/output_tokens`（OpenRouter 形状 `prompt_tokens/completion_tokens` 兜底；按图计费的厂商如 CogView 无 token 用量记 0）。计费与 chat 一致：`billing_mode=token` 时 `prompt × input_price + completion × output_price`（含缓存命中拆分，见 §8.1）；`per_call` 时成功调用记 `per_call_price`。
-- **流式**：embeddings/rerank 忽略 `stream` 字段（业界均无流式语义）；images 将 `stream` 原样透传（上游 gpt-image 系可能返回 SSE 渐进预览），网关为缓冲式转发，响应体与 Content-Type 原样回写，流式响应 usage 记 0。typed 端点同样走失败转移/熔断/统计/request_log 全链路，网关自身错误统一以 OpenAI error envelope 返回。
-- **出站路径版本段**：base 由用户填写且必须自带版本前缀（OpenAI 式 `/v1`、智谱 `/v4`），出站一律 `baseURL + /<resource>`：chat `/chat/completions`、messages `/messages`、responses `/responses`、typed `/embeddings` `/rerank` `/images/generations`。网关不推断版本段，故 base 填 `https://api.anthropic.com/v1` 得到 `.../v1/messages`，填 `https://api.anthropic.com` 得到 `.../messages`。
+- **模型按 `type` 归属端点**：路由内只有同类型后端会被选中（embedding 请求绝不落到 chat 模型上）；请求体仅重写 `model` 字段（逻辑路由名 → 物理模型名），其余字段与响应体**原样直通**——rerank 无标准可归一，改写必踩厂商字段差异（vLLM 另有 `/v2/rerank`、Jina 多 `instruction`、`top_n`/`top_k` 混用），故不做任何转换。音频端点同样只改 `model` + 合并 `body_override`。
+- **usage 提取（尽力而为）**：embeddings 读 `usage.prompt_tokens/total_tokens`；rerank 依次尝试 `meta.tokens` → `meta.billed_units` → `usage.total_tokens`；images 读 `usage.input_tokens/output_tokens`（OpenRouter 形状 `prompt_tokens/completion_tokens` 兜底；按图计费的厂商如 CogView 无 token 用量记 0）。TTS 按输入字符数计（`billing_mode=char`）；STT 优先读上游 `usage.seconds` / `duration`，否则解析 WAV/MP3/FLAC/M4A/Ogg 容器头。计费与 chat 一致：`billing_mode=token` 时 `prompt × input_price + completion × output_price`（含缓存命中拆分，见 §8.1）；`per_call` 时成功调用记 `per_call_price`；`audio_second` 时 `seconds × audio_sec_price`；`char` 时 `chars × char_price / 1e6`。
+- **流式**：embeddings/rerank 忽略 `stream` 字段（业界均无流式语义）；images 将 `stream` 原样透传（上游 gpt-image 系可能返回 SSE 渐进预览），网关为缓冲式转发，响应体与 Content-Type 原样回写，流式响应 usage 记 0。TTS 出站按上游 `Content-Type` 流式透传（`audio/*` 或 `text/event-stream`）；STT 入站全缓冲（`file` 是 multipart 首 part，目标 URL 依赖 `model`）。typed 端点同样走失败转移/熔断/统计/request_log 全链路，网关自身错误统一以 OpenAI error envelope 返回。
+- **出站路径版本段**：base 由用户填写且必须自带版本前缀（OpenAI 式 `/v1`、智谱 `/v4`），出站一律 `baseURL + /<resource>`：chat `/chat/completions`、messages `/messages`、responses `/responses`、typed `/embeddings` `/rerank` `/images/generations` `/audio/speech` `/audio/transcriptions`。网关不推断版本段，故 base 填 `https://api.anthropic.com/v1` 得到 `.../v1/messages`，填 `https://api.anthropic.com` 得到 `.../messages`。
 
 ### 7.2 管理面（`/api/*`，按启动层鉴权配置受保护，见 §9.1）
 
@@ -541,6 +552,7 @@ POST /api/maintenance/clear-stats             # body {"confirm":true}；清空�
 | `affinity.header` | `X-Session-ID` | 会话 ID 请求头（未传时按消息前缀哈希自动识别会话） |
 | `affinity.ttl_s` | `3600` | 亲和记忆时长（秒） |
 | `pricing.usd_cny` | `7.25` | 美元兑人民币汇率；CNY 定价模型折算为 USD 计费入库，统计接口按它换算展示 |
+| `audio.max_upload_mb` | `25` | STT 上传上限（MB），范围 1–200 |
 
 **启动引导**：首次启动自动建表、为运行层写入全部默认值、生成默认 config.yaml 模板。
 

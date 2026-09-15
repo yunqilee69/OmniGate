@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import {
-  AutoComplete, Button, Card, Cascader, Collapse, Image, Input, InputNumber, Select, Space, Tabs, Tag, Tooltip, Typography, Upload, message,
+  Button, Card, Cascader, Collapse, Image, Input, InputNumber, Select, Space, Tabs, Tag, Tooltip, Typography, Upload, message,
 } from 'antd'
-import { ClearOutlined, DownloadOutlined, SendOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
+import { AudioOutlined, ClearOutlined, DownloadOutlined, SendOutlined, StopOutlined, ToolOutlined, UploadOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
 import { Bubble } from '@ant-design/x'
 import XMarkdown from '@ant-design/x-markdown'
@@ -47,6 +47,13 @@ interface RerankResp {
 interface ImageResp {
   data?: { url?: string; b64_json?: string }[]
   usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number }
+}
+
+interface SttResp {
+  text?: string
+  language?: string
+  duration?: number
+  usage?: { type?: string; seconds?: number }
 }
 
 interface ToolCall {
@@ -113,9 +120,10 @@ const MCP_PROTOCOL_VERSION = '2024-11-05'
 
 // ---------- 本地草稿 ----------
 // 测试配置与结果临时存于 localStorage：切走菜单或刷新后回来，仍可继续使用与查看。
-// 虚拟密钥明文（vkKey）与图片 base64（参考图、生图结果）体积大或敏感，不落盘。
 const DRAFT_KEY = 'omnigate.playground.draft.v1'
-const DRAFT_TABS = ['chat', 'embedding', 'rerank', 'image']
+const DRAFT_TABS = ['chat', 'embedding', 'rerank', 'image', 'tts', 'stt']
+const TTS_VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar']
+const TTS_FORMATS = ['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm']
 
 interface Draft {
   tab: string
@@ -152,6 +160,21 @@ interface Draft {
   imgRatio: string
   imgN: number
   imgMs: number | null
+  ttsRoute?: string
+  ttsProvider?: string
+  ttsModel?: string
+  ttsInput: string
+  ttsVoice: string
+  ttsFormat: string
+  ttsSpeed: number
+  ttsMs: number | null
+  sttRoute?: string
+  sttProvider?: string
+  sttModel?: string
+  sttLanguage: string
+  sttPrompt: string
+  sttMs: number | null
+  sttResult: SttResp | null
 }
 
 const draftStr = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback)
@@ -244,6 +267,21 @@ function draftRerankResult(v: unknown): RerankResp | null {
   )
   return { results }
 }
+function draftSttResult(v: unknown): SttResp | null {
+  if (!isRecord(v)) return null
+  const usage = isRecord(v.usage)
+    ? {
+        type: typeof v.usage.type === 'string' ? v.usage.type : undefined,
+        seconds: typeof v.usage.seconds === 'number' ? v.usage.seconds : undefined,
+      }
+    : undefined
+  return {
+    text: typeof v.text === 'string' ? v.text : undefined,
+    language: typeof v.language === 'string' ? v.language : undefined,
+    duration: typeof v.duration === 'number' ? v.duration : undefined,
+    usage,
+  }
+}
 
 function loadDraft(): Draft {
   let raw: Record<string, unknown> = {}
@@ -290,6 +328,21 @@ function loadDraft(): Draft {
     imgRatio: draftStr(raw.imgRatio, '1:1'),
     imgN: draftNum(raw.imgN, 1),
     imgMs: draftOptNum(raw.imgMs),
+    ttsRoute: draftOptStr(raw.ttsRoute),
+    ttsProvider: draftOptStr(raw.ttsProvider),
+    ttsModel: draftOptStr(raw.ttsModel),
+    ttsInput: draftStr(raw.ttsInput, '你好，这是一段语音合成测试。'),
+    ttsVoice: draftStr(raw.ttsVoice, 'alloy'),
+    ttsFormat: draftStr(raw.ttsFormat, 'mp3'),
+    ttsSpeed: draftNum(raw.ttsSpeed, 1),
+    ttsMs: draftOptNum(raw.ttsMs),
+    sttRoute: draftOptStr(raw.sttRoute),
+    sttProvider: draftOptStr(raw.sttProvider),
+    sttModel: draftOptStr(raw.sttModel),
+    sttLanguage: draftStr(raw.sttLanguage),
+    sttPrompt: draftStr(raw.sttPrompt),
+    sttMs: draftOptNum(raw.sttMs),
+    sttResult: draftSttResult(raw.sttResult),
   }
 }
 
@@ -493,6 +546,128 @@ async function throwHttpError(res: Response): Promise<never> {
   throw new Error(msg)
 }
 
+function ttsMime(format: string, header?: string | null): string {
+  const raw = (header ?? '').trim()
+  const ct = raw.split(';')[0].trim().toLowerCase()
+  if (ct.startsWith('audio/') || ct === 'application/octet-stream') return raw || ct
+  switch (format) {
+    case 'opus': return 'audio/ogg'
+    case 'aac': return 'audio/aac'
+    case 'flac': return 'audio/flac'
+    case 'wav': return 'audio/wav'
+    case 'pcm': return 'audio/pcm'
+    default: return 'audio/mpeg'
+  }
+}
+
+function ttsExt(format: string, mime: string): string {
+  const base = mime.split(';')[0].trim().toLowerCase()
+  if (base.includes('wav')) return 'wav'
+  if (base.includes('ogg') || base.includes('opus')) return 'ogg'
+  if (base.includes('aac')) return 'aac'
+  if (base.includes('flac')) return 'flac'
+  if (base.includes('mpeg') || base.includes('mp3')) return 'mp3'
+  if (base.includes('l16') || base.includes('pcm') || base.includes('raw')) return 'wav'
+  if (format && format !== 'pcm') return format
+  return 'mp3'
+}
+
+function parseL16Params(mime: string): { rate: number; channels: number } {
+  let rate = 24000
+  let channels = 1
+  for (const part of mime.split(';')) {
+    const [k, v] = part.split('=').map((s) => s.trim().toLowerCase())
+    const n = Number(v)
+    if (k === 'rate' && n > 0) rate = n
+    if ((k === 'channels' || k === 'channel') && n > 0) channels = n
+  }
+  return { rate, channels }
+}
+
+function pcmToWav(pcm: ArrayBuffer, rate: number, channels: number): Blob {
+  const dataSize = pcm.byteLength
+  const buf = new ArrayBuffer(44 + dataSize)
+  const view = new DataView(buf)
+  const bytes = new Uint8Array(buf)
+  const ascii = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i))
+  }
+  ascii(0, 'RIFF')
+  view.setUint32(4, 36 + dataSize, true)
+  ascii(8, 'WAVE')
+  ascii(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, channels, true)
+  view.setUint32(24, rate, true)
+  view.setUint32(28, rate * channels * 2, true)
+  view.setUint16(32, channels * 2, true)
+  view.setUint16(34, 16, true)
+  ascii(36, 'data')
+  view.setUint32(40, dataSize, true)
+  bytes.set(new Uint8Array(pcm), 44)
+  return new Blob([buf], { type: 'audio/wav' })
+}
+
+async function playableAudio(blob: Blob, mime: string): Promise<{ blob: Blob; mime: string; durationSec?: number }> {
+  const base = mime.split(';')[0].trim().toLowerCase()
+  if (base === 'audio/l16' || base === 'audio/pcm' || base === 'audio/raw' || base === 'audio/x-raw') {
+    const { rate, channels } = parseL16Params(mime)
+    const pcm = await blob.arrayBuffer()
+    const durationSec = rate > 0 && channels > 0 ? pcm.byteLength / (rate * channels * 2) : undefined
+    return { blob: pcmToWav(pcm, rate, channels), mime: 'audio/wav', durationSec }
+  }
+  return { blob: blob.type ? blob : new Blob([blob], { type: base || 'audio/mpeg' }), mime: mime || blob.type }
+}
+
+function concatBytes(chunks: Uint8Array[]): ArrayBuffer {
+  let n = 0
+  for (const c of chunks) n += c.length
+  const out = new Uint8Array(n)
+  let off = 0
+  for (const c of chunks) {
+    out.set(c, off)
+    off += c.length
+  }
+  return out.buffer as ArrayBuffer
+}
+
+function b64ToBytes(s: string): Uint8Array | null {
+  try {
+    const bin = atob(s)
+    const out = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+    return out
+  } catch {
+    return null
+  }
+}
+
+// TTS SSE（stream_format=sse）：拼接 speech.audio.delta 的 base64 音频块。
+async function collectTTSAudio(res: Response, format: string): Promise<{ blob: Blob; mime: string; durationSec?: number }> {
+  const ct = res.headers.get('Content-Type') ?? ''
+  if (ct.includes('text/event-stream')) {
+    if (!res.body) throw new Error('empty stream')
+    const chunks: Uint8Array[] = []
+    await readSSE(res.body, (evt) => {
+      if (!isRecord(evt)) return
+      const typ = typeof evt.type === 'string' ? evt.type : ''
+      const audio = typeof evt.audio === 'string' ? evt.audio : ''
+      if ((typ === 'speech.audio.delta' || typ === 'audio.delta' || (!typ && audio)) && audio) {
+        const bytes = b64ToBytes(audio)
+        if (bytes) chunks.push(bytes)
+      }
+    })
+    if (!chunks.length) throw new Error('流式响应未返回音频数据')
+    const mime = ttsMime(format)
+    return playableAudio(new Blob([concatBytes(chunks)], { type: mime }), mime)
+  }
+  const mime = ttsMime(format, ct)
+  const blob = await res.blob()
+  return playableAudio(blob, mime || blob.type)
+}
+
+
 // 路由选择器：按家族过滤后的路由列表；familyLabel 用于占位与空态文案。
 function RouteSelect({ routes, value, onChange, familyLabel, allowClear }: {
   routes: Route[]
@@ -524,6 +699,8 @@ const FAMILY_EMPTY: Record<string, string> = {
   embedding: '暂无向量模型',
   rerank: '暂无重排模型',
   image: '暂无生图模型',
+  tts: '暂无语音合成模型',
+  stt: '暂无语音识别模型',
 }
 
 // 提供商 → 模型两级 Cascader；family 过滤模型类型，与路由选择互斥。
@@ -581,7 +758,7 @@ function ProviderModelCascader({
   )
 }
 
-// 虚拟密钥选择器：四个测试 Tab 共用同一选中值。
+// 虚拟密钥选择器：各测试 Tab 共用同一选中值。
 function VkSelect({ vks, value, onChange }: {
   vks: VirtualKey[]
   value?: number
@@ -657,6 +834,35 @@ export default function PlaygroundPage() {
   const [imgMs, setImgMs] = useState<number | null>(saved.imgMs)
   const [imgResult, setImgResult] = useState<ImageResp | null>(null)
 
+  // TTS 测试（音频 blob 不落草稿）
+  const [ttsRoute, setTtsRoute] = useState<string | undefined>(saved.ttsRoute)
+  const [ttsProvider, setTtsProvider] = useState<string | undefined>(saved.ttsProvider)
+  const [ttsModel, setTtsModel] = useState<string | undefined>(saved.ttsModel)
+  const [ttsInput, setTtsInput] = useState(saved.ttsInput)
+  const [ttsVoice, setTtsVoice] = useState(saved.ttsVoice)
+  const [ttsFormat, setTtsFormat] = useState(saved.ttsFormat)
+  const [ttsSpeed, setTtsSpeed] = useState(saved.ttsSpeed)
+  const [ttsBusy, setTtsBusy] = useState(false)
+  const [ttsMs, setTtsMs] = useState<number | null>(saved.ttsMs)
+  const [ttsAudioSec, setTtsAudioSec] = useState<number | null>(null)
+  const [ttsAudioUrl, setTtsAudioUrl] = useState<string | null>(null)
+  const [ttsAudioType, setTtsAudioType] = useState('audio/mpeg')
+  const ttsUrlRef = useRef<string | null>(null)
+
+  // STT 测试（上传文件不落草稿）
+  const [sttRoute, setSttRoute] = useState<string | undefined>(saved.sttRoute)
+  const [sttProvider, setSttProvider] = useState<string | undefined>(saved.sttProvider)
+  const [sttModel, setSttModel] = useState<string | undefined>(saved.sttModel)
+  const [sttLanguage, setSttLanguage] = useState(saved.sttLanguage)
+  const [sttPrompt, setSttPrompt] = useState(saved.sttPrompt)
+  const [sttFile, setSttFile] = useState<File | null>(null)
+  const [sttBusy, setSttBusy] = useState(false)
+  const [sttMs, setSttMs] = useState<number | null>(saved.sttMs)
+  const [sttResult, setSttResult] = useState<SttResp | null>(saved.sttResult)
+  const [sttRecording, setSttRecording] = useState(false)
+  const sttRecorderRef = useRef<MediaRecorder | null>(null)
+  const sttChunksRef = useRef<Blob[]>([])
+
   const [systemPrompt, setSystemPrompt] = useState(saved.systemPrompt)
   const [temperature, setTemperature] = useState<number | null>(saved.temperature)
   const [maxRounds, setMaxRounds] = useState(saved.maxRounds)
@@ -705,6 +911,21 @@ export default function PlaygroundPage() {
     imgRatio,
     imgN,
     imgMs,
+    ttsRoute,
+    ttsProvider,
+    ttsModel,
+    ttsInput,
+    ttsVoice,
+    ttsFormat,
+    ttsSpeed,
+    ttsMs,
+    sttRoute,
+    sttProvider,
+    sttModel,
+    sttLanguage,
+    sttPrompt,
+    sttMs,
+    sttResult,
   }
   const draftRef = useRef(draft)
   const sessionRef = useRef(0)
@@ -737,6 +958,12 @@ export default function PlaygroundPage() {
   const imgDirectPath: [string, string] | undefined =
     imgProvider && imgModel ? [imgProvider, imgModel] : undefined
   const imgTarget = directName(imgProvider, imgModel) ?? imgRoute
+  const ttsDirectPath: [string, string] | undefined =
+    ttsProvider && ttsModel ? [ttsProvider, ttsModel] : undefined
+  const ttsTarget = directName(ttsProvider, ttsModel) ?? ttsRoute
+  const sttDirectPath: [string, string] | undefined =
+    sttProvider && sttModel ? [sttProvider, sttModel] : undefined
+  const sttTarget = directName(sttProvider, sttModel) ?? sttRoute
   const activeVks = useMemo(() => vks.filter((k) => k.status === 'active'), [vks])
 
   // 路由 → 模型类型集合：按家族过滤路由（targets × models 联查；无 type 视为 chat）
@@ -753,7 +980,7 @@ export default function PlaygroundPage() {
     return map
   }, [routes, modelsById])
   const routesFor = (family: string) =>
-    routes.filter((r) => r.endpoint !== 'mcp' && routeFamilies[r.name]?.has(family))
+    routes.filter((r) => r.endpoint !== 'mcp' && (r.endpoint === family || routeFamilies[r.name]?.has(family)))
 
   const toolMap = useMemo(() => {
     const m: Record<string, McpToolInfo> = {}
@@ -812,6 +1039,8 @@ export default function PlaygroundPage() {
         restoreExclusive('embedding', saved.embProvider, saved.embModel, saved.embRoute, setEmbProvider, setEmbModel, setEmbRoute)
         restoreExclusive('rerank', saved.rrkProvider, saved.rrkModel, saved.rrkRoute, setRrkProvider, setRrkModel, setRrkRoute)
         restoreExclusive('image', saved.imgProvider, saved.imgModel, saved.imgRoute, setImgProvider, setImgModel, setImgRoute)
+        restoreExclusive('tts', saved.ttsProvider, saved.ttsModel, saved.ttsRoute, setTtsProvider, setTtsModel, setTtsRoute)
+        restoreExclusive('stt', saved.sttProvider, saved.sttModel, saved.sttRoute, setSttProvider, setSttModel, setSttRoute)
         setMcpRoutes((cur) => cur.filter((name) => routeNames.has(name)))
         setVkId((cur) => (cur !== undefined && ks.some((k) => k.id === cur) ? cur : undefined))
         setBaseLoaded(true)
@@ -1150,9 +1379,126 @@ export default function PlaygroundPage() {
     }
   }
 
+  const replaceTtsUrl = (url: string | null) => {
+    if (ttsUrlRef.current) URL.revokeObjectURL(ttsUrlRef.current)
+    ttsUrlRef.current = url
+    setTtsAudioUrl(url)
+  }
+
+  useEffect(() => () => {
+    if (ttsUrlRef.current) URL.revokeObjectURL(ttsUrlRef.current)
+    sttRecorderRef.current?.stop()
+  }, [])
+
+  const runTts = async () => {
+    const text = ttsInput.trim()
+    if (!ttsTarget) { message.warning('请先选择语音合成路由或提供商/模型'); return }
+    if (!vkKey) { message.warning('请先选择虚拟密钥'); return }
+    if (!text) { message.warning('请输入要合成的文本'); return }
+    setTtsBusy(true)
+    try {
+      const t0 = performance.now()
+      const body: Record<string, unknown> = {
+        model: ttsTarget,
+        input: text,
+        voice: ttsVoice || 'alloy',
+        response_format: ttsFormat || 'mp3',
+      }
+      if (ttsSpeed !== 1) body.speed = ttsSpeed
+      const res = await fetch('/v1/audio/speech', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${vkKey}` },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) await throwHttpError(res)
+      const { blob, mime, durationSec } = await collectTTSAudio(res, ttsFormat || 'mp3')
+      setTtsMs(Math.round(performance.now() - t0))
+      setTtsAudioType(mime)
+      setTtsAudioSec(durationSec ?? null)
+      replaceTtsUrl(URL.createObjectURL(blob))
+    } catch (e: unknown) {
+      message.error(errText(e))
+    } finally {
+      setTtsBusy(false)
+    }
+  }
+
+  const runStt = async () => {
+    if (!sttTarget) { message.warning('请先选择语音识别路由或提供商/模型'); return }
+    if (!vkKey) { message.warning('请先选择虚拟密钥'); return }
+    if (!sttFile) { message.warning('请上传或录制一段音频'); return }
+    setSttBusy(true)
+    try {
+      const t0 = performance.now()
+      const form = new FormData()
+      form.append('model', sttTarget)
+      form.append('file', sttFile, sttFile.name || 'audio.webm')
+      form.append('response_format', 'json')
+      if (sttLanguage.trim()) form.append('language', sttLanguage.trim())
+      if (sttPrompt.trim()) form.append('prompt', sttPrompt.trim())
+      const res = await fetch('/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${vkKey}` },
+        body: form,
+      })
+      if (!res.ok) await throwHttpError(res)
+      const parsed = (await res.json()) as SttResp
+      setSttMs(Math.round(performance.now() - t0))
+      setSttResult({
+        text: parsed.text ?? '',
+        language: parsed.language,
+        duration: parsed.duration,
+        usage: parsed.usage,
+      })
+    } catch (e: unknown) {
+      message.error(errText(e))
+    } finally {
+      setSttBusy(false)
+    }
+  }
+
+  const toggleSttRecord = async () => {
+    if (sttRecording) {
+      sttRecorderRef.current?.stop()
+      return
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      message.warning('当前浏览器不支持录音，请直接上传音频文件')
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : ''
+      const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream)
+      sttChunksRef.current = []
+      rec.ondataavailable = (e) => { if (e.data.size) sttChunksRef.current.push(e.data) }
+      rec.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop())
+        const blob = new Blob(sttChunksRef.current, { type: rec.mimeType || 'audio/webm' })
+        const ext = (rec.mimeType || '').includes('mp4') ? 'm4a' : 'webm'
+        setSttFile(new File([blob], `record.${ext}`, { type: blob.type }))
+        setSttRecording(false)
+        sttRecorderRef.current = null
+      }
+      rec.onerror = () => {
+        stream.getTracks().forEach((t) => t.stop())
+        setSttRecording(false)
+        sttRecorderRef.current = null
+        message.error('录音失败')
+      }
+      sttRecorderRef.current = rec
+      rec.start()
+      setSttRecording(true)
+    } catch (e: unknown) {
+      message.error(errText(e) || '无法访问麦克风')
+    }
+  }
+
   const exclusivePickers = (
     familyLabel: string,
-    familyKey: 'chat' | 'embedding' | 'rerank' | 'image',
+    familyKey: 'chat' | 'embedding' | 'rerank' | 'image' | 'tts' | 'stt',
     routeValue: string | undefined,
     setRoute: (v?: string) => void,
     directPath: [string, string] | undefined,
@@ -1196,7 +1542,7 @@ export default function PlaygroundPage() {
   // 非 chat 家族的配置侧栏：家族路由 / 直达模型互斥 + 共享虚拟密钥 + 各自参数
   const configCard = (
     familyLabel: string,
-    familyKey: 'embedding' | 'rerank' | 'image',
+    familyKey: 'embedding' | 'rerank' | 'image' | 'tts' | 'stt',
     routeValue: string | undefined,
     setRoute: (v?: string) => void,
     directPath: [string, string] | undefined,
@@ -1776,6 +2122,183 @@ export default function PlaygroundPage() {
     </div>
   )
 
+  const ttsPane = (
+    <div style={{ display: 'flex', gap: 16, alignItems: 'stretch', height: 'calc(100vh - 190px)' }}>
+      {configCard('语音合成', 'tts', ttsRoute, setTtsRoute, ttsDirectPath, setTtsProvider, setTtsModel, (
+        <>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>合成文本</Typography.Text>
+            <Input.TextArea
+              rows={6}
+              style={{ marginTop: 4 }}
+              placeholder="输入要合成的文本"
+              value={ttsInput}
+              onChange={(e) => setTtsInput(e.target.value)}
+            />
+          </div>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>音色（OpenAI 标准名，可搜索）</Typography.Text>
+            <Select
+              showSearch
+              style={{ width: '100%', marginTop: 4 }}
+              value={ttsVoice}
+              onChange={setTtsVoice}
+              placeholder="选择音色"
+              optionFilterProp="value"
+              options={TTS_VOICES.map((v) => ({ value: v, label: v }))}
+            />
+          </div>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>输出格式</Typography.Text>
+            <Select
+              style={{ width: '100%', marginTop: 4 }}
+              value={ttsFormat}
+              onChange={setTtsFormat}
+              options={TTS_FORMATS.map((f) => ({ value: f, label: f }))}
+            />
+          </div>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>语速</Typography.Text>
+            <InputNumber
+              min={0.25}
+              max={4}
+              step={0.05}
+              style={{ width: '100%', marginTop: 4 }}
+              value={ttsSpeed}
+              onChange={(v) => setTtsSpeed(v ?? 1)}
+            />
+          </div>
+          <Button type="primary" icon={<SendOutlined />} loading={ttsBusy} disabled={!ttsInput.trim()} onClick={runTts}>
+            合成语音
+          </Button>
+        </>
+      ))}
+      <Card
+        title={`合成结果${ttsTarget ? ` · ${ttsTarget}` : ''}`}
+        size="small"
+        style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}
+        styles={{ body: { display: 'flex', flexDirection: 'column', gap: 12 } }}
+      >
+        {!ttsAudioUrl && (
+          <div style={{ margin: 'auto', textAlign: 'center' }}>
+            <Typography.Text type="secondary">选择路由与密钥后输入文本，合成结果可在此播放或下载。</Typography.Text>
+          </div>
+        )}
+        {ttsAudioUrl && (
+          <>
+            <Space size={4} wrap>
+              {ttsMs !== null && <Tag style={{ fontSize: 11 }}>耗时 {(ttsMs / 1000).toFixed(2)}s</Tag>}
+              {ttsAudioSec !== null && <Tag style={{ fontSize: 11 }}>音频 {ttsAudioSec.toFixed(2)}s</Tag>}
+              <Tag style={{ fontSize: 11 }}>{ttsExt(ttsFormat, ttsAudioType)}</Tag>
+              {ttsAudioType ? <Tag style={{ fontSize: 11 }}>{ttsAudioType.split(';')[0]}</Tag> : null}
+            </Space>
+            <audio controls src={ttsAudioUrl} style={{ width: '100%' }} />
+            <Button
+              icon={<DownloadOutlined />}
+              onClick={() => {
+                const a = document.createElement('a')
+                a.href = ttsAudioUrl
+                a.download = `speech-${Date.now()}.${ttsExt(ttsFormat, ttsAudioType)}`
+                a.click()
+              }}
+            >
+              下载音频
+            </Button>
+          </>
+        )}
+      </Card>
+    </div>
+  )
+
+  const sttPane = (
+    <div style={{ display: 'flex', gap: 16, alignItems: 'stretch', height: 'calc(100vh - 190px)' }}>
+      {configCard('语音识别', 'stt', sttRoute, setSttRoute, sttDirectPath, setSttProvider, setSttModel, (
+        <>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>音频文件</Typography.Text>
+            <Upload
+              accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac,.webm,.mp4"
+              maxCount={1}
+              beforeUpload={(file) => {
+                setSttFile(file)
+                return false
+              }}
+              onRemove={() => setSttFile(null)}
+              fileList={sttFile ? [{ uid: 'stt', name: sttFile.name, status: 'done' as const }] : []}
+              style={{ marginTop: 4 }}
+            >
+              <Button icon={<UploadOutlined />} style={{ marginTop: 4 }}>选择文件</Button>
+            </Upload>
+            <Button
+              icon={sttRecording ? <StopOutlined /> : <AudioOutlined />}
+              danger={sttRecording}
+              onClick={toggleSttRecord}
+              style={{ marginTop: 8, width: '100%' }}
+            >
+              {sttRecording ? '停止录音' : '麦克风录音'}
+            </Button>
+          </div>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>语言（可选）</Typography.Text>
+            <Input
+              style={{ marginTop: 4 }}
+              placeholder="如 zh / en，留空由模型检测"
+              value={sttLanguage}
+              onChange={(e) => setSttLanguage(e.target.value)}
+            />
+          </div>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>提示词（可选）</Typography.Text>
+            <Input.TextArea
+              rows={3}
+              style={{ marginTop: 4 }}
+              placeholder="专有名词或上下文，帮助识别"
+              value={sttPrompt}
+              onChange={(e) => setSttPrompt(e.target.value)}
+            />
+          </div>
+          <Button type="primary" icon={<SendOutlined />} loading={sttBusy} disabled={!sttFile} onClick={runStt}>
+            识别语音
+          </Button>
+        </>
+      ))}
+      <Card
+        title={`识别结果${sttTarget ? ` · ${sttTarget}` : ''}`}
+        size="small"
+        style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}
+        styles={{ body: { display: 'flex', flexDirection: 'column', gap: 12 } }}
+      >
+        {!sttResult && (
+          <div style={{ margin: 'auto', textAlign: 'center' }}>
+            <Typography.Text type="secondary">上传或录制音频后识别；结果文本显示在此。</Typography.Text>
+          </div>
+        )}
+        {sttResult && (
+          <>
+            <Space size={4} wrap>
+              {sttMs !== null && <Tag style={{ fontSize: 11 }}>{(sttMs / 1000).toFixed(2)}s</Tag>}
+              {sttResult.language && <Tag style={{ fontSize: 11 }}>{sttResult.language}</Tag>}
+              {(sttResult.usage?.seconds ?? sttResult.duration) !== undefined && (
+                <Tag style={{ fontSize: 11 }}>{Number(sttResult.usage?.seconds ?? sttResult.duration).toFixed(2)}s 音频</Tag>
+              )}
+            </Space>
+            <div style={{
+              border: '1px solid #ebebeb',
+              borderRadius: 8,
+              padding: '12px 14px',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              fontSize: 14,
+              lineHeight: 1.6,
+            }}>
+              {sttResult.text || '（空）'}
+            </div>
+          </>
+        )}
+      </Card>
+    </div>
+  )
+
   return (
     <Tabs
       activeKey={tab}
@@ -1785,6 +2308,8 @@ export default function PlaygroundPage() {
         { key: 'embedding', label: '向量', children: embeddingPane },
         { key: 'rerank', label: '重排', children: rerankPane },
         { key: 'image', label: '生图', children: imagePane },
+        { key: 'tts', label: '语音合成', children: ttsPane },
+        { key: 'stt', label: '语音识别', children: sttPane },
       ]}
     />
   )

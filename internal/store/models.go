@@ -107,13 +107,13 @@ type ApiKey struct {
 
 // Model 真实模型。禁用/熔断状态机已退役，粒度下沉为模型×密钥组合（ModelKeyBan）。
 // Protocol 决定上游调用格式：completions(/chat/completions) | responses(/responses) | messages(/messages)。
-// Type 决定端点家族：chat(/v1/chat/completions) | embedding(/v1/embeddings) | rerank(/v1/rerank) | image(/v1/images/generations)；
-// 非 chat 家族仅支持 protocol=completions（按各自业界事实格式直通，不做跨厂商协议转换）。
+// Type 决定端点家族：chat(/v1/chat/completions) | embedding(/v1/embeddings) | rerank(/v1/rerank) | image(/v1/images/generations)
+// | tts(/v1/audio/speech) | stt(/v1/audio/transcriptions)；
 type Model struct {
 	ID            int64   `json:"id" gorm:"primaryKey;autoIncrement"`
 	ProviderID    int64   `json:"provider_id" gorm:"not null;uniqueIndex:idx_model_provider_name"`
 	Name          string  `json:"name" gorm:"size:191;not null;uniqueIndex:idx_model_provider_name"`
-	Type          string  `json:"type" gorm:"size:32;not null;default:'chat'"`          // chat | embedding | rerank | image
+	Type          string  `json:"type" gorm:"size:32;not null;default:'chat'"`          // chat | embedding | rerank | image | tts | stt
 	Protocol      string  `json:"protocol" gorm:"size:32;not null;default:completions"` // completions | responses | messages
 	ApiPath       string  `json:"api_path" gorm:"size:512;not null;default:''"`         // 自定义 API 路径覆盖
 	BodyOverride  string  `json:"body_override" gorm:"type:text;not null;default:''"`   // 请求体覆盖 JSON
@@ -121,7 +121,9 @@ type Model struct {
 	CachedPrice   float64 `json:"cached_price" gorm:"not null;default:0"`               // 每 1M 命中缓存输入 token 价格；<=0 回退输入价
 	OutputPrice   float64 `json:"output_price" gorm:"not null;default:0"`               // 每 1M completion token 价格（billing_mode=token）
 	PerCallPrice  float64 `json:"per_call_price" gorm:"not null;default:0"`             // 每次调用价格（billing_mode=per_call）
-	BillingMode   string  `json:"billing_mode" gorm:"size:16;not null;default:'token'"` // token=按量 | per_call=按次
+	AudioSecPrice float64 `json:"audio_sec_price" gorm:"not null;default:0"`            // 每音频秒价格（billing_mode=audio_second；STT 按输入音频时长计费）
+	CharPrice     float64 `json:"char_price" gorm:"not null;default:0"`                 // 每 1M 字符价格（billing_mode=char；TTS 按输入文本量计费）
+	BillingMode   string  `json:"billing_mode" gorm:"size:16;not null;default:'token'"` // token=按量 | per_call=按次 | audio_second=按音频秒 | char=按输入字符
 	PriceCurrency string  `json:"price_currency" gorm:"size:8;not null;default:'USD'"`  // 价格币种：USD | CNY；计费时统一折算为 USD 入库
 	// （保留字段，熔断状态机已退役，不再被写入/读取——禁用粒度见 ModelKeyBan）
 	Status        string `json:"status" gorm:"size:32;not null;default:active"`
@@ -233,29 +235,31 @@ type VirtualKey struct {
 func (AppConfig) TableName() string { return "app_config" }
 
 // RequestLog 请求日志（统计事实表，只增不改；表结构上不存在任何请求内容字段）。
-// Endpoint 记录请求进入的端点类型（completions/messages/responses/embedding/rerank/image），
+// Endpoint 记录请求进入的端点类型（completions/messages/responses/embedding/rerank/image/tts/stt），
 // 在入口创建 pending 行时写入；路由删除后日志仍自包含。
 type RequestLog struct {
-	ID               int64  `json:"id" gorm:"primaryKey;autoIncrement"`
-	CreatedAt        int64  `json:"created_at" gorm:"autoCreateTime;index:idx_rl_time_route,priority:1;index:idx_rl_time_provider,priority:1"`
-	Status           string `json:"status" gorm:"size:32;not null"`
-	Endpoint         string `json:"endpoint" gorm:"size:32;not null;default:''"`
-	Route            string `json:"route" gorm:"size:191;not null;index:idx_rl_route;index:idx_rl_time_route,priority:2"`
-	Provider         string `json:"provider" gorm:"size:191;not null;index:idx_rl_provider;index:idx_rl_time_provider,priority:2"`
-	Model            string `json:"model" gorm:"size:191;not null"`
-	KeyID            int64  `json:"key_id" gorm:"not null;default:0;index:idx_rl_key"`
-	VKID             int64  `json:"vk_id" gorm:"column:vk_id;not null;default:0;index:idx_rl_vk"`
-	RequestID        string `json:"request_id" gorm:"size:64;not null"`
-	ErrorCode        string `json:"error_code" gorm:"size:64;not null;default:''"`
-	IsStream         bool   `json:"is_stream" gorm:"not null;default:false"`
-	IsFallback       bool   `json:"is_fallback" gorm:"not null;default:false"`
-	TokensEstimated  bool   `json:"tokens_estimated" gorm:"not null;default:false"`
-	Retries          int    `json:"retries" gorm:"not null;default:0"`
-	PromptTokens     int    `json:"prompt_tokens" gorm:"not null;default:0"`
-	CompletionTokens int    `json:"completion_tokens" gorm:"not null;default:0"`
-	CachedTokens     int    `json:"cached_tokens" gorm:"not null;default:0"`
-	TTFTMs           int64  `json:"ttft_ms" gorm:"not null;default:0"`
-	TotalMs          int64  `json:"total_ms" gorm:"not null;default:0"`
+	ID               int64   `json:"id" gorm:"primaryKey;autoIncrement"`
+	CreatedAt        int64   `json:"created_at" gorm:"autoCreateTime;index:idx_rl_time_route,priority:1;index:idx_rl_time_provider,priority:1"`
+	Status           string  `json:"status" gorm:"size:32;not null"`
+	Endpoint         string  `json:"endpoint" gorm:"size:32;not null;default:''"`
+	Route            string  `json:"route" gorm:"size:191;not null;index:idx_rl_route;index:idx_rl_time_route,priority:2"`
+	Provider         string  `json:"provider" gorm:"size:191;not null;index:idx_rl_provider;index:idx_rl_time_provider,priority:2"`
+	Model            string  `json:"model" gorm:"size:191;not null"`
+	KeyID            int64   `json:"key_id" gorm:"not null;default:0;index:idx_rl_key"`
+	VKID             int64   `json:"vk_id" gorm:"column:vk_id;not null;default:0;index:idx_rl_vk"`
+	RequestID        string  `json:"request_id" gorm:"size:64;not null"`
+	ErrorCode        string  `json:"error_code" gorm:"size:64;not null;default:''"`
+	IsStream         bool    `json:"is_stream" gorm:"not null;default:false"`
+	IsFallback       bool    `json:"is_fallback" gorm:"not null;default:false"`
+	TokensEstimated  bool    `json:"tokens_estimated" gorm:"not null;default:false"`
+	Retries          int     `json:"retries" gorm:"not null;default:0"`
+	PromptTokens     int     `json:"prompt_tokens" gorm:"not null;default:0"`
+	CompletionTokens int     `json:"completion_tokens" gorm:"not null;default:0"`
+	CachedTokens     int     `json:"cached_tokens" gorm:"not null;default:0"`
+	AudioSeconds     float64 `json:"audio_seconds" gorm:"not null;default:0"` // STT 输入音频时长（秒）
+	InputChars       int     `json:"input_chars" gorm:"not null;default:0"`   // TTS 输入字符数
+	TTFTMs           int64   `json:"ttft_ms" gorm:"not null;default:0"`
+	TotalMs          int64   `json:"total_ms" gorm:"not null;default:0"`
 	// Tps 流式输出速度（tok/s）= completion_tokens / ((total_ms - ttft_ms)/1000)。
 	// 仅流式成功、usage 非估算且生成时长 >= 500ms 时记录，否则为 0。
 	Tps       float64 `json:"tps" gorm:"not null;default:0"`
@@ -318,6 +322,8 @@ type RequestLogDaily struct {
 	PromptTokens     int64   `gorm:"not null;default:0"`
 	CompletionTokens int64   `gorm:"not null;default:0"`
 	CachedTokens     int64   `gorm:"not null;default:0"`
+	AudioSeconds     float64 `gorm:"not null;default:0"`
+	InputChars       int64   `gorm:"not null;default:0"`
 	Cost             float64 `gorm:"not null;default:0"`
 	RetriesSum       int64   `gorm:"not null;default:0"`
 	TTFTB0           int64   `gorm:"not null;default:0;column:ttftb0"`

@@ -51,6 +51,8 @@ interface Model {
   cached_price: number
   output_price: number
   per_call_price: number
+  audio_sec_price: number
+  char_price: number
   billing_mode: string
   price_currency: string
   status: string
@@ -73,6 +75,8 @@ const modelTypeOptions = [
   { value: 'embedding', label: '向量模型' },
   { value: 'rerank', label: '重排模型' },
   { value: 'image', label: '生图模型' },
+  { value: 'tts', label: '语音合成' },
+  { value: 'stt', label: '语音识别' },
 ]
 
 const proxyURLLabel = (
@@ -99,6 +103,8 @@ const modelTypeTag = (t: string) => {
   if (t === 'embedding') return <Tag color="geekblue">embedding</Tag>
   if (t === 'rerank') return <Tag color="purple">rerank</Tag>
   if (t === 'image') return <Tag color="orange">image</Tag>
+  if (t === 'tts') return <Tag color="cyan">tts</Tag>
+  if (t === 'stt') return <Tag color="blue">stt</Tag>
   return <Tag>chat</Tag>
 }
 
@@ -780,8 +786,8 @@ function ModelsTab({ provider, keys, models, onSaved }: {
         name: m.name, type: m.type || 'chat', protocol: m.protocol,
         api_path: m.api_path, body_override: m.body_override,
         input_price: m.input_price, cached_price: m.cached_price ?? 0, output_price: m.output_price,
-        per_call_price: m.per_call_price ?? 0, billing_mode: m.billing_mode || 'token',
-        price_currency: m.price_currency || 'USD', key_ids: m.key_ids,
+        per_call_price: m.per_call_price ?? 0, audio_sec_price: m.audio_sec_price ?? 0, char_price: m.char_price ?? 0,
+        billing_mode: m.billing_mode || 'token',
       })
     } else {
       form.resetFields()
@@ -842,6 +848,12 @@ function ModelsTab({ provider, keys, models, onSaved }: {
           const sym = m.price_currency === 'CNY' ? '¥' : '$'
           if (m.billing_mode === 'per_call') {
             return <div>{sym}{m.per_call_price}/次</div>
+          }
+          if (m.billing_mode === 'audio_second') {
+            return <div>{sym}{m.audio_sec_price}/秒</div>
+          }
+          if (m.billing_mode === 'char') {
+            return <div>{sym}{m.char_price}/1M 字符</div>
           }
           return (
             <div style={{ lineHeight: 1.45 }}>
@@ -943,6 +955,8 @@ function ModelsTab({ provider, keys, models, onSaved }: {
                   embedding: '向量以 completions 风格直通上游，不做跨厂商协议改写',
                   rerank: '重排无官方标准，以 completions 风格直通上游，不做跨厂商协议改写',
                   image: '生图以 OpenAI Images 格式直通上游（baseURL + /images/generations），不做跨厂商协议改写',
+                  tts: '语音合成以 OpenAI /v1/audio/speech 格式直通上游，不做跨厂商协议改写',
+                  stt: '语音识别以 OpenAI /v1/audio/transcriptions 格式直通上游，不做跨厂商协议改写',
                 }
                 return (
                   <Form.Item name="protocol" label="出站格式（由端点类型决定）"
@@ -971,15 +985,28 @@ function ModelsTab({ provider, keys, models, onSaved }: {
             <Input.TextArea rows={3} placeholder='{"temperature": 0.5, "max_tokens": 2000}' />
           </Form.Item>
           <Form.Item name="billing_mode" label="计费方式" initialValue="token"
-            extra="按量按 token 计价；按次每次成功调用记固定费用">
+            extra="按量按 token 计价；按次每次成功调用记固定费用；按音频秒用于 STT；按字符用于 TTS">
             <Radio.Group optionType="button">
               <Radio.Button value="token">按量计费</Radio.Button>
               <Radio.Button value="per_call">按次计费</Radio.Button>
+              <Radio.Button value="audio_second">按音频秒</Radio.Button>
+              <Radio.Button value="char">按字符</Radio.Button>
             </Radio.Group>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.billing_mode !== cur.billing_mode}>
             {({ getFieldValue }) => {
               const mode = getFieldValue('billing_mode') as string | undefined
+              const currencySelect = (
+                <Form.Item name="price_currency" label="币种" initialValue="USD" style={{ marginBottom: 0, minWidth: 130 }}>
+                  <Select
+                    style={{ width: '100%' }}
+                    options={[
+                      { value: 'USD', label: '$ 美元' },
+                      { value: 'CNY', label: '¥ 人民币' },
+                    ]}
+                  />
+                </Form.Item>
+              )
               if (mode === 'per_call') {
                 return (
                   <Form.Item label="价格（每次调用）"
@@ -988,15 +1015,33 @@ function ModelsTab({ provider, keys, models, onSaved }: {
                       <Form.Item name="per_call_price" label="每次" initialValue={0} style={{ marginBottom: 0, flex: 1, minWidth: 160 }}>
                         <InputNumber min={0} style={{ width: '100%' }} />
                       </Form.Item>
-                      <Form.Item name="price_currency" label="币种" initialValue="USD" style={{ marginBottom: 0, minWidth: 130 }}>
-                        <Select
-                          style={{ width: '100%' }}
-                          options={[
-                            { value: 'USD', label: '$ 美元' },
-                            { value: 'CNY', label: '¥ 人民币' },
-                          ]}
-                        />
+                      {currencySelect}
+                    </div>
+                  </Form.Item>
+                )
+              }
+              if (mode === 'audio_second') {
+                return (
+                  <Form.Item label="价格（每音频秒）"
+                    extra="STT 按输入音频时长计费；时长优先取上游 usage，否则解析容器头">
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                      <Form.Item name="audio_sec_price" label="每秒" initialValue={0} style={{ marginBottom: 0, flex: 1, minWidth: 160 }}>
+                        <InputNumber min={0} style={{ width: '100%' }} />
                       </Form.Item>
+                      {currencySelect}
+                    </div>
+                  </Form.Item>
+                )
+              }
+              if (mode === 'char') {
+                return (
+                  <Form.Item label="价格（每 1M 字符）"
+                    extra="TTS 按输入文本字符数计费">
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                      <Form.Item name="char_price" label="每 1M 字符" initialValue={0} style={{ marginBottom: 0, flex: 1, minWidth: 160 }}>
+                        <InputNumber min={0} style={{ width: '100%' }} />
+                      </Form.Item>
+                      {currencySelect}
                     </div>
                   </Form.Item>
                 )

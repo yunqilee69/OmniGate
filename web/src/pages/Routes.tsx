@@ -257,6 +257,8 @@ export default function RoutesPage() {
                 if (ep === 'embedding') return m.type === 'embedding'
                 if (ep === 'rerank') return m.type === 'rerank'
                 if (ep === 'image') return m.type === 'image'
+                if (ep === 'tts') return m.type === 'tts'
+                if (ep === 'stt') return m.type === 'stt'
                 return m.type === 'chat'
               })
               const fbOptions = fbModels.map((m) => ({ value: m.id, label: modelName(m.id) }))
@@ -339,6 +341,8 @@ export default function RoutesPage() {
                             if (endpoint === 'embedding') return m.type === 'embedding'
                             if (endpoint === 'rerank') return m.type === 'rerank'
                             if (endpoint === 'image') return m.type === 'image'
+                            if (endpoint === 'tts') return m.type === 'tts'
+                            if (endpoint === 'stt') return m.type === 'stt'
                             return m.type === 'chat'
                           })
                           
@@ -422,6 +426,13 @@ function curlBodyLines(model: string, endpoint: string, stream: boolean): string
       `    "input": "你好"`,
     ]
   }
+  if (endpoint === 'tts') {
+    return [
+      `    "model": "${model}",`,
+      `    "input": "你好",`,
+      `    "voice": "alloy"`,
+    ]
+  }
   return [
     `    "model": "${model}",`,
     ...streamLine,
@@ -429,7 +440,6 @@ function curlBodyLines(model: string, endpoint: string, stream: boolean): string
   ]
 }
 
-// 按端点生成单行 JSON（Windows cmd 用，双引号转义）
 function curlBodyJson(model: string, endpoint: string, stream: boolean): string {
   const body: Record<string, unknown> = { model }
   if (stream) body.stream = true
@@ -438,6 +448,10 @@ function curlBodyJson(model: string, endpoint: string, stream: boolean): string 
     body.messages = [{ role: 'user', content: '你好' }]
   } else if (endpoint === 'responses') {
     body.input = '你好'
+  } else if (endpoint === 'tts') {
+    body.input = '你好'
+    body.voice = 'alloy'
+    delete body.stream
   } else {
     body.messages = [{ role: 'user', content: '你好' }]
   }
@@ -446,18 +460,38 @@ function curlBodyJson(model: string, endpoint: string, stream: boolean): string 
 
 function buildCurl(base: string, model: string, endpoint: string, stream = false): string {
   const path = endpointPath(endpoint)
+  if (endpoint === 'stt') {
+    return [
+      `curl ${base}${path} \\`,
+      `  -H 'Authorization: Bearer ${VK_KEY}' \\`,
+      `  -F 'model=${model}' \\`,
+      `  -F 'file=@audio.wav'`,
+    ].join('\n')
+  }
   const lines = [
     `curl ${stream ? '-N ' : ''}${base}${path} \\`,
     `  -H 'Content-Type: application/json' \\`,
     `  -H 'Authorization: Bearer ${VK_KEY}' \\`,
   ]
   if (endpoint === 'messages') lines.push(`  -H 'anthropic-version: 2023-06-01' \\`)
+  if (endpoint === 'tts') {
+    lines.push(`  --output out.mp3 \\`)
+  }
   lines.push(`  -d '{`, ...curlBodyLines(model, endpoint, stream), `  }'`)
   return lines.join('\n')
 }
 
 function buildCurlCmd(base: string, model: string, endpoint: string, stream = false): string {
   const path = endpointPath(endpoint)
+  if (endpoint === 'stt') {
+    return [
+      `rem 中文内容需 UTF-8 编码：先执行 chcp 65001`,
+      `curl ${base}${path} ^`,
+      `  -H "Authorization: Bearer ${VK_KEY}" ^`,
+      `  -F "model=${model}" ^`,
+      `  -F "file=@audio.wav"`,
+    ].join('\n')
+  }
   const lines = [
     `rem 中文内容需 UTF-8 编码：先执行 chcp 65001`,
     `curl ${stream ? '-N ' : ''}${base}${path} ^`,
@@ -465,6 +499,9 @@ function buildCurlCmd(base: string, model: string, endpoint: string, stream = fa
     `  -H "Authorization: Bearer ${VK_KEY}" ^`,
   ]
   if (endpoint === 'messages') lines.push(`  -H "anthropic-version: 2023-06-01" ^`)
+  if (endpoint === 'tts') {
+    lines.push(`  --output out.mp3 ^`)
+  }
   lines.push(`  -d "${curlBodyJson(model, endpoint, stream)}"`)
   return lines.join('\n')
 }
@@ -496,6 +533,34 @@ function buildPython(base: string, model: string, endpoint: string): string {
       `    input="你好",`,
       `)`,
       `print(resp.output_text)`,
+    ].join('\n')
+  }
+  if (endpoint === 'tts') {
+    return [
+      `from openai import OpenAI`,
+      ``,
+      `client = OpenAI(base_url="${base}/v1", api_key="${VK_KEY}")`,
+      ``,
+      `resp = client.audio.speech.create(`,
+      `    model="${model}",`,
+      `    voice="alloy",`,
+      `    input="你好",`,
+      `)`,
+      `resp.write_to_file("out.mp3")`,
+    ].join('\n')
+  }
+  if (endpoint === 'stt') {
+    return [
+      `from openai import OpenAI`,
+      ``,
+      `client = OpenAI(base_url="${base}/v1", api_key="${VK_KEY}")`,
+      ``,
+      `with open("audio.wav", "rb") as f:`,
+      `    resp = client.audio.transcriptions.create(`,
+      `        model="${model}",`,
+      `        file=f,`,
+      `    )`,
+      `print(resp.text)`,
     ].join('\n')
   }
   return [
@@ -576,8 +641,10 @@ function RequestExample({ route, onClose }: { route: Route | null; onClose: () =
         items={[
           { key: 'curl', label: 'curl', children: <CodeBlock code={buildCurl(base, route.name, ep)} /> },
           { key: 'curl-win', label: 'curl (Windows)', children: <CodeBlock code={buildCurlCmd(base, route.name, ep)} /> },
-          { key: 'curl-stream', label: 'curl 流式', children: <CodeBlock code={buildCurl(base, route.name, ep, true)} /> },
-          { key: 'curl-stream-win', label: 'curl 流式 (Windows)', children: <CodeBlock code={buildCurlCmd(base, route.name, ep, true)} /> },
+          ...(ep === 'stt' ? [] : [
+            { key: 'curl-stream', label: 'curl 流式', children: <CodeBlock code={buildCurl(base, route.name, ep, true)} /> },
+            { key: 'curl-stream-win', label: 'curl 流式 (Windows)', children: <CodeBlock code={buildCurlCmd(base, route.name, ep, true)} /> },
+          ]),
           { key: 'python', label: 'Python SDK', children: <CodeBlock code={buildPython(base, route.name, ep)} /> },
         ]}
       />

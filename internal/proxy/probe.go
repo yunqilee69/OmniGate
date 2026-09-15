@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
@@ -182,13 +183,17 @@ func ProbeModelKeysByName(db *store.Store, rt *config.RuntimeManager, name strin
 }
 
 // probeModelKey 用指定密钥发起一次极小真实请求（探测核心，不写 request_log）。
-// 按模型类型构造最小载荷：chat → 一条 ping 消息；embedding → 单串输入；rerank → 单文档重排；image → 一句生图提示。
+// 按模型类型构造最小载荷：chat → 一条 ping 消息；embedding → 单串输入；rerank → 单文档重排；image → 一句生图提示；
+// tts → 一句合成；stt → 极小静音 WAV。
 func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) ProbeResult {
 	res := ProbeResult{ModelID: m.ID, Model: m.Name, Provider: provider.Name, Protocol: m.Protocol, KeyID: key.ID}
 
 	modelType := m.Type
 	if modelType == "" {
 		modelType = "chat"
+	}
+	if modelType == "tts" || modelType == "stt" {
+		return probeAudioModelKey(m, provider, key, modelType)
 	}
 	adapter := AdapterFor(m.Protocol)
 	var req map[string]any
@@ -318,6 +323,97 @@ func ProbeProvider(db *store.Store, rt *config.RuntimeManager, providerID int64)
 	}
 	wg.Wait()
 	return results, true
+}
+
+// probeSilentWAV 44 字节头 + 800 采样 16bit 8kHz mono ≈ 0.1s 静音。
+var probeSilentWAV = []byte{
+	'R', 'I', 'F', 'F', 0x24, 0x06, 0x00, 0x00, 'W', 'A', 'V', 'E',
+	'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 1, 0,
+	0x40, 0x1f, 0x00, 0x00, 0x80, 0x3e, 0x00, 0x00, 2, 0, 16, 0,
+	'd', 'a', 't', 'a', 0x00, 0x06, 0x00, 0x00,
+}
+
+func probeAudioModelKey(m store.Model, provider store.Provider, key store.ApiKey, modelType string) ProbeResult {
+	res := ProbeResult{ModelID: m.ID, Model: m.Name, Provider: provider.Name, Protocol: m.Protocol, KeyID: key.ID}
+	timeoutMs := provider.TimeoutMs
+	if timeoutMs <= 0 {
+		timeoutMs = 120000
+	}
+	client := HTTPClientFor(provider, time.Duration(timeoutMs)*time.Millisecond)
+
+	var body io.Reader
+	var contentType, endpoint string
+	if modelType == "tts" {
+		req := map[string]any{"model": m.Name, "input": "ping", "voice": "alloy"}
+		if m.BodyOverride != "" {
+			var override map[string]any
+			if err := json.Unmarshal([]byte(m.BodyOverride), &override); err == nil {
+				for k, v := range override {
+					req[k] = v
+				}
+			}
+		}
+		b, err := marshalJSON(req)
+		if err != nil {
+			res.ErrCode, res.Message = errMarshalFailed, err.Error()
+			return res
+		}
+		body = bytes.NewReader(b)
+		contentType = "application/json"
+		endpoint = strings.TrimRight(provider.BaseURL, "/") + "/audio/speech"
+		if m.ApiPath != "" {
+			endpoint = m.ApiPath
+		}
+	} else {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		_ = mw.WriteField("model", m.Name)
+		fw, err := mw.CreateFormFile("file", "probe.wav")
+		if err != nil {
+			res.ErrCode, res.Message = errMarshalFailed, err.Error()
+			return res
+		}
+		wav := append(probeSilentWAV, make([]byte, 0x600)...)
+		_, _ = fw.Write(wav)
+		_ = mw.Close()
+		body = bytes.NewReader(buf.Bytes())
+		contentType = mw.FormDataContentType()
+		endpoint = strings.TrimRight(provider.BaseURL, "/") + "/audio/transcriptions"
+		if m.ApiPath != "" {
+			endpoint = m.ApiPath
+		}
+	}
+
+	httpReq, err := http.NewRequest(http.MethodPost, endpoint, body)
+	if err != nil {
+		res.ErrCode, res.Message = errBadUpstreamURL, err.Error()
+		return res
+	}
+	httpReq.Header.Set("Content-Type", contentType)
+	httpReq.Header.Set("Authorization", "Bearer "+key.KeyValue)
+	ApplyUpstreamIdentity(httpReq, provider, nil)
+
+	start := time.Now()
+	resp, err := client.Do(httpReq)
+	res.LatencyMs = time.Since(start).Milliseconds()
+	if err != nil {
+		res.ErrCode, res.Message = errConnectionFailed, truncateMsg(err.Error(), probeMessageTrunc)
+		return res
+	}
+	defer func() { _, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, probeBodyLimit)); _ = resp.Body.Close() }()
+	res.HTTPStatus = resp.StatusCode
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, probeBodyLimit))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		res.ErrCode = strconv.Itoa(resp.StatusCode)
+		res.Message = truncateMsg(string(respBody), probeMessageTrunc)
+		return res
+	}
+	if len(respBody) == 0 {
+		res.ErrCode, res.Message = "empty_response", "upstream returned empty body"
+		return res
+	}
+	res.Ok = true
+	return res
 }
 
 func marshalJSON(v any) ([]byte, error) { return json.Marshal(v) }

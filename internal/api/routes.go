@@ -186,6 +186,10 @@ func (s *Server) validateFallbackModel(endpoint string, id *int64) (bool, string
 		wantType = "rerank"
 	case "image":
 		wantType = "image"
+	case "tts":
+		wantType = "tts"
+	case "stt":
+		wantType = "stt"
 	default:
 		wantType = "chat"
 	}
@@ -250,8 +254,8 @@ func (s *Server) createRoute(w http.ResponseWriter, r *http.Request) {
 	if req.Endpoint == "" {
 		req.Endpoint = "completions"
 	}
-	if req.Endpoint != "completions" && req.Endpoint != "messages" && req.Endpoint != "responses" && req.Endpoint != "embedding" && req.Endpoint != "rerank" && req.Endpoint != "image" && req.Endpoint != "mcp" {
-		writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses, embedding, rerank, image, mcp")
+	if req.Endpoint != "completions" && req.Endpoint != "messages" && req.Endpoint != "responses" && req.Endpoint != "embedding" && req.Endpoint != "rerank" && req.Endpoint != "image" && req.Endpoint != "tts" && req.Endpoint != "stt" && req.Endpoint != "mcp" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses, embedding, rerank, image, tts, stt, mcp")
 		return
 	}
 	if ok, msg := s.validateFallbackModel(req.Endpoint, req.FallbackModelID); !ok {
@@ -356,8 +360,8 @@ func (s *Server) updateRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Endpoint != nil {
 		v := strings.TrimSpace(*req.Endpoint)
-		if v != "completions" && v != "messages" && v != "responses" && v != "embedding" && v != "rerank" && v != "image" && v != "mcp" {
-			writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses, embedding, rerank, image, mcp")
+		if v != "completions" && v != "messages" && v != "responses" && v != "embedding" && v != "rerank" && v != "image" && v != "tts" && v != "stt" && v != "mcp" {
+			writeErr(w, http.StatusBadRequest, "bad_request", "endpoint must be one of: completions, messages, responses, embedding, rerank, image, tts, stt, mcp")
 			return
 		}
 	}
