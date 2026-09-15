@@ -168,25 +168,23 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 	}
 
 	rt := h.rt.Snapshot()
-	captureOn := rt.CaptureEnabled && (len(rt.CaptureRoutes) == 0 || containsStr(rt.CaptureRoutes, routeName))
-	var cw *captureWriter
-	if captureOn {
-		cw = newCaptureWriter(w, 1<<20)
-		w = cw
-		cw.setClientReq(r.Header, body)
-	}
-
 	snap, found, err := h.sel.LoadSnapshot(routeName)
 	if err != nil {
 		openAIError(w, 500, "internal_error", "failed to load routing config", nil)
-		h.maybeCapture(requestID, routeName, cw)
 		return
 	}
 	if !found {
 		openAIError(w, http.StatusNotFound, "model_not_found",
 			"the model '"+routeName+"' does not exist", nil)
-		h.maybeCapture(requestID, routeName, cw)
 		return
+	}
+
+	captureOn := captureEnabled(rt, routeName, snap)
+	var cw *captureWriter
+	if captureOn {
+		cw = newCaptureWriter(w, 1<<20)
+		w = cw
+		cw.setClientReq(r.Header, body)
 	}
 
 	var vkID int64
@@ -203,7 +201,7 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 		}
 	}
 
-	pendingID := h.createPendingLog(requestID, routeName, kind.modelType, false, vkID)
+	pendingID := h.createPendingLog(requestID, routeName, kind.modelType, false, vkID, snap)
 	tried := map[router.Combo]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult
@@ -242,12 +240,13 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 				return
 			}
 			if attempt == 0 {
-				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
+				emptyAtt := emptyAttemptFor(snap)
+				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, emptyAtt, attemptResult{
 					status:  "error",
 					errCode: errAllBackendsUnavailable,
 				}, start))
 				statuses := h.sel.BackendStatuses(snap, time.Now())
-				h.writeLog(start, requestID, routeName, router.Attempt{}, false,
+				h.writeLog(start, requestID, routeName, emptyAtt, false,
 					"error", errAllBackendsUnavailable, usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
 				openAIError(w, http.StatusServiceUnavailable, errAllBackendsUnavailable,
 					"route '"+routeName+"' has no available "+kind.modelType+" type backends", statuses)

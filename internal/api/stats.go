@@ -742,6 +742,49 @@ func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"total": total, "items": items})
 }
 
+// getLogRoutes 日志/捕获筛选项：逻辑路由名 + 直达 provider/model。
+// 与 /v1/models 同一口径，日志页与捕获白名单都能选到没有逻辑路由的物理模型。
+func (s *Server) getLogRoutes(w http.ResponseWriter, _ *http.Request) {
+	type item struct {
+		Name     string `json:"name"`
+		Kind     string `json:"kind"` // route | direct
+		Endpoint string `json:"endpoint,omitempty"`
+	}
+	var routes []store.Route
+	if err := s.store.DB.Order("id").Find(&routes).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	seen := make(map[string]bool, len(routes))
+	out := make([]item, 0, len(routes))
+	for _, rt := range routes {
+		out = append(out, item{Name: rt.Name, Kind: "route", Endpoint: rt.Endpoint})
+		seen[rt.Name] = true
+	}
+	var rows []struct {
+		ProviderName string
+		ModelName    string
+		Endpoint     string
+	}
+	if err := s.store.DB.Table("model").
+		Select("provider.name AS provider_name, model.name AS model_name, COALESCE(NULLIF(model.protocol, ''), 'completions') AS endpoint").
+		Joins("JOIN provider ON provider.id = model.provider_id").
+		Order("provider.id, model.id").
+		Scan(&rows).Error; err != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	for _, row := range rows {
+		id := row.ProviderName + "/" + row.ModelName
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, item{Name: id, Kind: "direct", Endpoint: row.Endpoint})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *Server) getLogContent(w http.ResponseWriter, r *http.Request) {
 	requestID := chi.URLParam(r, "request_id")
 	var cl store.ContentLog

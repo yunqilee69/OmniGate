@@ -73,7 +73,18 @@ func (h *Handler) serveAudio(w http.ResponseWriter, r *http.Request, kind audioK
 	}
 	routeName := areq.routeName
 
-	captureOn := rt.CaptureEnabled && (len(rt.CaptureRoutes) == 0 || containsStr(rt.CaptureRoutes, routeName))
+	snap, found, err := h.sel.LoadSnapshot(routeName)
+	if err != nil {
+		openAIError(w, 500, "internal_error", "failed to load routing config", nil)
+		return
+	}
+	if !found {
+		openAIError(w, http.StatusNotFound, "model_not_found",
+			"the model '"+routeName+"' does not exist", nil)
+		return
+	}
+
+	captureOn := captureEnabled(rt, routeName, snap)
 	var cw *captureWriter
 	if captureOn {
 		cw = newCaptureWriter(w, 1<<20)
@@ -82,19 +93,6 @@ func (h *Handler) serveAudio(w http.ResponseWriter, r *http.Request, kind audioK
 		if !kind.isSTT {
 			cw.skipResponseBody("[binary audio response]")
 		}
-	}
-
-	snap, found, err := h.sel.LoadSnapshot(routeName)
-	if err != nil {
-		openAIError(w, 500, "internal_error", "failed to load routing config", nil)
-		h.maybeCapture(requestID, routeName, cw)
-		return
-	}
-	if !found {
-		openAIError(w, http.StatusNotFound, "model_not_found",
-			"the model '"+routeName+"' does not exist", nil)
-		h.maybeCapture(requestID, routeName, cw)
-		return
 	}
 
 	var vkID int64
@@ -112,7 +110,7 @@ func (h *Handler) serveAudio(w http.ResponseWriter, r *http.Request, kind audioK
 	}
 
 	isStream := !kind.isSTT // TTS 出站按流处理（二进制也走流式 copy）
-	pendingID := h.createPendingLog(requestID, routeName, kind.modelType, isStream, vkID)
+	pendingID := h.createPendingLog(requestID, routeName, kind.modelType, isStream, vkID, snap)
 	tried := map[router.Combo]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult
@@ -151,12 +149,13 @@ func (h *Handler) serveAudio(w http.ResponseWriter, r *http.Request, kind audioK
 				return
 			}
 			if attempt == 0 {
-				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
+				emptyAtt := emptyAttemptFor(snap)
+				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, emptyAtt, attemptResult{
 					status:  "error",
 					errCode: errAllBackendsUnavailable,
 				}, start))
 				statuses := h.sel.BackendStatuses(snap, time.Now())
-				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
+				h.writeLog(start, requestID, routeName, emptyAtt, isStream,
 					"error", errAllBackendsUnavailable, usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
 				openAIError(w, http.StatusServiceUnavailable, errAllBackendsUnavailable,
 					"route '"+routeName+"' has no available "+kind.modelType+" type backends", statuses)

@@ -584,6 +584,51 @@ func TestProviderModelDirect(t *testing.T) {
 	}
 }
 
+func TestProviderModelDirectAllBackendsLogsTarget(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	p := store.Provider{Name: "SeekAI", BaseURL: "http://127.0.0.1:1", TimeoutMs: 3000}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	m := store.Model{ProviderID: p.ID, Name: "deepseek-v4-flash-vision-exp", Protocol: "completions"}
+	if err := st.DB.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-x", Status: "active"}
+	if err := st.DB.Create(&k).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.ModelKeyBan{ModelID: m.ID, KeyID: k.ID, Status: "perm_banned", BanReason: "403"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	body := map[string]any{
+		"model":    "SeekAI/deepseek-v4-flash-vision-exp",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}
+	resp := postWithAuth(t, h, body, vkToken)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expect 503, got %d — %s", resp.StatusCode, readAll(t, resp))
+	}
+	ls := logs(t, st)
+	if len(ls) != 1 {
+		t.Fatalf("logs = %d, want 1", len(ls))
+	}
+	if ls[0].ErrorCode != "all_backends_unavailable" {
+		t.Fatalf("error_code = %q", ls[0].ErrorCode)
+	}
+	if ls[0].Route != "SeekAI/deepseek-v4-flash-vision-exp" {
+		t.Fatalf("route = %q", ls[0].Route)
+	}
+	if ls[0].Provider != "SeekAI" || ls[0].Model != "deepseek-v4-flash-vision-exp" {
+		t.Fatalf("provider/model = %s/%s", ls[0].Provider, ls[0].Model)
+	}
+}
+
+
 func TestProviderModelDirectUnknown(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	p := store.Provider{Name: "zhipu", BaseURL: "http://127.0.0.1:1"}

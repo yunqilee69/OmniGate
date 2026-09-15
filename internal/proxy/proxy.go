@@ -397,7 +397,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rt := h.rt.Snapshot()
-	captureOn := rt.CaptureEnabled && (len(rt.CaptureRoutes) == 0 || containsStr(rt.CaptureRoutes, routeName))
+	captureOn := captureEnabled(rt, routeName, snap)
 	var cw *captureWriter
 	if captureOn {
 		cw = newCaptureWriter(w, 1<<20)
@@ -414,7 +414,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pendingID := h.createPendingLog(requestID, routeName, "completions", isStream, vkID)
+	pendingID := h.createPendingLog(requestID, routeName, "completions", isStream, vkID, snap)
 
 	tried := map[router.Combo]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
@@ -454,12 +454,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if attempt == 0 {
-				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
+				emptyAtt := emptyAttemptFor(snap)
+				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, emptyAtt, attemptResult{
 					status:  "error",
 					errCode: errAllBackendsUnavailable,
 				}, start))
 				statuses := h.sel.BackendStatuses(snap, time.Now())
-				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
+				h.writeLog(start, requestID, routeName, emptyAtt, isStream,
 					"error", errAllBackendsUnavailable, usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
 				openAIError(w, http.StatusServiceUnavailable, errAllBackendsUnavailable,
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)
@@ -953,7 +954,7 @@ func (h *Handler) writeLog(start time.Time, requestID, routeName string, att rou
 		Cost: cost(att.Model, u, h.rt.Snapshot().USDCNY, status), Retries: retries,
 		VKID: vkID,
 	}
-	if att.Model.ID != 0 {
+	if att.Provider.Name != "" || att.Model.Name != "" {
 		entry.Model = att.Model.Name
 		entry.Provider = att.Provider.Name
 		entry.KeyID = att.Key.ID
@@ -985,7 +986,7 @@ func streamTPS(isStream bool, status string, u usageInfo, ttft, total time.Durat
 
 // attemptRow 构造一次转发尝试的完整明细行（含成功与失败），由调用方累积后随
 // writeLog 统一落库，便于排查重试链路。
-// 对于 all_backends_unavailable 错误（没有可用模型），model 和 provider 字段为空字符串。
+// 直达路径的 all_backends_unavailable 仍带快照里的 provider/model；逻辑路由无可用目标时为空串。
 func (h *Handler) attemptRow(requestID, routeName string, attempt int, att router.Attempt,
 	res attemptResult, start time.Time) store.RequestAttempt {
 	elapsed := res.elapsed
@@ -996,9 +997,9 @@ func (h *Handler) attemptRow(requestID, routeName string, attempt int, att route
 		RequestID:        requestID,
 		Route:            routeName,
 		Attempt:          attempt,
-		Model:            att.Model.Name,    // 空字符串 for all_backends
-		Provider:         att.Provider.Name, // 空字符串 for all_backends
-		KeyID:            att.Key.ID,        // 0 for all_backends
+		Model:            att.Model.Name,    // 空串：逻辑路由无可用目标
+		Provider:         att.Provider.Name, // 空串：逻辑路由无可用目标
+		KeyID:            att.Key.ID,        // 0：未实际选到密钥
 		Status:           res.status,
 		HTTPStatus:       res.httpStatus,
 		ErrorCode:        res.errCode,
@@ -1328,26 +1329,24 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 	isStream, _ := req["stream"].(bool)
 
 	rt := h.rt.Snapshot()
-	captureOn := rt.CaptureEnabled && (len(rt.CaptureRoutes) == 0 || containsStr(rt.CaptureRoutes, routeName))
-	var cw *captureWriter
-	if captureOn {
-		cw = newCaptureWriter(w, 1<<20)
-		w = cw
-		cw.setClientReq(r.Header, body)
-	}
-
 	snap, found, err := h.sel.LoadSnapshot(routeName)
 	if err != nil {
 		slog.Error("load snapshot failed", "err", err, "route", routeName, "endpoint", endpoint)
 		openAIError(w, 500, "internal_error", "failed to load routing config", nil)
-		h.maybeCapture(requestID, routeName, cw)
 		return
 	}
 	if !found {
 		openAIError(w, http.StatusNotFound, "model_not_found",
 			fmt.Sprintf("the model '%s' does not exist", routeName), nil)
-		h.maybeCapture(requestID, routeName, cw)
 		return
+	}
+
+	captureOn := captureEnabled(rt, routeName, snap)
+	var cw *captureWriter
+	if captureOn {
+		cw = newCaptureWriter(w, 1<<20)
+		w = cw
+		cw.setClientReq(r.Header, body)
 	}
 
 	if snap.Route.Endpoint != endpoint {
@@ -1370,7 +1369,7 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 			return
 		}
 	}
-	pendingID := h.createPendingLog(requestID, routeName, endpoint, isStream, vkID)
+	pendingID := h.createPendingLog(requestID, routeName, endpoint, isStream, vkID, snap)
 	tried := map[router.Combo]bool{}
 	maxAttempts := rt.BreakerMaxHops + 1
 	var last attemptResult
@@ -1409,12 +1408,13 @@ func (h *Handler) nativeEndpoint(w http.ResponseWriter, r *http.Request, endpoin
 				return
 			}
 			if attempt == 0 {
-				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
+				emptyAtt := emptyAttemptFor(snap)
+				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, emptyAtt, attemptResult{
 					status:  "error",
 					errCode: errAllBackendsUnavailable,
 				}, start))
 				statuses := h.sel.BackendStatuses(snap, time.Now())
-				h.writeLog(start, requestID, routeName, router.Attempt{}, isStream,
+				h.writeLog(start, requestID, routeName, emptyAtt, isStream,
 					"error", errAllBackendsUnavailable, usageInfo{}, 0, time.Since(start), priorFails, "", false, vkID, pendingID, attempts)
 				openAIError(w, http.StatusServiceUnavailable, errAllBackendsUnavailable,
 					fmt.Sprintf("route '%s' has no available backends", routeName), statuses)

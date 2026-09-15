@@ -215,3 +215,47 @@ func TestContentCaptureRouteWhitelist(t *testing.T) {
 		t.Fatalf("whitelist exclude: content_log must be empty, got %d", n)
 	}
 }
+
+// TestContentCaptureDirectProviderModelWhitelist：白名单写 provider/model 直达名时，
+// 没有逻辑路由的物理模型请求也必须被捕获。
+func TestContentCaptureDirectProviderModelWhitelist(t *testing.T) {
+	st, rtm := newStackWithRTM(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer up.Close()
+
+	p := store.Provider{Name: "SeekAI", BaseURL: up.URL}
+	st.DB.Create(&p)
+	m := store.Model{ProviderID: p.ID, Name: "deepseek-v4"}
+	st.DB.Create(&m)
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-1", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
+
+	if err := rtm.Update(map[string]json.RawMessage{
+		"capture.enabled": json.RawMessage(`true`),
+		"capture.routes":  json.RawMessage(`["SeekAI/deepseek-v4"]`),
+	}); err != nil {
+		t.Fatalf("enable capture whitelist: %v", err)
+	}
+
+	body := map[string]any{
+		"model":    "SeekAI/deepseek-v4",
+		"messages": []map[string]any{{"role": "user", "content": "hello"}},
+	}
+	resp := post(t, hWithRTM(st, rtm), body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("call should succeed, got %d", resp.StatusCode)
+	}
+
+	var cl store.ContentLog
+	if err := st.DB.First(&cl).Error; err != nil {
+		t.Fatalf("direct capture should write content_log: %v", err)
+	}
+	if cl.Route != "SeekAI/deepseek-v4" {
+		t.Fatalf("content_log.route = %q", cl.Route)
+	}
+}
+

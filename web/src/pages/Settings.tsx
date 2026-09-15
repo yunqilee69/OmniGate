@@ -7,7 +7,7 @@ import { formatCounts } from '../utils/format'
 type Settings = Record<string, any>
 type Model = { id: number; name: string; type: string; protocol: string; provider_id: number; status: string }
 type Provider = { id: number; name: string }
-type Route = { id: number; name: string; endpoint?: string }
+type LogRoute = { name: string; kind: 'route' | 'direct'; endpoint?: string }
 
 const LADDER_PRESETS = ['10s', '30s', '1m', '3m', '5m', '15m', '30m']
 
@@ -66,7 +66,7 @@ export default function Settings() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [models, setModels] = useState<Model[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
-  const [routes, setRoutes] = useState<Route[]>([])
+  const [routes, setRoutes] = useState<LogRoute[]>([])
   const [form] = Form.useForm()
   const [activeSection, setActiveSection] = useState<Section>('breaker')
   const captureOn = Form.useWatch('capture.enabled', form)
@@ -77,7 +77,7 @@ export default function Settings() {
         api('GET', '/api/settings'),
         api<Model[]>('GET', '/api/models'),
         api<Provider[]>('GET', '/api/providers'),
-        api<Route[]>('GET', '/api/routes'),
+        api<LogRoute[]>('GET', '/api/logs/routes'),
       ])
       setSettings(s)
       setModels(m)
@@ -296,10 +296,10 @@ export default function Settings() {
                     message="开启后将记录请求/响应全文到本地 SQLite（content_log 表），注意敏感数据暴露风险"
                   />
                 )}
-                <Form.Item label={<span>捕获路由白名单（空 = 全部路由）</span>} name="capture.routes">
+                <Form.Item label={<span>捕获路由白名单（空 = 全部路由，含 provider/model 直达）</span>} name="capture.routes">
                   <Select
                     mode="tags"
-                    placeholder="模型别名"
+                    placeholder="逻辑路由名或 provider/model"
                     tokenSeparators={[',']}
                     options={routes.map((r) => ({ value: r.name, label: r.name }))}
                   />

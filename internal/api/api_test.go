@@ -395,6 +395,41 @@ func TestV1ModelsIncludesProviderModelIDs(t *testing.T) {
 	}
 }
 
+func TestLogRoutesIncludesProviderModel(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	p := store.Provider{Name: "SeekAI", BaseURL: "https://example.invalid"}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	m := store.Model{ProviderID: p.ID, Name: "deepseek-v4", Protocol: "completions"}
+	if err := st.DB.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	rt := store.Route{Name: "glm-pool", Endpoint: "completions"}
+	if err := st.DB.Create(&rt).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	items := decodeArr(t, do(t, h, "GET", "/api/logs/routes", nil, "test-token"))
+	got := map[string]string{}
+	for _, it := range items {
+		row := it.(map[string]any)
+		got[row["name"].(string)] = row["kind"].(string)
+	}
+	if got["glm-pool"] != "route" {
+		t.Fatalf("logical route missing: %v", got)
+	}
+	if got["SeekAI/deepseek-v4"] != "direct" {
+		t.Fatalf("provider/model missing: %v", got)
+	}
+
+	filtered := decodeObj(t, do(t, h, "GET", "/api/logs?route=SeekAI/deepseek-v4", nil, "test-token"))
+	if filtered["total"].(float64) != 0 {
+		t.Fatalf("empty filter should be 0, got %v", filtered["total"])
+	}
+}
+
+
 func TestProviderProxyURLIsPersisted(t *testing.T) {
 	h, st, _ := newTestServerWithStore(t)
 

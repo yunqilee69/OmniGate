@@ -74,6 +74,7 @@ func (s *Server) Router() http.Handler {
 		ar.Get("/stats/vk", s.GetVKStats)
 		ar.Get("/stats/timeseries", s.getStatsTimeseries)
 		ar.Get("/logs", s.getLogs)
+		ar.Get("/logs/routes", s.getLogRoutes)
 		ar.Get("/logs/{request_id}/attempts", s.getLogAttempts)
 		ar.Get("/logs/{request_id}/content", s.getLogContent)
 		ar.Get("/logs/{request_id}", s.getLogByID)

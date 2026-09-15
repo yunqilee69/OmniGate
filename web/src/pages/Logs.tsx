@@ -34,6 +34,7 @@ interface Log {
 }
 type Provider = { id: number; name: string }
 type VirtualKeyOpt = { id: number; name: string }
+type RouteOpt = { name: string; kind: 'route' | 'direct'; endpoint?: string }
 
 const statusTag = (s: string) => {
   if (s === 'success') return <StatusTag tone="ok">成功</StatusTag>
@@ -49,7 +50,7 @@ export default function Logs() {
   const [items, setItems] = useState<Log[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
-  const [routes, setRoutes] = useState<{ id: number; name: string; endpoint?: string }[]>([])
+  const [routes, setRoutes] = useState<RouteOpt[]>([])
   const [providers, setProviders] = useState<string[]>([])
   const [filterRoute, setFilterRoute] = useState<string | undefined>()
   const [filterProvider, setFilterProvider] = useState<string | undefined>()
@@ -84,7 +85,7 @@ export default function Logs() {
   }
   useEffect(() => { setPage(1); load(1) }, [filterRoute, filterProvider, filterStatus, filterEndpoint, filterVK, range])
   useEffect(() => {
-    api<{ id: number; name: string; endpoint?: string }[]>('GET', '/api/routes').then(setRoutes).catch(() => {})
+    api<RouteOpt[]>('GET', '/api/logs/routes').then(setRoutes).catch(() => {})
     api<Provider[]>('GET', '/api/providers').then((ps) => {
       setProviders(ps.map((p) => p.name).sort())
     }).catch(() => {})
@@ -117,7 +118,7 @@ export default function Logs() {
     <div>
       <Space style={{ marginBottom: 16 }}>
         <Select
-          allowClear placeholder="路由" style={{ width: 180 }}
+          allowClear showSearch optionFilterProp="label" placeholder="路由" style={{ width: 240 }}
           value={filterRoute} onChange={setFilterRoute}
           options={routes.map((r) => ({ value: r.name, label: r.name }))}
         />
