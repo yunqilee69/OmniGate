@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import {
-  AutoComplete, Button, Card, Collapse, Image, Input, InputNumber, Select, Space, Tabs, Tag, Tooltip, Typography, Upload, message,
+  AutoComplete, Button, Card, Cascader, Collapse, Image, Input, InputNumber, Select, Space, Tabs, Tag, Tooltip, Typography, Upload, message,
 } from 'antd'
 import { ClearOutlined, DownloadOutlined, SendOutlined, StopOutlined, ToolOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
@@ -16,6 +16,11 @@ interface Route {
   targets?: { model_id: number }[]
 }
 
+interface ProviderInfo {
+  id: number
+  name: string
+}
+
 interface VirtualKey {
   id: number
   key_value: string
@@ -25,7 +30,9 @@ interface VirtualKey {
 
 interface ModelInfo {
   id: number
+  name: string
   type: string
+  provider_id: number
 }
 
 interface EmbeddingResp {
@@ -113,6 +120,8 @@ const DRAFT_TABS = ['chat', 'embedding', 'rerank', 'image']
 interface Draft {
   tab: string
   chatRoute?: string
+  chatProvider?: string
+  chatModel?: string
   vkId?: number
   mcpRoutes: string[]
   systemPrompt: string
@@ -121,10 +130,14 @@ interface Draft {
   msgs: Msg[]
   input: string
   embRoute?: string
+  embProvider?: string
+  embModel?: string
   embText: string
   embMs: number | null
   embResult: EmbeddingResp | null
   rrkRoute?: string
+  rrkProvider?: string
+  rrkModel?: string
   rrkQuery: string
   rrkDocs: string
   rrkTopN: number | null
@@ -132,6 +145,8 @@ interface Draft {
   rrkDocArr: string[]
   rrkResult: RerankResp | null
   imgRoute?: string
+  imgProvider?: string
+  imgModel?: string
   imgPrompt: string
   imgSize: string
   imgRatio: string
@@ -243,6 +258,8 @@ function loadDraft(): Draft {
   return {
     tab: DRAFT_TABS.includes(tab) ? tab : 'chat',
     chatRoute: draftOptStr(raw.chatRoute),
+    chatProvider: draftOptStr(raw.chatProvider),
+    chatModel: draftOptStr(raw.chatModel),
     vkId: draftOptNum(raw.vkId) ?? undefined,
     mcpRoutes: draftStrList(raw.mcpRoutes),
     systemPrompt: draftStr(raw.systemPrompt),
@@ -251,10 +268,14 @@ function loadDraft(): Draft {
     msgs: draftMsgs(raw.msgs),
     input: draftStr(raw.input),
     embRoute: draftOptStr(raw.embRoute),
+    embProvider: draftOptStr(raw.embProvider),
+    embModel: draftOptStr(raw.embModel),
     embText: draftStr(raw.embText),
     embMs: draftOptNum(raw.embMs),
     embResult: draftEmbeddingResult(raw.embResult),
     rrkRoute: draftOptStr(raw.rrkRoute),
+    rrkProvider: draftOptStr(raw.rrkProvider),
+    rrkModel: draftOptStr(raw.rrkModel),
     rrkQuery: draftStr(raw.rrkQuery),
     rrkDocs: draftStr(raw.rrkDocs),
     rrkTopN: draftOptNum(raw.rrkTopN),
@@ -262,6 +283,8 @@ function loadDraft(): Draft {
     rrkDocArr: draftStrList(raw.rrkDocArr),
     rrkResult: draftRerankResult(raw.rrkResult),
     imgRoute: draftOptStr(raw.imgRoute),
+    imgProvider: draftOptStr(raw.imgProvider),
+    imgModel: draftOptStr(raw.imgModel),
     imgPrompt: draftStr(raw.imgPrompt),
     imgSize: draftStr(raw.imgSize, '1K'),
     imgRatio: draftStr(raw.imgRatio, '1:1'),
@@ -471,15 +494,17 @@ async function throwHttpError(res: Response): Promise<never> {
 }
 
 // 路由选择器：按家族过滤后的路由列表；familyLabel 用于占位与空态文案。
-function RouteSelect({ routes, value, onChange, familyLabel }: {
+function RouteSelect({ routes, value, onChange, familyLabel, allowClear }: {
   routes: Route[]
   value?: string
   onChange: (v?: string) => void
   familyLabel: string
+  allowClear?: boolean
 }) {
   return (
     <Select
       showSearch
+      allowClear={allowClear}
       style={{ width: '100%', marginTop: 4 }}
       placeholder={`选择${familyLabel}路由`}
       value={value}
@@ -488,6 +513,68 @@ function RouteSelect({ routes, value, onChange, familyLabel }: {
       notFoundContent={
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           暂无{familyLabel}路由，<Link to="/routes">去创建</Link>
+        </Typography.Text>
+      }
+    />
+  )
+}
+
+const FAMILY_EMPTY: Record<string, string> = {
+  chat: '暂无对话模型',
+  embedding: '暂无向量模型',
+  rerank: '暂无重排模型',
+  image: '暂无生图模型',
+}
+
+// 提供商 → 模型两级 Cascader；family 过滤模型类型，与路由选择互斥。
+function ProviderModelCascader({
+  providers,
+  models,
+  family,
+  value,
+  onChange,
+}: {
+  providers: ProviderInfo[]
+  models: ModelInfo[]
+  family: string
+  value?: [string, string]
+  onChange: (v?: [string, string]) => void
+}) {
+  const typed = models.filter((m) => (m.type || 'chat') === family)
+  const modelsByProvider: Record<number, ModelInfo[]> = {}
+  for (const m of typed) {
+    const list = modelsByProvider[m.provider_id] ?? []
+    list.push(m)
+    modelsByProvider[m.provider_id] = list
+  }
+  const options = providers
+    .filter((p) => (modelsByProvider[p.id] ?? []).length > 0)
+    .map((p) => ({
+      value: p.name,
+      label: p.name,
+      children: (modelsByProvider[p.id] ?? []).map((m) => ({ value: m.name, label: m.name })),
+    }))
+
+  return (
+    <Cascader
+      allowClear
+      showSearch
+      expandTrigger="hover"
+      style={{ width: '100%', marginTop: 4 }}
+      placeholder="选择提供商 / 模型"
+      options={options}
+      value={value}
+      displayRender={(labels) => labels.join(' / ')}
+      onChange={(path) => {
+        if (!path || path.length < 2) {
+          onChange(undefined)
+          return
+        }
+        onChange([String(path[0]), String(path[1])])
+      }}
+      notFoundContent={
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {FAMILY_EMPTY[family] ?? '暂无模型'}，<Link to="/config">去配置</Link>
         </Typography.Text>
       }
     />
@@ -522,9 +609,12 @@ export default function PlaygroundPage() {
   const [saved] = useState(loadDraft)
   const [baseLoaded, setBaseLoaded] = useState(false)
   const [routes, setRoutes] = useState<Route[]>([])
+  const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [vks, setVks] = useState<VirtualKey[]>([])
   const [models, setModels] = useState<ModelInfo[]>([])
   const [chatRoute, setChatRoute] = useState<string | undefined>(saved.chatRoute)
+  const [chatProvider, setChatProvider] = useState<string | undefined>(saved.chatProvider)
+  const [chatModel, setChatModel] = useState<string | undefined>(saved.chatModel)
   const [vkId, setVkId] = useState<number | undefined>(saved.vkId)
   const [vkKey, setVkKey] = useState('')
   const [mcpRoutes, setMcpRoutes] = useState<string[]>(saved.mcpRoutes)
@@ -535,6 +625,8 @@ export default function PlaygroundPage() {
 
   // Embedding 测试
   const [embRoute, setEmbRoute] = useState<string | undefined>(saved.embRoute)
+  const [embProvider, setEmbProvider] = useState<string | undefined>(saved.embProvider)
+  const [embModel, setEmbModel] = useState<string | undefined>(saved.embModel)
   const [embText, setEmbText] = useState(saved.embText)
   const [embBusy, setEmbBusy] = useState(false)
   const [embMs, setEmbMs] = useState<number | null>(saved.embMs)
@@ -542,6 +634,8 @@ export default function PlaygroundPage() {
 
   // Rerank 测试
   const [rrkRoute, setRrkRoute] = useState<string | undefined>(saved.rrkRoute)
+  const [rrkProvider, setRrkProvider] = useState<string | undefined>(saved.rrkProvider)
+  const [rrkModel, setRrkModel] = useState<string | undefined>(saved.rrkModel)
   const [rrkQuery, setRrkQuery] = useState(saved.rrkQuery)
   const [rrkDocs, setRrkDocs] = useState(saved.rrkDocs)
   const [rrkTopN, setRrkTopN] = useState<number | null>(saved.rrkTopN)
@@ -552,6 +646,8 @@ export default function PlaygroundPage() {
 
   // 生图测试
   const [imgRoute, setImgRoute] = useState<string | undefined>(saved.imgRoute)
+  const [imgProvider, setImgProvider] = useState<string | undefined>(saved.imgProvider)
+  const [imgModel, setImgModel] = useState<string | undefined>(saved.imgModel)
   const [imgPrompt, setImgPrompt] = useState(saved.imgPrompt)
   const [imgSize, setImgSize] = useState(saved.imgSize)
   const [imgRatio, setImgRatio] = useState(saved.imgRatio)
@@ -577,6 +673,8 @@ export default function PlaygroundPage() {
   const draft: Draft = {
     tab,
     chatRoute,
+    chatProvider,
+    chatModel,
     vkId,
     mcpRoutes,
     systemPrompt,
@@ -585,10 +683,14 @@ export default function PlaygroundPage() {
     msgs,
     input,
     embRoute,
+    embProvider,
+    embModel,
     embText,
     embMs,
     embResult,
     rrkRoute,
+    rrkProvider,
+    rrkModel,
     rrkQuery,
     rrkDocs,
     rrkTopN,
@@ -596,6 +698,8 @@ export default function PlaygroundPage() {
     rrkDocArr,
     rrkResult,
     imgRoute,
+    imgProvider,
+    imgModel,
     imgPrompt,
     imgSize,
     imgRatio,
@@ -619,6 +723,20 @@ export default function PlaygroundPage() {
   const mcpSessions = useRef<Map<string, string>>(new Map())
 
   const mcpRouteOptions = useMemo(() => routes.filter((r) => r.endpoint === 'mcp'), [routes])
+  const directName = (provider?: string, model?: string) =>
+    provider && model ? `${provider}/${model}` : undefined
+  const chatDirectPath: [string, string] | undefined =
+    chatProvider && chatModel ? [chatProvider, chatModel] : undefined
+  const chatTarget = directName(chatProvider, chatModel) ?? chatRoute
+  const embDirectPath: [string, string] | undefined =
+    embProvider && embModel ? [embProvider, embModel] : undefined
+  const embTarget = directName(embProvider, embModel) ?? embRoute
+  const rrkDirectPath: [string, string] | undefined =
+    rrkProvider && rrkModel ? [rrkProvider, rrkModel] : undefined
+  const rrkTarget = directName(rrkProvider, rrkModel) ?? rrkRoute
+  const imgDirectPath: [string, string] | undefined =
+    imgProvider && imgModel ? [imgProvider, imgModel] : undefined
+  const imgTarget = directName(imgProvider, imgModel) ?? imgRoute
   const activeVks = useMemo(() => vks.filter((k) => k.status === 'active'), [vks])
 
   // 路由 → 模型类型集合：按家族过滤路由（targets × models 联查；无 type 视为 chat）
@@ -636,7 +754,6 @@ export default function PlaygroundPage() {
   }, [routes, modelsById])
   const routesFor = (family: string) =>
     routes.filter((r) => r.endpoint !== 'mcp' && routeFamilies[r.name]?.has(family))
-  const chatRoutes = useMemo(() => routesFor('chat'), [routesFor])
 
   const toolMap = useMemo(() => {
     const m: Record<string, McpToolInfo> = {}
@@ -652,24 +769,49 @@ export default function PlaygroundPage() {
       })),
     [tools],
   )
-
   useEffect(() => {
     Promise.all([
       api<Route[]>('GET', '/api/routes'),
       api<VirtualKey[]>('GET', '/api/virtual-keys'),
       api<ModelInfo[]>('GET', '/api/models'),
+      api<ProviderInfo[]>('GET', '/api/providers'),
     ])
-      .then(([rs, ks, ms]) => {
+      .then(([rs, ks, ms, ps]) => {
         setRoutes(rs)
         setVks(ks)
         setModels(ms)
-        // 草稿里的选择可能已失效（路由/密钥被删）：清掉，避免 reveal 报错与选择器空显
+        setProviders(ps)
         const routeNames = new Set(rs.map((r) => r.name))
         const validRoute = (cur?: string) => (cur && routeNames.has(cur) ? cur : undefined)
-        setChatRoute(validRoute)
-        setEmbRoute(validRoute)
-        setRrkRoute(validRoute)
-        setImgRoute(validRoute)
+        const providerNameById: Record<number, string> = {}
+        for (const p of ps) providerNameById[p.id] = p.name
+        const restoreExclusive = (
+          family: string,
+          provider: string | undefined,
+          model: string | undefined,
+          route: string | undefined,
+          setProvider: (v: string | undefined) => void,
+          setModel: (v: string | undefined) => void,
+          setRoute: (v: string | undefined) => void,
+        ) => {
+          const typed = ms.filter((m) => (m.type || 'chat') === family)
+          const ok = !!provider && !!model && typed.some(
+            (m) => providerNameById[m.provider_id] === provider && m.name === model,
+          )
+          if (ok) {
+            setProvider(provider)
+            setModel(model)
+            setRoute(undefined)
+            return
+          }
+          setProvider(undefined)
+          setModel(undefined)
+          setRoute(validRoute(route))
+        }
+        restoreExclusive('chat', saved.chatProvider, saved.chatModel, saved.chatRoute, setChatProvider, setChatModel, setChatRoute)
+        restoreExclusive('embedding', saved.embProvider, saved.embModel, saved.embRoute, setEmbProvider, setEmbModel, setEmbRoute)
+        restoreExclusive('rerank', saved.rrkProvider, saved.rrkModel, saved.rrkRoute, setRrkProvider, setRrkModel, setRrkRoute)
+        restoreExclusive('image', saved.imgProvider, saved.imgModel, saved.imgRoute, setImgProvider, setImgModel, setImgRoute)
         setMcpRoutes((cur) => cur.filter((name) => routeNames.has(name)))
         setVkId((cur) => (cur !== undefined && ks.some((k) => k.id === cur) ? cur : undefined))
         setBaseLoaded(true)
@@ -807,8 +949,8 @@ export default function PlaygroundPage() {
   const send = async () => {
     const text = input.trim()
     if (!text || sending) return
-    if (!chatRoute) {
-      message.warning('请先选择对话路由')
+    if (!chatTarget) {
+      message.warning('请先选择对话路由或提供商/模型')
       return
     }
     if (!vkKey) {
@@ -828,7 +970,7 @@ export default function PlaygroundPage() {
       for (let round = 0; round < Math.max(1, maxRounds); round++) {
         const apiMsgs = toApiMessages(convo)
         if (systemPrompt.trim()) apiMsgs.unshift({ role: 'system', content: systemPrompt.trim() })
-        const body: Record<string, unknown> = { model: chatRoute, stream: true, messages: apiMsgs }
+        const body: Record<string, unknown> = { model: chatTarget, stream: true, messages: apiMsgs }
         if (temperature !== null && temperature !== undefined) body.temperature = temperature
         if (openAITools.length) {
           body.tools = openAITools
@@ -929,7 +1071,7 @@ export default function PlaygroundPage() {
   // ---------- Embedding ----------
   const runEmbedding = async () => {
     const inputs = embText.split('\n').map((s) => s.trim()).filter(Boolean)
-    if (!embRoute) { message.warning('请先选择向量路由'); return }
+    if (!embTarget) { message.warning('请先选择向量路由或提供商/模型'); return }
     if (!vkKey) { message.warning('请先选择虚拟密钥'); return }
     if (!inputs.length) { message.warning('请输入至少一条文本'); return }
     setEmbBusy(true)
@@ -938,12 +1080,12 @@ export default function PlaygroundPage() {
       const res = await fetch('/v1/embeddings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${vkKey}` },
-        body: JSON.stringify({ model: embRoute, input: inputs }),
+        body: JSON.stringify({ model: embTarget, input: inputs }),
       })
       if (!res.ok) await throwHttpError(res)
-      const body = (await res.json()) as EmbeddingResp
+      const parsed = (await res.json()) as EmbeddingResp
       setEmbMs(Math.round(performance.now() - t0))
-      setEmbResult({ data: body.data ?? [], usage: body.usage })
+      setEmbResult({ data: parsed.data ?? [], usage: parsed.usage })
     } catch (e: unknown) {
       message.error(errText(e))
     } finally {
@@ -954,13 +1096,13 @@ export default function PlaygroundPage() {
   // ---------- Rerank ----------
   const runRerank = async () => {
     const docs = rrkDocs.split('\n').map((s) => s.trim()).filter(Boolean)
-    if (!rrkRoute) { message.warning('请先选择重排路由'); return }
+    if (!rrkTarget) { message.warning('请先选择重排路由或提供商/模型'); return }
     if (!vkKey) { message.warning('请先选择虚拟密钥'); return }
     if (!rrkQuery.trim() || !docs.length) { message.warning('请输入 query 与候选文档'); return }
     setRrkBusy(true)
     try {
       const t0 = performance.now()
-      const body: Record<string, unknown> = { model: rrkRoute, query: rrkQuery.trim(), documents: docs }
+      const body: Record<string, unknown> = { model: rrkTarget, query: rrkQuery.trim(), documents: docs }
       if (rrkTopN) body.top_n = rrkTopN
       const res = await fetch('/v1/rerank', {
         method: 'POST',
@@ -982,13 +1124,13 @@ export default function PlaygroundPage() {
   // ---------- 生图 ----------
   const runImage = async () => {
     const prompt = imgPrompt.trim()
-    if (!imgRoute) { message.warning('请先选择生图路由'); return }
+    if (!imgTarget) { message.warning('请先选择生图路由或提供商/模型'); return }
     if (!vkKey) { message.warning('请先选择虚拟密钥'); return }
     if (!prompt) { message.warning('请输入生图提示词'); return }
     setImgBusy(true)
     try {
       const t0 = performance.now()
-      const body: Record<string, unknown> = { model: imgRoute, prompt, n: imgN }
+      const body: Record<string, unknown> = { model: imgTarget, prompt, n: imgN }
       if (imgSize) body.size = imgSize
       if (imgRatio) body.ratio = imgRatio
       if (imgImages.length > 0) body.image = imgImages
@@ -1008,12 +1150,58 @@ export default function PlaygroundPage() {
     }
   }
 
-  // 非 chat 家族的配置侧栏：家族路由（按 targets 类型过滤）+ 共享虚拟密钥 + 各自参数
+  const exclusivePickers = (
+    familyLabel: string,
+    familyKey: 'chat' | 'embedding' | 'rerank' | 'image',
+    routeValue: string | undefined,
+    setRoute: (v?: string) => void,
+    directPath: [string, string] | undefined,
+    setProvider: (v?: string) => void,
+    setModel: (v?: string) => void,
+  ) => (
+    <>
+      <div>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>{familyLabel}路由</Typography.Text>
+        <RouteSelect
+          routes={routesFor(familyKey)}
+          value={routeValue}
+          allowClear
+          onChange={(v) => {
+            setRoute(v)
+            if (v) {
+              setProvider(undefined)
+              setModel(undefined)
+            }
+          }}
+          familyLabel={familyLabel}
+        />
+      </div>
+      <div>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>提供商 / 模型</Typography.Text>
+        <ProviderModelCascader
+          providers={providers}
+          models={models}
+          family={familyKey}
+          value={directPath}
+          onChange={(next) => {
+            setProvider(next?.[0])
+            setModel(next?.[1])
+            if (next) setRoute(undefined)
+          }}
+        />
+      </div>
+    </>
+  )
+
+  // 非 chat 家族的配置侧栏：家族路由 / 直达模型互斥 + 共享虚拟密钥 + 各自参数
   const configCard = (
     familyLabel: string,
     familyKey: 'embedding' | 'rerank' | 'image',
     routeValue: string | undefined,
-    onRoute: (v?: string) => void,
+    setRoute: (v?: string) => void,
+    directPath: [string, string] | undefined,
+    setProvider: (v?: string) => void,
+    setModel: (v?: string) => void,
     extra: ReactNode,
   ) => (
     <Card
@@ -1022,10 +1210,7 @@ export default function PlaygroundPage() {
       style={{ width: 320, flexShrink: 0, overflowY: 'auto' }}
       styles={{ body: { display: 'flex', flexDirection: 'column', gap: 12 } }}
     >
-      <div>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>{familyLabel}路由</Typography.Text>
-        <RouteSelect routes={routesFor(familyKey)} value={routeValue} onChange={onRoute} familyLabel={familyLabel} />
-      </div>
+      {exclusivePickers(familyLabel, familyKey, routeValue, setRoute, directPath, setProvider, setModel)}
       <div>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>虚拟密钥</Typography.Text>
         <VkSelect vks={activeVks} value={vkId} onChange={setVkId} />
@@ -1043,10 +1228,7 @@ export default function PlaygroundPage() {
         style={{ width: 320, flexShrink: 0, overflowY: 'auto' }}
         styles={{ body: { display: 'flex', flexDirection: 'column', gap: 12 } }}
       >
-        <div>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>对话路由</Typography.Text>
-          <RouteSelect routes={chatRoutes} value={chatRoute} onChange={setChatRoute} familyLabel="对话" />
-        </div>
+        {exclusivePickers('对话', 'chat', chatRoute, setChatRoute, chatDirectPath, setChatProvider, setChatModel)}
         <div>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>虚拟密钥</Typography.Text>
           <VkSelect vks={activeVks} value={vkId} onChange={setVkId} />
@@ -1125,7 +1307,7 @@ export default function PlaygroundPage() {
 
       {/* 对话区 */}
       <Card
-        title={`对话${chatRoute ? ` · ${chatRoute}` : ''}`}
+        title={`对话${chatTarget ? ` · ${chatTarget}` : ''}`}
         size="small"
         style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}
         styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 } }}
@@ -1142,7 +1324,7 @@ export default function PlaygroundPage() {
           {msgs.length === 0 && (
             <div style={{ margin: 'auto', textAlign: 'center' }}>
               <Typography.Text type="secondary">
-                选择路由与密钥后开始对话；挂载 MCP 路由并加载工具后，模型可自动调用工具。
+                选择路由或提供商/模型，再选密钥后开始对话；挂载 MCP 路由并加载工具后，模型可自动调用工具。
               </Typography.Text>
             </div>
           )}
@@ -1290,7 +1472,7 @@ export default function PlaygroundPage() {
 
   const embeddingPane = (
     <div style={{ display: 'flex', gap: 16, alignItems: 'stretch', height: 'calc(100vh - 190px)' }}>
-      {configCard('向量', 'embedding', embRoute, setEmbRoute, (
+      {configCard('向量', 'embedding', embRoute, setEmbRoute, embDirectPath, setEmbProvider, setEmbModel, (
         <>
           <div>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>输入文本（每行一条）</Typography.Text>
@@ -1308,7 +1490,7 @@ export default function PlaygroundPage() {
         </>
       ))}
       <Card
-        title={`向量结果${embRoute ? ` · ${embRoute}` : ''}`}
+        title={`向量结果${embTarget ? ` · ${embTarget}` : ''}`}
         size="small"
         style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}
         styles={{ body: { display: 'flex', flexDirection: 'column', gap: 12 } }}
@@ -1346,7 +1528,7 @@ export default function PlaygroundPage() {
 
   const rerankPane = (
     <div style={{ display: 'flex', gap: 16, alignItems: 'stretch', height: 'calc(100vh - 190px)' }}>
-      {configCard('重排', 'rerank', rrkRoute, setRrkRoute, (
+      {configCard('重排', 'rerank', rrkRoute, setRrkRoute, rrkDirectPath, setRrkProvider, setRrkModel, (
         <>
           <div>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>Query</Typography.Text>
@@ -1389,7 +1571,7 @@ export default function PlaygroundPage() {
         </>
       ))}
       <Card
-        title={`重排结果${rrkRoute ? ` · ${rrkRoute}` : ''}`}
+        title={`重排结果${rrkTarget ? ` · ${rrkTarget}` : ''}`}
         size="small"
         style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}
         styles={{ body: { display: 'flex', flexDirection: 'column', gap: 12 } }}
@@ -1463,7 +1645,7 @@ export default function PlaygroundPage() {
 
   const imagePane = (
     <div style={{ display: 'flex', gap: 16, alignItems: 'stretch', height: 'calc(100vh - 190px)' }}>
-      {configCard('生图', 'image', imgRoute, setImgRoute, (
+      {configCard('生图', 'image', imgRoute, setImgRoute, imgDirectPath, setImgProvider, setImgModel, (
         <>
           <div>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>提示词</Typography.Text>
@@ -1562,7 +1744,7 @@ export default function PlaygroundPage() {
         </>
       ))}
       <Card
-        title={`生图结果${imgRoute ? ` · ${imgRoute}` : ''}`}
+        title={`生图结果${imgTarget ? ` · ${imgTarget}` : ''}`}
         size="small"
         style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}
         styles={{ body: { display: 'flex', flexDirection: 'column', gap: 12 } }}
@@ -1600,8 +1782,8 @@ export default function PlaygroundPage() {
       onChange={setTab}
       items={[
         { key: 'chat', label: '对话', children: chatPane },
-        { key: 'embedding', label: 'Embedding', children: embeddingPane },
-        { key: 'rerank', label: 'Rerank', children: rerankPane },
+        { key: 'embedding', label: '向量', children: embeddingPane },
+        { key: 'rerank', label: '重排', children: rerankPane },
         { key: 'image', label: '生图', children: imagePane },
       ]}
     />

@@ -171,7 +171,7 @@ curl http://localhost:17777/v1/chat/completions \
 - **仅用第一个 `/` 分割**:模型名里可以再含 `/`(`openrouter/anthropic/claude-3.5-sonnet` 中 provider=`openrouter`、model=`anthropic/claude-3.5-sonnet`);提供商名本身不能含 `/`
 - **`/v1/models`** 会把所有物理模型以 `provider/model` 形式一并列出,可直接使用
 - **虚拟密钥授权**:配置了授权路由的受限密钥无法用该语法绕过白名单;未受限密钥(空授权)不受影响
-- **管理台模型测试**:配置中心模型列表的「provider/model 直达测试」输入框按同一规则定位模型,逐密钥探测
+- **管理台模型测试**:模型测试页用提供商 → 模型两级下拉锁定物理模型，对话请求走 `provider/model` 直达
 
 ---
 

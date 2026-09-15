@@ -45,6 +45,20 @@ const ENDPOINT_META: Record<string, { path: string; hint?: string }> = {
   mcp: { path: '/v1/mcp/{route_name}', hint: 'MCP 工具聚合' },
 }
 const ENDPOINT_ORDER = Object.keys(ENDPOINT_META)
+const FAMILY_TABS: { key: string; label: string; endpoints: string[] }[] = [
+  { key: 'chat', label: '对话', endpoints: ['completions', 'messages', 'responses'] },
+  { key: 'embedding', label: '向量', endpoints: ['embedding'] },
+  { key: 'rerank', label: '重排', endpoints: ['rerank'] },
+  { key: 'image', label: '生图', endpoints: ['image'] },
+  { key: 'mcp', label: 'MCP', endpoints: ['mcp'] },
+]
+const FAMILY_KEYS = FAMILY_TABS.map((f) => f.key)
+const endpointFamily = (ep: string) =>
+  FAMILY_TABS.find((f) => f.endpoints.includes(ep))?.key ?? ep
+const familyLabel = (key: string) =>
+  FAMILY_TABS.find((f) => f.key === key)?.label ?? key
+const familyDefaultEndpoint = (key: string) =>
+  FAMILY_TABS.find((f) => f.key === key)?.endpoints[0] ?? 'completions'
 const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 
@@ -56,7 +70,7 @@ export default function RoutesPage() {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Route | null>(null)
   const [exampleRoute, setExampleRoute] = useState<Route | null>(null)
-  const [endpoint, setEndpoint] = useState('completions')
+  const [tab, setTab] = useState('chat')
   const [form] = Form.useForm()
 
   const load = async () => {
@@ -77,7 +91,7 @@ export default function RoutesPage() {
   }
   useEffect(() => { load() }, [])
 
-  const openForm = (r?: Route, ep?: string) => {
+  const openForm = (r?: Route, family?: string) => {
     setEditing(r ?? null)
     form.resetFields()
     if (r) {
@@ -89,8 +103,8 @@ export default function RoutesPage() {
         targets: r.targets?.map((t) => ({ model_id: t.model_id, weight: t.weight })) || [],
         mcp_targets: r.mcp_targets?.map((t) => ({ mcp_backend_id: t.mcp_backend_id })) || [],
       })
-    } else if (ep) {
-      form.setFieldsValue({ endpoint: ep, fallback_model_id: 0 })
+    } else if (family) {
+      form.setFieldsValue({ endpoint: familyDefaultEndpoint(family), fallback_model_id: 0 })
     }
     setOpen(true)
   }
@@ -140,24 +154,23 @@ export default function RoutesPage() {
     return sum > 0 ? Math.round((t.weight / sum) * 1000) / 10 : 0
   }
 
-  // 按端点类型分组，供 Tabs 分栏展示
+  // 按家族分组：对话合 completions/messages/responses，其余一对一
   const grouped = useMemo(() => {
     const g: Record<string, Route[]> = {}
     for (const r of rows) {
-      const k = r.endpoint || 'completions'
+      const k = endpointFamily(r.endpoint || 'completions')
       if (!g[k]) g[k] = []
       g[k].push(r)
     }
     return g
   }, [rows])
 
-  // 端点类型全量成栏（暂无路由的类型也保留，方便直接在该类型下新增）；历史遗留的未知端点追加在后
   const tabKeys = useMemo(() => {
-    const unknown = Object.keys(grouped).filter((k) => !ENDPOINT_ORDER.includes(k)).sort()
-    return [...ENDPOINT_ORDER, ...unknown]
+    const unknown = Object.keys(grouped).filter((k) => !FAMILY_KEYS.includes(k)).sort()
+    return [...FAMILY_KEYS, ...unknown]
   }, [grouped])
 
-  const activeKey = tabKeys.includes(endpoint) ? endpoint : ENDPOINT_ORDER[0]
+  const activeKey = tabKeys.includes(tab) ? tab : FAMILY_KEYS[0]
 
   const renderTable = (key: string, list: Route[]) => (
     <Table<Route> rowKey="id" dataSource={list} expandable={{
@@ -188,11 +201,14 @@ export default function RoutesPage() {
       },
     }} locale={{ emptyText: (
       <Typography.Text type="secondary">
-        暂无 {key} 端点路由（{ENDPOINT_META[key]?.path ?? '未知端点'}），点击右上角「新增路由」创建
+        暂无{familyLabel(key)}路由，点击右上角「新增路由」创建
       </Typography.Text>
     ) }}>
       <Table.Column title="ID" dataIndex="id" width={60} />
       <Table.Column title="模型别名" dataIndex="name" render={(v) => <code>{v}</code>} />
+      {key === 'chat' ? (
+        <Table.Column title="端点" dataIndex="endpoint" width={120} render={(v: string) => v || 'completions'} />
+      ) : null}
       <Table.Column title="映射路径" render={(_, r: Route) => <code>{routePath(r)}</code>} width={200} />
       <Table.Column title="目标数" render={(_, r: Route) => r.endpoint === 'mcp' ? r.mcp_targets?.length || 0 : r.targets?.length || 0} width={80} />
       <Table.Column title="备注" dataIndex="remark" ellipsis />
@@ -216,10 +232,10 @@ export default function RoutesPage() {
     <div>
       <Tabs
         activeKey={activeKey}
-        onChange={setEndpoint}
+        onChange={setTab}
         items={tabKeys.map((k) => ({
           key: k,
-          label: k,
+          label: familyLabel(k),
           children: renderTable(k, grouped[k] ?? []),
         }))}
         tabBarExtraContent={{
@@ -236,17 +252,17 @@ export default function RoutesPage() {
           <Form.Item name="name" label="模型别名（客户端 model 参数填写）" rules={[{ required: true }]}>
             <Input placeholder="如 glm" />
           </Form.Item>
-          <Form.Item 
-            name="endpoint" 
-            label="端点类型" 
-            initialValue="completions" 
+          <Form.Item
+            name="endpoint"
+            label="端点类型"
+            initialValue="completions"
             rules={[{ required: true }]}
-            extra="决定代理路径与协议：completions/messages/responses用于LLM，embedding/rerank/image用于专用模型，mcp用于MCP工具聚合"
+            extra="决定代理路径与协议：对话走 completions/messages/responses，向量/重排/生图走专用模型，MCP 走工具聚合"
           >
             <Select
               options={ENDPOINT_ORDER.map((k) => ({
                 value: k,
-                label: `${k} — ${ENDPOINT_META[k].path}${ENDPOINT_META[k].hint ? `（${ENDPOINT_META[k].hint}）` : ''}`,
+                label: `${familyLabel(endpointFamily(k))} · ${k} — ${ENDPOINT_META[k].path}${ENDPOINT_META[k].hint ? `（${ENDPOINT_META[k].hint}）` : ''}`,
               }))}
             />
           </Form.Item>

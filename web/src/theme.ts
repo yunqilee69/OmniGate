@@ -70,6 +70,11 @@ export const geistTheme: ThemeConfig = {
       optionSelectedColor: '#ffffff',
       optionSelectedFontWeight: 500,
     },
+    Cascader: {
+      optionSelectedBg: '#171717',
+      optionSelectedColor: '#ffffff',
+      optionSelectedFontWeight: 500,
+    },
     Modal: { borderRadiusLG: 12 },
     Drawer: { borderRadiusLG: 12 },
     Tooltip: { borderRadius: 6 },
