@@ -1355,6 +1355,90 @@ func TestStatsOverviewSubDayDoesNotUseRollup(t *testing.T) {
 	}
 }
 
+func TestRollupCoversRange(t *testing.T) {
+	now := time.Now().Unix()
+	today := store.DayKey(now)
+	start := store.DayStartUnix(today)
+	endExcl := store.NextDayStartUnix(today)
+	prevStart := store.DayStartUnix(store.DayKey(start - 1))
+	tests := []struct {
+		name     string
+		from, to int64
+		want     bool
+	}{
+		{"today full day", start, endExcl - 1, true},
+		{"today open-ended at next midnight", start, endExcl, false},
+		{"two full days", prevStart, endExcl - 1, true},
+		{"2h inside today", now - 7200, now, false},
+		{"24h rolling", now - 86400, now, false},
+		{"today from midnight until mid-day", start, start + 12*3600, false},
+		{"inverted", endExcl, start, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := rollupCoversRange(tt.from, tt.to); got != tt.want {
+				t.Fatalf("rollupCoversRange(%d,%d)=%v want %v", tt.from, tt.to, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStatsOverviewSameDayPartialDoesNotUseRollup 复现生产仪表盘：当天日聚合已有数据，
+// 「最近 2 小时」仍落在今天。旧逻辑只要 rollupHasData 就按整天 SUM，卡片吃进全天
+// （今天 2 亿、2 小时 4 亿这种倒置），图表 timeseries 仍按小时明细所以对不上。
+func TestStatsOverviewSameDayPartialDoesNotUseRollup(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	dayStart := store.DayStartUnix(store.DayKey(now))
+	// 钉在当天 16:00，保证 2h 窗仍是子日窗，不依赖测试运行时刻。
+	afternoon := dayStart + 16*3600
+	if err := st.DB.Create(&store.RequestLogDaily{
+		Day: store.DayKey(now), Route: "r", Model: "m", Provider: "p", Status: "success",
+		Total: 100, Success: 100, PromptTokens: 200_000_000, CompletionTokens: 1_000_000,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.RequestLog{
+		RequestID: "recent", Route: "r", Model: "m", Provider: "p", Status: "success",
+		PromptTokens: 20_000_000, CompletionTokens: 100_000, CreatedAt: afternoon - 600,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.RequestLog{
+		RequestID: "morning", Route: "r", Model: "m", Provider: "p", Status: "success",
+		PromptTokens: 180_000_000, CompletionTokens: 900_000, CreatedAt: dayStart + 60,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	from2h, to2h := afternoon-7200, afternoon
+	ov := decodeObj(t, do(t, h, "GET", fmt.Sprintf("/api/stats/overview?from=%d&to=%d", from2h, to2h), nil, "test-token"))
+	if ov["total"] != float64(1) || ov["total_tokens"] != float64(20_100_000) {
+		t.Fatalf("2h window must use raw rows, got total=%v tokens=%v", ov["total"], ov["total_tokens"])
+	}
+
+	bd := decodeArr(t, do(t, h, "GET", fmt.Sprintf("/api/stats/breakdown?dim=model&from=%d&to=%d", from2h, to2h), nil, "test-token"))
+	if len(bd) != 1 {
+		t.Fatalf("2h breakdown want 1 row, got %v", bd)
+	}
+	row := bd[0].(map[string]any)
+	if row["total"] != float64(1) || row["prompt_tokens"] != float64(20_000_000) {
+		t.Fatalf("2h breakdown must not expand to full day: %v", row)
+	}
+
+	from24h := afternoon - 86400
+	if err := st.DB.Create(&store.RequestLogDaily{
+		Day: store.DayKey(afternoon - 86400), Route: "r", Model: "m", Provider: "p", Status: "success",
+		Total: 80, Success: 80, PromptTokens: 200_000_000, CompletionTokens: 2_000_000,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	ov24 := decodeObj(t, do(t, h, "GET", fmt.Sprintf("/api/stats/overview?from=%d&to=%d", from24h, afternoon), nil, "test-token"))
+	if ov24["total"] != float64(2) || ov24["total_tokens"] != float64(201_000_000) {
+		t.Fatalf("24h window must use raw rows, got total=%v tokens=%v", ov24["total"], ov24["total_tokens"])
+	}
+}
+
 func TestStatsPendingAndClientErrorExcluded(t *testing.T) {
 	h, st, _ := newTestServerWithStore(t)
 	now := time.Now().Unix()

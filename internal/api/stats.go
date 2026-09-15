@@ -39,8 +39,12 @@ func dayRange(from, to int64) (int64, int64) {
 }
 
 // rollupCoversRange 仅当 from/to 覆盖完整本地自然日时走日聚合。
-// 否则会把 24h 滚动窗放大成昨天+今天两整天，Dashboard「最近 24 小时」会多算整天。
+// 否则会把滚动窗放大成所跨整天：Dashboard「最近 24 小时」会并入昨天整天，
+// 「最近 2 小时」若仍落在当天则会并入今天整天（卡片远大于图表）。
 func rollupCoversRange(from, to int64) bool {
+	if from > to {
+		return false
+	}
 	dayFrom, dayTo := dayRange(from, to)
 	start := store.DayStartUnix(dayFrom)
 	endExcl := store.NextDayStartUnix(dayTo)
