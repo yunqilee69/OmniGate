@@ -169,7 +169,7 @@ export default function Logs() {
         dataSource={items}
         size="small"
         tableLayout="fixed"
-        scroll={{ x: 1750 }}
+        scroll={{ x: 1782 }}
         onRow={(log) => ({ onClick: () => nav(`/logs/${log.request_id}`), style: { cursor: 'pointer' } })}
         rowClassName={(l) => l.status === 'error' ? 'log-row-error' : ''}
         pagination={{
@@ -210,8 +210,8 @@ export default function Logs() {
             <div style={{ color: '#8f8f8f' }}>{l.total_ms}ms</div>
           </div>
         )} />
-        <Table.Column title="速度" width={86} render={(_, l: Log) => (
-          l.tps > 0 ? <code>{l.tps.toFixed(1)} tok/s</code> : <span style={{ color: '#8f8f8f' }}>-</span>
+        <Table.Column title="速度" width={118} render={(_, l: Log) => (
+          l.tps > 0 ? <code style={{ whiteSpace: 'nowrap' }}>{l.tps.toFixed(1)} tok/s</code> : <span style={{ color: '#8f8f8f' }}>-</span>
         )} />
         <Table.Column title="费用" dataIndex="cost" width={90} render={(v) => v.toFixed(5)} />
         <Table.Column title="重试" dataIndex="retries" width={60} />
