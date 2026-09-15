@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Card, Col, Empty, Row, Statistic, Table, Tooltip, Button, message } from 'antd'
+import { Card, Col, Empty, Row, Segmented, Statistic, Table, Tooltip, Button, message } from 'antd'
 import dayjs from 'dayjs'
 import { api } from '../api'
 import Chart from '../components/Chart'
@@ -46,6 +46,14 @@ interface TopModelRow {
   completion_tokens: number
   cost: number
   avg_tps: number
+}
+
+// 流量图单个小时桶：timeseries 接口按 epoch 小时分桶返回
+interface FlowPoint {
+  bucket: number
+  success: number
+  errors: number
+  total_tokens: number
 }
 
 const modelStatusTag = (m: HealthModel) => {
@@ -100,20 +108,25 @@ export default function Dashboard() {
   const [vkStats, setVkStats] = useState<any[]>([])
   const [topModels, setTopModels] = useState<TopModelRow[]>([])
   const [now, setNow] = useState(Math.floor(Date.now() / 1000))
+  const [rangeMode, setRangeMode] = useState<'today' | '24h'>('today')
   const [currency, setCurrency] = useCurrency()
   const currencyRef = useRef(currency)
   currencyRef.current = currency
+  const rangeRef = useRef(rangeMode)
+  rangeRef.current = rangeMode
 
   const load = async () => {
-    const startOfDay = dayjs().startOf('day').unix()
-    const endOfDay = dayjs().endOf('day').unix()
+    // today=自然日（本地 0 点起）；24h=最近 24 小时滚动窗口
+    const endSec = Math.floor(Date.now() / 1000)
+    const from = rangeRef.current === 'today' ? dayjs().startOf('day').unix() : endSec - 24 * 3600
+    const to = rangeRef.current === 'today' ? dayjs().endOf('day').unix() : endSec
     const cur = `&currency=${currencyRef.current}`
     try {
       const [o, ts, h, top, vk] = await Promise.all([
-        api('GET', `/api/stats/overview?from=${startOfDay}&to=${endOfDay}${cur}`),
-        api('GET', `/api/stats/timeseries?from=${startOfDay}&to=${endOfDay}&bucket=1h${cur}`),
+        api('GET', `/api/stats/overview?from=${from}&to=${to}${cur}`),
+        api('GET', `/api/stats/timeseries?from=${from}&to=${to}&bucket=1h${cur}`),
         api('GET', '/api/health'),
-        api('GET', `/api/stats/breakdown?dim=model&from=${startOfDay}&to=${endOfDay}${cur}`),
+        api('GET', `/api/stats/breakdown?dim=model&from=${from}&to=${to}${cur}`),
         api('GET', '/api/stats/vk'),
       ])
       setOv(o)
@@ -121,7 +134,7 @@ export default function Dashboard() {
       setModels(h.models ?? [])
       setNow(h.now ?? Math.floor(Date.now() / 1000))
       const sorted = [...(top ?? [])].sort(
-        (a, b) => (b.prompt_tokens + b.completion_tokens) - (a.prompt_tokens + a.completion_tokens),
+        (a, b) => (b.prompt_tokens + b.completion_tokens) - (a.prompt_tokens + b.completion_tokens),
       ).slice(0, 10)
       setTopModels(sorted)
       setVkStats(vk ?? [])
@@ -134,32 +147,49 @@ export default function Dashboard() {
     const t = setInterval(load, 10000)
     return () => clearInterval(t)
   }, [])
-  useEffect(() => { load() }, [currency])
+  useEffect(() => { load() }, [currency, rangeMode])
 
-  // 今日 0..nowHour 的固定小时桶；缺失小时补 0（柱图保持显示空白柱，不省略 x 轴）。
-  const hours = Array.from({ length: dayjs(now * 1000).hour() + 1 }, (_, i) => i)
-  const hourToBucket: Record<number, any> = {}
-  for (const p of series) {
-    hourToBucket[dayjs(p.bucket * 1000).hour()] = p
+  // 固定整点桶（后端按 epoch 小时分桶，这里对齐同样的 key）：today=今日 0 点起，
+  // 24h=最近 24 个整点。缺失小时补 0（柱图保留空柱，不省略 x 轴）。
+  const epochHour = Math.floor(now / 3600) * 3600
+  const bucketTs: number[] = []
+  if (rangeMode === 'today') {
+    const dayStart = Math.floor(dayjs(now * 1000).startOf('day').unix() / 3600) * 3600
+    for (let t = dayStart; t <= epochHour; t += 3600) bucketTs.push(t)
+  } else {
+    for (let i = 23; i >= 0; i--) bucketTs.push(epochHour - i * 3600)
   }
+  const bucketMap: Record<number, FlowPoint> = {}
+  for (const p of series) bucketMap[p.bucket] = p
   const chartOption = {
     tooltip: { trigger: 'axis' },
-    legend: { data: ['请求数', '总 Tokens'] },
+    legend: { data: ['成功请求', '失败请求', '总 Tokens'] },
     grid: { left: 50, right: 70, bottom: 30 },
-    xAxis: { type: 'category', data: hours.map((h) => `${h.toString().padStart(2, '0')}:00`) },
+    xAxis: { type: 'category', data: bucketTs.map((t) => dayjs(t * 1000).format(rangeMode === 'today' ? 'HH:00' : 'MM-DD HH:00')) },
     yAxis: [
       { type: 'value', name: '请求数' },
       { type: 'value', name: '总 Tokens' },
     ],
     series: [
-      { name: '请求数', type: 'bar', yAxisIndex: 0, data: hours.map((h) => hourToBucket[h]?.total ?? 0), itemStyle: { color: '#171717' } },
-      { name: '总 Tokens', type: 'bar', yAxisIndex: 1, data: hours.map((h) => hourToBucket[h]?.total_tokens ?? 0), itemStyle: { color: '#4d4d4d' } },
+      // 成功/失败堆叠成一根柱：成功绿 / 失败红（降饱和，红与全站错误色一致），失败段叠在成功上方
+      { name: '成功请求', type: 'bar', stack: 'requests', yAxisIndex: 0, data: bucketTs.map((t) => bucketMap[t]?.success ?? 0), itemStyle: { color: '#5da43a' } },
+      { name: '失败请求', type: 'bar', stack: 'requests', yAxisIndex: 0, data: bucketTs.map((t) => bucketMap[t]?.errors ?? 0), itemStyle: { color: '#c12d2d' } },
+      { name: '总 Tokens', type: 'bar', yAxisIndex: 1, data: bucketTs.map((t) => bucketMap[t]?.total_tokens ?? 0), itemStyle: { color: '#69b1ff' } },
     ],
   }
+  const rangeLabel = rangeMode === 'today' ? '今日' : '最近 24 小时'
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+        <Segmented
+          value={rangeMode}
+          onChange={(v) => setRangeMode(v as 'today' | '24h')}
+          options={[
+            { label: '今天', value: 'today' },
+            { label: '最近 24 小时', value: '24h' },
+          ]}
+        />
         <CurrencyToggle value={currency} onChange={setCurrency} />
       </div>
       <Row gutter={[16, 16]}>
@@ -231,12 +261,12 @@ export default function Dashboard() {
           </div>
         </Col>
       </Row>
-      <Card title="今日流量" style={{ marginTop: 16 }}>
+      <Card title={`${rangeLabel}流量`} style={{ marginTop: 16 }}>
         <Chart option={chartOption} height={280} />
       </Card>
       <Card title="虚拟密钥调用分布" style={{ marginTop: 16 }}>
         {vkStats.length === 0 ? (
-          <Empty description="今日暂无虚拟密钥调用" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+          <Empty description={`${rangeLabel}暂无虚拟密钥调用`} image={Empty.PRESENTED_IMAGE_SIMPLE} />
         ) : (
           <Chart
             option={{
@@ -263,7 +293,7 @@ export default function Dashboard() {
       </Card>
       <Card title="模型调用详情" style={{ marginTop: 16 }}>
         {topModels.length === 0 ? (
-          <Empty description="今日暂无调用" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+          <Empty description={`${rangeLabel}暂无调用`} image={Empty.PRESENTED_IMAGE_SIMPLE} />
         ) : (
           <Table<TopModelRow>
             rowKey="dim"
