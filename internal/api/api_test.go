@@ -429,7 +429,6 @@ func TestLogRoutesIncludesProviderModel(t *testing.T) {
 	}
 }
 
-
 func TestProviderProxyURLIsPersisted(t *testing.T) {
 	h, st, _ := newTestServerWithStore(t)
 
@@ -595,10 +594,23 @@ func TestModelTypeValidation(t *testing.T) {
 		t.Fatalf("rerank+messages must be rejected: %d — %s", rec.Code, rec.Body.String())
 	}
 	rec = do(t, h, "POST", "/api/models", map[string]any{
-		"provider_id": 1, "name": "bad", "type": "video", "key_ids": []int64{1},
+		"provider_id": 1, "name": "bad", "type": "hologram", "key_ids": []int64{1},
 	}, "test-token")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid type must be rejected: %d", rec.Code)
+	}
+	// video 为合法类型（异步生成端点），且 protocol 仍锁 completions
+	rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": 1, "name": "vid", "type": "video", "key_ids": []int64{1},
+	}, "test-token")
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"type":"video"`) {
+		t.Fatalf("video model create: %d — %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, "POST", "/api/models", map[string]any{
+		"provider_id": 1, "name": "vid2", "type": "video", "protocol": "messages", "key_ids": []int64{1},
+	}, "test-token")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "仅支持 completions 协议") {
+		t.Fatalf("video+messages must be rejected: %d — %s", rec.Code, rec.Body.String())
 	}
 	// 未传 type 默认 chat
 	rec = do(t, h, "POST", "/api/models", map[string]any{
@@ -747,6 +759,11 @@ func TestMaintenanceClearLogs(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := st.DB.Create(&store.VideoTask{
+		VideoID: "vid-1", Route: "r", ModelID: 1, ProviderID: 1, KeyID: 1, CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	rec := do(t, h, "POST", "/api/maintenance/clear-logs", nil, "test-token")
 	if rec.Code != http.StatusBadRequest {
@@ -760,7 +777,7 @@ func TestMaintenanceClearLogs(t *testing.T) {
 	obj := decodeObj(t, rec)
 	cleared := obj["cleared"].(map[string]any)
 	if cleared["request_log"].(float64) != 2 || cleared["request_attempt"].(float64) != 1 ||
-		cleared["content_log"].(float64) != 1 {
+		cleared["content_log"].(float64) != 1 || cleared["video_task"].(float64) != 1 {
 		t.Fatalf("cleared counts wrong: %v", cleared)
 	}
 	var n int64
@@ -772,6 +789,11 @@ func TestMaintenanceClearLogs(t *testing.T) {
 	st.DB.Table("content_log").Count(&cl)
 	if cl != 0 {
 		t.Fatalf("clear-logs must clear content_log, remaining %d", cl)
+	}
+	var vt int64
+	st.DB.Table("video_task").Count(&vt)
+	if vt != 0 {
+		t.Fatalf("clear-logs must clear video_task, remaining %d", vt)
 	}
 }
 

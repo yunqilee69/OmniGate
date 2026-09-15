@@ -32,6 +32,10 @@ type typedKind struct {
 	// respLimit 上游响应体读取上限；0 用默认 32MB。images 响应内嵌 base64 图片，
 	// n=10 张高分辨率图可远超 chat 响应体积，该家族放宽到 128MB。
 	respLimit int64
+	// onSuccess 非 nil 时在 2xx 成功路径调用（route 为客户端提交的逻辑路由名，
+	// respBody 为完整上游响应体），用于登记异步任务（视频生成 POST /videos 返回的 task id）。
+	// 仅登记，不阻断响应透传。
+	onSuccess func(h *Handler, att router.Attempt, route string, respBody []byte)
 }
 
 var embeddingKind = typedKind{
@@ -302,6 +306,7 @@ func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[s
 	attemptStart := time.Now()
 	res := attemptResult{att: att}
 
+	logicalRoute, _ := req["model"].(string)
 	req["model"] = att.Model.Name
 	// 应用模型级 body_override：与 chat 路径同语义（覆盖优先于客户端字段），
 	// 生图 size/quality 等厂商参数预设由此下发
@@ -398,6 +403,9 @@ func (h *Handler) typedAttempt(w http.ResponseWriter, r *http.Request, req map[s
 	if err != nil {
 		res.errCode, res.status, res.retryable = errReadFailed, "error", true
 		return res
+	}
+	if kind.onSuccess != nil {
+		kind.onSuccess(h, att, logicalRoute, respBody)
 	}
 	res.usage = kind.parseUsage(respBody)
 	res.committed, res.status, res.ttft = true, "success", time.Since(attemptStart)

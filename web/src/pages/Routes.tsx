@@ -237,7 +237,7 @@ export default function RoutesPage() {
             label="端点类型"
             initialValue="completions"
             rules={[{ required: true }]}
-            extra="决定代理路径与协议：对话走 completions/messages/responses，向量/重排/生图走专用模型，MCP 走工具聚合"
+            extra="决定代理路径与协议：对话走 completions/messages/responses，向量/重排/生图/语音/视频走专用模型，MCP 走工具聚合"
           >
             <Select
               options={ENDPOINT_ORDER.map((k) => ({
@@ -259,6 +259,7 @@ export default function RoutesPage() {
                 if (ep === 'image') return m.type === 'image'
                 if (ep === 'tts') return m.type === 'tts'
                 if (ep === 'stt') return m.type === 'stt'
+                if (ep === 'video') return m.type === 'video'
                 return m.type === 'chat'
               })
               const fbOptions = fbModels.map((m) => ({ value: m.id, label: modelName(m.id) }))
@@ -343,6 +344,7 @@ export default function RoutesPage() {
                             if (endpoint === 'image') return m.type === 'image'
                             if (endpoint === 'tts') return m.type === 'tts'
                             if (endpoint === 'stt') return m.type === 'stt'
+                            if (endpoint === 'video') return m.type === 'video'
                             return m.type === 'chat'
                           })
                           
@@ -468,6 +470,21 @@ function buildCurl(base: string, model: string, endpoint: string, stream = false
       `  -F 'file=@audio.wav'`,
     ].join('\n')
   }
+  if (endpoint === 'video') {
+    return [
+      `# 1) 提交任务`,
+      `curl ${base}${path} \\`,
+      `  -H 'Content-Type: application/json' \\`,
+      `  -H 'Authorization: Bearer ${VK_KEY}' \\`,
+      `  -d '{"model":"${model}","prompt":"一只猫骑摩托车","size":"1280x720","seconds":"8"}'`,
+      ``,
+      `# 2) 轮询状态（用返回的 id 替换 <VIDEO_ID>），直到 status=completed`,
+      `curl ${base}/v1/videos/<VIDEO_ID> -H 'Authorization: Bearer ${VK_KEY}'`,
+      ``,
+      `# 3) 下载成片`,
+      `curl ${base}/v1/videos/<VIDEO_ID>/content -H 'Authorization: Bearer ${VK_KEY}' --output out.mp4`,
+    ].join('\n')
+  }
   const lines = [
     `curl ${stream ? '-N ' : ''}${base}${path} \\`,
     `  -H 'Content-Type: application/json' \\`,
@@ -490,6 +507,22 @@ function buildCurlCmd(base: string, model: string, endpoint: string, stream = fa
       `  -H "Authorization: Bearer ${VK_KEY}" ^`,
       `  -F "model=${model}" ^`,
       `  -F "file=@audio.wav"`,
+    ].join('\n')
+  }
+  if (endpoint === 'video') {
+    return [
+      `rem 中文内容需 UTF-8 编码：先执行 chcp 65001`,
+      `rem 1) 提交任务`,
+      `curl ${base}${path} ^`,
+      `  -H "Content-Type: application/json" ^`,
+      `  -H "Authorization: Bearer ${VK_KEY}" ^`,
+      `  -d "{\\"model\\":\\"${model}\\",\\"prompt\\":\\"a cat riding a motorcycle\\",\\"size\\":\\"1280x720\\",\\"seconds\\":\\"8\\"}"`,
+      ``,
+      `rem 2) 轮询状态（用返回的 id 替换 <VIDEO_ID>），直到 status=completed`,
+      `curl ${base}/v1/videos/<VIDEO_ID> -H "Authorization: Bearer ${VK_KEY}"`,
+      ``,
+      `rem 3) 下载成片`,
+      `curl ${base}/v1/videos/<VIDEO_ID>/content -H "Authorization: Bearer ${VK_KEY}" --output out.mp4`,
     ].join('\n')
   }
   const lines = [
@@ -561,6 +594,27 @@ function buildPython(base: string, model: string, endpoint: string): string {
       `        file=f,`,
       `    )`,
       `print(resp.text)`,
+    ].join('\n')
+  }
+  if (endpoint === 'video') {
+    return [
+      `import time`,
+      ``,
+      `from openai import OpenAI`,
+      ``,
+      `client = OpenAI(base_url="${base}/v1", api_key="${VK_KEY}")`,
+      ``,
+      `# 1) 提交任务（异步）`,
+      `video = client.videos.create(model="${model}", prompt="一只猫骑摩托车", size="1280x720", seconds="8")`,
+      ``,
+      `# 2) 轮询直到完成`,
+      `while video.status in ("queued", "in_progress"):`,
+      `    time.sleep(10)`,
+      `    video = client.videos.retrieve(video.id)`,
+      ``,
+      `# 3) 下载成片`,
+      `content = client.videos.download_content(video.id)`,
+      `open("out.mp4", "wb").write(content.read())`,
     ].join('\n')
   }
   return [
@@ -641,7 +695,7 @@ function RequestExample({ route, onClose }: { route: Route | null; onClose: () =
         items={[
           { key: 'curl', label: 'curl', children: <CodeBlock code={buildCurl(base, route.name, ep)} /> },
           { key: 'curl-win', label: 'curl (Windows)', children: <CodeBlock code={buildCurlCmd(base, route.name, ep)} /> },
-          ...(ep === 'stt' ? [] : [
+          ...(ep === 'stt' || ep === 'video' ? [] : [
             { key: 'curl-stream', label: 'curl 流式', children: <CodeBlock code={buildCurl(base, route.name, ep, true)} /> },
             { key: 'curl-stream-win', label: 'curl 流式 (Windows)', children: <CodeBlock code={buildCurlCmd(base, route.name, ep, true)} /> },
           ]),

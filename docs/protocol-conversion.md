@@ -34,6 +34,9 @@ OmniGate 采用 **OpenAI 作为统一接口格式**，通过协议适配器实�
 | `/v1/images/generations` | OpenAI Images | OpenAI | `type=image` | 直通(仅改 model；`stream` 原样透传) |
 | `/v1/audio/speech` | OpenAI TTS | 音频/SSE | `type=tts` | 直通(仅改 model；二进制或 SSE 流式透传) |
 | `/v1/audio/transcriptions` | OpenAI STT multipart | JSON/文本 | `type=stt` | 直通(仅改 model；入站全缓冲) |
+| `/v1/videos` | OpenAI Videos（Sora 格式） | 任务对象 JSON | `type=video` | 直通(仅改 model；**异步任务**，见下) |
+| `/v1/videos/{id}` | — | 任务对象 JSON | 按 `video_task` 映射 | 回查透传(不产生新调用记录) |
+| `/v1/videos/{id}/content` | — | 视频字节流 | 按 `video_task` 映射 | 回查透传(流式) |
 
 ---
 
@@ -478,6 +481,43 @@ OmniGate 采用 **OpenAI 作为统一接口格式**，通过协议适配器实�
 |------|---------|---------|
 | **Reasoning Content** | OpenAI 格式不保留 `reasoning_content` 字段 | 使用 `/v1/responses` 原生端点 |
 | **推理过程** | 转换后丢失模型内部推理步骤 | 使用 `/v1/responses` 原生端点 |
+
+---
+
+## 视频生成（异步任务族）
+
+`type=video` 模型挂 `/v1/videos`，是网关里唯一的异步端点族。上游格式无跨厂商标准
+（OpenAI Sora 用 `/videos`、Runway 用 `/image_to_video`，参数集互不兼容），因此与
+images/tts/stt 同方针：**请求体直通，仅重写 `model` 字段**，不做跨厂商转换。
+
+### 三步流程
+
+```
+① POST /v1/videos          {"model":"<路由>","prompt":"...","size":"1280x720","seconds":"8"}
+     └ 路由选择(type=video) → 密钥轮询 → 直通上游 → 原样回写任务对象 {id, status:"queued", ...}
+     └ 响应含 id 时登记 video_task（id → 提供商×模型×密钥），提交本身按 per_call 计费落 request_log
+
+② GET /v1/videos/{id}      轮询直到 status=completed/failed
+     └ 查 video_task 定位上游与当初命中的密钥 → 原样透传 JSON（不落新日志）
+
+③ GET /v1/videos/{id}/content   下载成片
+     └ 同上，透传 Content-Type/Content-Length 与字节流
+```
+
+### 设计约束
+
+- **只认自己登记过的任务**：`video_task` 未命中的 id 一律 404。否则任意 id 都会被
+  带上提供商密钥转发，网关退化为开放代理。
+- **回查不走路由/熔断**：任务必须回到创建它的上游（渲染产物存在那里），因此按
+  `video_task` 的落点直连，而非重新做加权选择；也不产生 `request_log`（费用已在
+  提交时结算，轮询是客户端行为，不该刷统计）。
+- **计费**：推荐 `billing_mode=per_call`（提交成功即计一次）。上游回显 `seconds`
+  （Sora 为字符串 `"8"`，也有厂商写数字）时记入 `audio_seconds`，可配
+  `audio_second` 按秒计费。
+- **保留期**：`video_task` 跟随 `log_retention_days` 清理；映射被清后旧 id 回查 404。
+- **模型上游要求**：`base_url` 需为暴露 `/videos` 族的端点（如
+  `https://api.openai.com/v1`）。`body_override` 可改提交体字段；提交与回查路径均按
+  `baseURL + /videos` / `/videos/{id}` 拼接，网关不按 `api_path` 改写（typed 端点族同此约定）。路径不兼容时只能由客户端直连上游轮询。
 
 ---
 

@@ -77,6 +77,7 @@ const modelTypeOptions = [
   { value: 'image', label: '生图模型' },
   { value: 'tts', label: '语音合成' },
   { value: 'stt', label: '语音识别' },
+  { value: 'video', label: '视频生成' },
 ]
 
 const proxyURLLabel = (
@@ -105,6 +106,7 @@ const modelTypeTag = (t: string) => {
   if (t === 'image') return <Tag color="orange">image</Tag>
   if (t === 'tts') return <Tag color="cyan">tts</Tag>
   if (t === 'stt') return <Tag color="blue">stt</Tag>
+  if (t === 'video') return <Tag color="volcano">video</Tag>
   return <Tag>chat</Tag>
 }
 
@@ -957,6 +959,7 @@ function ModelsTab({ provider, keys, models, onSaved }: {
                   image: '生图以 OpenAI Images 格式直通上游（baseURL + /images/generations），不做跨厂商协议改写',
                   tts: '语音合成以 OpenAI /v1/audio/speech 格式直通上游，不做跨厂商协议改写',
                   stt: '语音识别以 OpenAI /v1/audio/transcriptions 格式直通上游，不做跨厂商协议改写',
+                  video: '视频生成为异步任务：以 OpenAI /v1/videos 格式直通上游（提交 → 轮询 GET /v1/videos/{id} → 下载 /v1/videos/{id}/content），不做跨厂商协议改写',
                 }
                 return (
                   <Form.Item name="protocol" label="出站格式（由端点类型决定）"

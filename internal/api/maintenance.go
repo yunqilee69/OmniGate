@@ -17,8 +17,8 @@ func (s *Server) postMaintenanceCleanup(w http.ResponseWriter, _ *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
 }
 
-// postMaintenanceClearLogs 清空请求明细（request_log / attempt）与内容捕获（content_log），保留每日统计。
-// 危险操作：要求 body {"confirm":true} 作为二次确认。
+// postMaintenanceClearLogs 清空请求明细（request_log / attempt）、内容捕获（content_log）
+// 与视频任务映射（video_task），保留每日统计。
 func (s *Server) postMaintenanceClearLogs(w http.ResponseWriter, r *http.Request) {
 	if !requireConfirm(w, r) {
 		return

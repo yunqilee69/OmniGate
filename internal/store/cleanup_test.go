@@ -70,13 +70,23 @@ func TestPurgeRetentions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	tasks := []store.VideoTask{
+		{VideoID: "old-vid", Route: "r", ModelID: 1, ProviderID: 1, KeyID: 1, CreatedAt: old},
+		{VideoID: "new-vid", Route: "r", ModelID: 1, ProviderID: 1, KeyID: 1, CreatedAt: fresh},
+	}
+	for i := range tasks {
+		if err := st.DB.Create(&tasks[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	deleted, err := store.PurgeRetentions(st.DB, 5, 7)
 	if err != nil {
 		t.Fatalf("purge: %v", err)
 	}
 	if deleted["request_log"] != 2 || deleted["request_attempt"] != 1 ||
-		deleted["request_log_daily"] != 1 || deleted["content_log"] != 1 {
+		deleted["request_log_daily"] != 1 || deleted["content_log"] != 1 ||
+		deleted["video_task"] != 1 {
 		t.Fatalf("deleted counts wrong: %v", deleted)
 	}
 	if n := countRows(t, st, "request_log"); n != 1 {
@@ -90,6 +100,9 @@ func TestPurgeRetentions(t *testing.T) {
 	}
 	if n := countRows(t, st, "request_log_daily"); n != 1 {
 		t.Fatalf("request_log_daily remaining %d, want 1", n)
+	}
+	if n := countRows(t, st, "video_task"); n != 1 {
+		t.Fatalf("video_task remaining %d, want 1", n)
 	}
 }
 
@@ -149,6 +162,11 @@ func TestClearStats(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := st.DB.Create(&store.VideoTask{
+		VideoID: "keep-me", Route: "r", ModelID: 1, ProviderID: 1, KeyID: 1, CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	cleared, err := store.ClearStats(st.DB)
 	if err != nil {
@@ -159,6 +177,9 @@ func TestClearStats(t *testing.T) {
 	}
 	if n := countRows(t, st, "content_log"); n != 1 {
 		t.Fatalf("clear-stats must keep content_log, remaining %d", n)
+	}
+	if n := countRows(t, st, "video_task"); n != 1 {
+		t.Fatalf("clear-stats must keep video_task, remaining %d", n)
 	}
 }
 
@@ -189,12 +210,18 @@ func TestClearLogs(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := st.DB.Create(&store.VideoTask{
+		VideoID: "vid-1", Route: "r", ModelID: 1, ProviderID: 1, KeyID: 1, CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	cleared, err := store.ClearLogs(st.DB)
 	if err != nil {
 		t.Fatalf("clear logs: %v", err)
 	}
-	if cleared["request_log"] != 2 || cleared["request_attempt"] != 1 || cleared["content_log"] != 1 {
+	if cleared["request_log"] != 2 || cleared["request_attempt"] != 1 ||
+		cleared["content_log"] != 1 || cleared["video_task"] != 1 {
 		t.Fatalf("cleared counts wrong: %v", cleared)
 	}
 	if _, ok := cleared["request_log_daily"]; ok {
@@ -211,5 +238,8 @@ func TestClearLogs(t *testing.T) {
 	}
 	if n := countRows(t, st, "content_log"); n != 0 {
 		t.Fatalf("clear-logs must clear content_log, remaining %d", n)
+	}
+	if n := countRows(t, st, "video_task"); n != 0 {
+		t.Fatalf("clear-logs must clear video_task, remaining %d", n)
 	}
 }

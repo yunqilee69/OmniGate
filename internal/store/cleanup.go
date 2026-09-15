@@ -8,7 +8,7 @@ import (
 )
 
 // PurgeRetentions 按保留期清理过期日志：
-//   - logRetentionDays > 0：清理过期的 request_log / request_attempt，以及 day 过期的
+//   - logRetentionDays > 0：清理过期的 request_log / request_attempt / video_task，以及 day 过期的
 //     request_log_daily（统计预聚合跟随同一保留期）；
 //   - captureRetentionDays > 0：清理过期的 content_log（独立保留期，与请求日志无关）；
 //   - 保留期为 0 表示对应表永久保留，直接跳过。
@@ -20,7 +20,8 @@ func PurgeRetentions(db *gorm.DB, logRetentionDays, captureRetentionDays int) (m
 
 	if logRetentionDays > 0 {
 		logCutoff := now - int64(logRetentionDays)*86400
-		for _, table := range []string{"request_log", "request_attempt"} {
+		// video_task 是回查映射，请求日志一过期就再无对应关系可查，跟随同一保留期。
+		for _, table := range []string{"request_log", "request_attempt", "video_task"} {
 			n, err := purgeBefore(db, table, "created_at", logCutoff)
 			if err != nil {
 				return deleted, err
@@ -56,11 +57,10 @@ func PurgeRetentions(db *gorm.DB, logRetentionDays, captureRetentionDays int) (m
 }
 
 // ClearLogs 清空请求明细（request_log / request_attempt）与内容捕获（content_log）：
-// 对应请求删除后内容捕获即成孤儿数据，无保留意义，故一并清空；
+// 对应请求删除后内容捕获即成孤儿数据，无保留意义，故一并清空；视频任务映射同理。
 // 每日统计预聚合（request_log_daily）保留。
-// 与 ClearStats 的"明细+统计一起清"形成切割：本函数不碰日聚合。
 func ClearLogs(db *gorm.DB) (map[string]int64, error) {
-	return deleteAll(db, "request_log", "request_attempt", "content_log")
+	return deleteAll(db, "request_log", "request_attempt", "content_log", "video_task")
 }
 
 // ClearStats 清空全部统计数据（request_log / request_attempt / request_log_daily）。

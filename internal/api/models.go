@@ -24,7 +24,7 @@ type modelResp struct {
 
 var validProtocols = map[string]bool{"completions": true, "responses": true, "messages": true}
 var validCurrencies = map[string]bool{"USD": true, "CNY": true}
-var validModelTypes = map[string]bool{"chat": true, "embedding": true, "rerank": true, "image": true, "tts": true, "stt": true}
+var validModelTypes = map[string]bool{"chat": true, "embedding": true, "rerank": true, "image": true, "tts": true, "stt": true, "video": true}
 var validBillingModes = map[string]bool{"token": true, "per_call": true, "audio_second": true, "char": true}
 
 type modelCreateReq struct {
@@ -145,7 +145,7 @@ func (s *Server) createModel(w http.ResponseWriter, r *http.Request) {
 		req.Type = "chat"
 	}
 	if !validModelTypes[req.Type] {
-		writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding, rerank, image, tts or stt")
+		writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding, rerank, image, tts, stt or video")
 		return
 	}
 	// 非 chat 类型出站固定 completions 风格直通（业界无可归一标准），不支持协议转换
@@ -296,7 +296,7 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Type != nil {
 		if !validModelTypes[*req.Type] {
-			writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding, rerank, image, tts or stt")
+			writeErr(w, http.StatusBadRequest, "bad_request", "type must be chat, embedding, rerank, image, tts, stt or video")
 			return
 		}
 		simple["type"] = *req.Type

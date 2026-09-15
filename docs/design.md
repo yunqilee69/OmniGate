@@ -15,7 +15,7 @@
 
 | # | 能力 | 说明 |
 |---|------|------|
-| G1 | OpenAI 兼容代理 | 对下游暴露 `/v1/chat/completions`（含 SSE 流式）、`/v1/embeddings`、`/v1/rerank`、`/v1/images/generations`、`/v1/audio/speech`、`/v1/audio/transcriptions`、`/v1/models` |
+| G1 | OpenAI 兼容代理 | 对下游暴露 `/v1/chat/completions`（含 SSE 流式）、`/v1/embeddings`、`/v1/rerank`、`/v1/images/generations`、`/v1/audio/speech`、`/v1/audio/transcriptions`、`/v1/videos`（异步提交 + 轮询 + 下载）、`/v1/models` |
 | G2 | 逻辑模型路由 | 请求一个逻辑 modelId（如 `glm`），按权重分发到 N 个真实模型（可以是不同模型）；也可直接用 `provider/model` 锁定物理模型 |
 | G3 | 提供商/密钥/模型实体 | Provider → ApiKey；模型与密钥多对多绑定（须同提供商）；模型内 key 轮询 |
 | G4 | 阶梯熔断 | 模型级：30s → 1m → 3m，连续 3 次禁用并明确报错；key 级：401/403 立即禁用，429 短冷却 |
@@ -118,13 +118,13 @@ CREATE TABLE model (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   provider_id    INTEGER NOT NULL REFERENCES provider(id) ON DELETE CASCADE,
   name           TEXT NOT NULL,                   -- 真实模型名，如 glm-4.6
-  type           TEXT NOT NULL DEFAULT 'chat',    -- chat | embedding | rerank | image | tts | stt；非 chat 仅支持 completions 协议
+  type           TEXT NOT NULL DEFAULT 'chat',    -- chat | embedding | rerank | image | tts | stt | video；非 chat 仅支持 completions 协议
   protocol       TEXT NOT NULL DEFAULT 'openai',  -- openai(chat/completions) | responses(/responses) | anthropic(/v1/messages)
   input_price    REAL NOT NULL DEFAULT 0,         -- 每 1M prompt token 价格（billing_mode=token）
   cached_price   REAL NOT NULL DEFAULT 0,         -- 每 1M 命中缓存输入 token 价格；<=0 回退输入价
   output_price   REAL NOT NULL DEFAULT 0,         -- 每 1M completion token 价格（billing_mode=token）
   per_call_price REAL NOT NULL DEFAULT 0,         -- 每次调用价格（billing_mode=per_call）
-  audio_sec_price REAL NOT NULL DEFAULT 0,        -- 每音频秒价格（billing_mode=audio_second；STT）
+  audio_sec_price REAL NOT NULL DEFAULT 0,        -- 每音频秒价格（billing_mode=audio_second；STT；视频也可复用，记入 audio_seconds）
   char_price     REAL NOT NULL DEFAULT 0,         -- 每 1M 字符价格（billing_mode=char；TTS）
   billing_mode   TEXT NOT NULL DEFAULT 'token',   -- token | per_call | audio_second | char
   price_currency TEXT NOT NULL DEFAULT 'USD',     -- 价格币种：USD | CNY；计费统一折算为 USD 入库（汇率见 pricing.usd_cny）
@@ -260,6 +260,17 @@ CREATE TABLE content_log (
   created_at             INTEGER NOT NULL
 );
 CREATE INDEX idx_cl_time ON content_log(created_at);
+
+-- 视频生成任务映射（POST /v1/videos 提交成功后登记；轮询/下载按 video_id 回查上游）
+CREATE TABLE video_task (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  video_id    TEXT NOT NULL UNIQUE,             -- 上游返回的任务 id
+  route       TEXT NOT NULL,                    -- 提交时的逻辑路由名（诊断用）
+  model_id    INTEGER NOT NULL,
+  provider_id INTEGER NOT NULL,
+  key_id      INTEGER NOT NULL DEFAULT 0,       -- 提交时命中的密钥
+  created_at  INTEGER NOT NULL
+);
 ```
 
 ---
@@ -416,11 +427,14 @@ HTTP 503
 | POST | `/v1/images/generations` | 生图（OpenAI Images 格式，缓冲式直通，`stream` 原样透传） |
 | POST | `/v1/audio/speech` | 语音合成 TTS（OpenAI Audio Speech；二进制或 SSE 流式透传） |
 | POST | `/v1/audio/transcriptions` | 语音识别 STT（OpenAI Audio Transcriptions；multipart 入站） |
+| POST | `/v1/videos` | 视频生成提交（OpenAI Videos/Sora 格式，直通；异步任务，见下） |
+| GET  | `/v1/videos/{id}` | 轮询任务状态（按 `video_task` 回查，不落新日志） |
+| GET  | `/v1/videos/{id}/content` | 下载成片（按 `video_task` 回查，流式透传字节） |
 | GET  | `/v1/models` | 返回所有逻辑路由名（客户端模型列表） |
 
 上游鉴权：代理替换 `Authorization: Bearer <选中的key>`，客户端无需带真实 key。
 
-**端点协议标准说明**（四个端点家族各自跟随的业界事实标准）：
+**端点协议标准说明**（各端点家族跟随的业界事实标准）：
 
 | 端点 | 标准 | 出站路径（baseURL 已含版本前缀，如 `https://api.openai.com/v1`） |
 |---|---|---|
@@ -430,13 +444,17 @@ HTTP 503
 | `/v1/images/generations` | OpenAI Images API —— 事实标准，智谱 CogView、Azure OpenAI、硅基流动、OpenRouter Unified Image API 同形状 | `baseURL + /images/generations` |
 | `/v1/audio/speech` | OpenAI Audio Speech —— JSON 入、音频字节或 SSE 出；兼容端点（Groq/OpenRouter/SiliconFlow）同形状 | `baseURL + /audio/speech` |
 | `/v1/audio/transcriptions` | OpenAI Audio Transcriptions —— multipart `file`+`model` 入、JSON/文本出 | `baseURL + /audio/transcriptions` |
+| `/v1/videos` | OpenAI Videos（Sora）—— `{prompt, size, seconds}` 入、任务对象 `{id, status}` 出；跨厂商无标准（Runway/Gemini 路径与字段均不同），故直通不转换 | `baseURL + /videos` |
+| `/v1/videos/{id}` | 任务回查：按提交时登记的 `video_task` 定位提供商×密钥，GET 透传 JSON | `baseURL + /videos/{id}` |
+| `/v1/videos/{id}/content` | 成片下载：同上，透传 `Content-Type` 与字节流 | `baseURL + /videos/{id}/content` |
 
 实现约定：
 
-- **模型按 `type` 归属端点**：路由内只有同类型后端会被选中（embedding 请求绝不落到 chat 模型上）；请求体仅重写 `model` 字段（逻辑路由名 → 物理模型名），其余字段与响应体**原样直通**——rerank 无标准可归一，改写必踩厂商字段差异（vLLM 另有 `/v2/rerank`、Jina 多 `instruction`、`top_n`/`top_k` 混用），故不做任何转换。音频端点同样只改 `model` + 合并 `body_override`。
-- **usage 提取（尽力而为）**：embeddings 读 `usage.prompt_tokens/total_tokens`；rerank 依次尝试 `meta.tokens` → `meta.billed_units` → `usage.total_tokens`；images 读 `usage.input_tokens/output_tokens`（OpenRouter 形状 `prompt_tokens/completion_tokens` 兜底；按图计费的厂商如 CogView 无 token 用量记 0）。TTS 按输入字符数计（`billing_mode=char`）；STT 优先读上游 `usage.seconds` / `duration`，否则解析 WAV/MP3/FLAC/M4A/Ogg 容器头。计费与 chat 一致：`billing_mode=token` 时 `prompt × input_price + completion × output_price`（含缓存命中拆分，见 §8.1）；`per_call` 时成功调用记 `per_call_price`；`audio_second` 时 `seconds × audio_sec_price`；`char` 时 `chars × char_price / 1e6`。
-- **流式**：embeddings/rerank 忽略 `stream` 字段（业界均无流式语义）；images 将 `stream` 原样透传（上游 gpt-image 系可能返回 SSE 渐进预览），网关为缓冲式转发，响应体与 Content-Type 原样回写，流式响应 usage 记 0。TTS 出站按上游 `Content-Type` 流式透传（`audio/*` 或 `text/event-stream`）；STT 入站全缓冲（`file` 是 multipart 首 part，目标 URL 依赖 `model`）。typed 端点同样走失败转移/熔断/统计/request_log 全链路，网关自身错误统一以 OpenAI error envelope 返回。
-- **出站路径版本段**：base 由用户填写且必须自带版本前缀（OpenAI 式 `/v1`、智谱 `/v4`），出站一律 `baseURL + /<resource>`：chat `/chat/completions`、messages `/messages`、responses `/responses`、typed `/embeddings` `/rerank` `/images/generations` `/audio/speech` `/audio/transcriptions`。网关不推断版本段，故 base 填 `https://api.anthropic.com/v1` 得到 `.../v1/messages`，填 `https://api.anthropic.com` 得到 `.../messages`。
+- **模型按 `type` 归属端点**：路由内只有同类型后端会被选中（embedding 请求绝不落到 chat 模型上）；请求体仅重写 `model` 字段（逻辑路由名 → 物理模型名），其余字段与响应体**原样直通**——rerank 无标准可归一，改写必踩厂商字段差异（vLLM 另有 `/v2/rerank`、Jina 多 `instruction`、`top_n`/`top_k` 混用），故不做任何转换。音频与视频端点同样只改 `model` + 合并 `body_override`。
+- **usage 提取（尽力而为）**：embeddings 读 `usage.prompt_tokens/total_tokens`；rerank 依次尝试 `meta.tokens` → `meta.billed_units` → `usage.total_tokens`；images 读 `usage.input_tokens/output_tokens`（OpenRouter 形状 `prompt_tokens/completion_tokens` 兜底；按图计费的厂商如 CogView 无 token 用量记 0）。TTS 按输入字符数计（`billing_mode=char`）；STT 优先读上游 `usage.seconds` / `duration`，否则解析 WAV/MP3/FLAC/M4A/Ogg 容器头。视频读任务对象上的 `seconds`（字符串或数字，写入 `audio_seconds`）。计费与 chat 一致：`billing_mode=token` 时 `prompt × input_price + completion × output_price`（含缓存命中拆分，见 §8.1）；`per_call` 时成功调用记 `per_call_price`；`audio_second` 时 `seconds × audio_sec_price`；`char` 时 `chars × char_price / 1e6`。视频推荐 `per_call`（提交成功即结算，轮询/下载不计费）。
+- **流式**：embeddings/rerank 忽略 `stream` 字段（业界均无流式语义）；images 将 `stream` 原样透传（上游 gpt-image 系可能返回 SSE 渐进预览），网关为缓冲式转发，响应体与 Content-Type 原样回写，流式响应 usage 记 0。TTS 出站按上游 `Content-Type` 流式透传（`audio/*` 或 `text/event-stream`）；STT 入站全缓冲（`file` 是 multipart 首 part，目标 URL 依赖 `model`）。视频提交为缓冲式 JSON；下载为字节流透传。typed 端点同样走失败转移/熔断/统计/request_log 全链路（视频轮询/下载除外：它们是任务回查，不走选择器、不落 `request_log`），网关自身错误统一以 OpenAI error envelope 返回。
+- **视频任务映射**：`GET /v1/videos/{id}` 无法携带 `model`，故提交 2xx 且响应含 `id` 时写入 `video_task`（`video_id` 唯一，重复提交覆盖落点、不改 `created_at`）。未知 id 一律 404，绝不带密钥转发（否则网关退化为开放代理）。`video_task` 跟随 `log.retention_days` 清理，也随 `POST /api/maintenance/clear-logs` 清空。
+- **出站路径版本段**：base 由用户填写且必须自带版本前缀（OpenAI 式 `/v1`、智谱 `/v4`），出站一律 `baseURL + /<resource>`：chat `/chat/completions`、messages `/messages`、responses `/responses`、typed `/embeddings` `/rerank` `/images/generations` `/audio/speech` `/audio/transcriptions` `/videos`。网关不推断版本段，故 base 填 `https://api.anthropic.com/v1` 得到 `.../v1/messages`，填 `https://api.anthropic.com` 得到 `.../messages`。
 
 ### 7.2 管理面（`/api/*`，按启动层鉴权配置受保护，见 §9.1）
 
@@ -477,7 +495,7 @@ GET/PUT  /api/settings                        # §9 全部配置项；保存即�
 
 # 维护
 POST /api/maintenance/cleanup                 # 立即按保留期清理过期日志；返回 {"deleted":{"request_log":N,…}}
-POST /api/maintenance/clear-logs              # body {"confirm":true}；清空请求日志/尝试日志/内容捕获（每日统计保留）
+POST /api/maintenance/clear-logs              # body {"confirm":true}；清空请求日志/尝试日志/内容捕获/视频任务映射（每日统计保留）
 POST /api/maintenance/clear-stats             # body {"confirm":true}；清空请求日志/尝试日志/每日统计（内容日志保留）
 ```
 

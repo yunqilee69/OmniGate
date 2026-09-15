@@ -108,12 +108,12 @@ type ApiKey struct {
 // Model 真实模型。禁用/熔断状态机已退役，粒度下沉为模型×密钥组合（ModelKeyBan）。
 // Protocol 决定上游调用格式：completions(/chat/completions) | responses(/responses) | messages(/messages)。
 // Type 决定端点家族：chat(/v1/chat/completions) | embedding(/v1/embeddings) | rerank(/v1/rerank) | image(/v1/images/generations)
-// | tts(/v1/audio/speech) | stt(/v1/audio/transcriptions)；
+// | tts(/v1/audio/speech) | stt(/v1/audio/transcriptions) | video(/v1/videos，异步任务)；非 chat 仅 completions 直通。
 type Model struct {
 	ID            int64   `json:"id" gorm:"primaryKey;autoIncrement"`
 	ProviderID    int64   `json:"provider_id" gorm:"not null;uniqueIndex:idx_model_provider_name"`
 	Name          string  `json:"name" gorm:"size:191;not null;uniqueIndex:idx_model_provider_name"`
-	Type          string  `json:"type" gorm:"size:32;not null;default:'chat'"`          // chat | embedding | rerank | image | tts | stt
+	Type          string  `json:"type" gorm:"size:32;not null;default:'chat'"`          // chat | embedding | rerank | image | tts | stt | video
 	Protocol      string  `json:"protocol" gorm:"size:32;not null;default:completions"` // completions | responses | messages
 	ApiPath       string  `json:"api_path" gorm:"size:512;not null;default:''"`         // 自定义 API 路径覆盖
 	BodyOverride  string  `json:"body_override" gorm:"type:text;not null;default:''"`   // 请求体覆盖 JSON
@@ -235,7 +235,7 @@ type VirtualKey struct {
 func (AppConfig) TableName() string { return "app_config" }
 
 // RequestLog 请求日志（统计事实表，只增不改；表结构上不存在任何请求内容字段）。
-// Endpoint 记录请求进入的端点类型（completions/messages/responses/embedding/rerank/image/tts/stt），
+// Endpoint 记录请求进入的端点类型（completions/messages/responses/embedding/rerank/image/tts/stt/video），
 // 在入口创建 pending 行时写入；路由删除后日志仍自包含。
 type RequestLog struct {
 	ID               int64   `json:"id" gorm:"primaryKey;autoIncrement"`
@@ -283,6 +283,18 @@ type ContentLog struct {
 	ResponseHeaders      string `json:"response_headers" gorm:"type:text;not null;default:''"`
 	ResponseBody         string `json:"response_body" gorm:"type:text;not null"`
 	CreatedAt            int64  `json:"created_at" gorm:"autoCreateTime;index"` // 保留期清理按时间扫描
+}
+
+// VideoTask 视频生成任务追踪（POST /v1/videos 返回的异步任务）。
+// 存储视频 ID → 路由/模型/提供商映射，轮询 GET /v1/videos/{id} 时需要此表定位上游。
+type VideoTask struct {
+	ID         int64  `json:"id" gorm:"primaryKey;autoIncrement"`
+	VideoID    string `json:"video_id" gorm:"size:191;not null;uniqueIndex"` // 上游返回的 video_xxx
+	Route      string `json:"route" gorm:"size:191;not null"`
+	ModelID    int64  `json:"model_id" gorm:"not null"`
+	ProviderID int64  `json:"provider_id" gorm:"not null"`
+	KeyID      int64  `json:"key_id" gorm:"not null;default:0"` // 命中的密钥 ID
+	CreatedAt  int64  `json:"created_at" gorm:"autoCreateTime"`
 }
 
 // RequestAttempt 单次尝试的明细记录（含中间失败与最终成功）。request_log 仍记最终结果与总重试次数，

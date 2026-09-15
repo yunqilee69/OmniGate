@@ -7,6 +7,7 @@ export const ENDPOINT_META: Record<string, { path: string; hint?: string }> = {
   image: { path: '/v1/images/generations', hint: '生图' },
   tts: { path: '/v1/audio/speech', hint: '语音合成' },
   stt: { path: '/v1/audio/transcriptions', hint: '语音识别' },
+  video: { path: '/v1/videos', hint: '视频生成（异步任务）' },
   mcp: { path: '/v1/mcp/{route_name}', hint: 'MCP 工具聚合' },
 }
 
@@ -18,6 +19,7 @@ export const FAMILY_TABS: { key: string; label: string; endpoints: string[] }[] 
   { key: 'rerank', label: '重排', endpoints: ['rerank'] },
   { key: 'image', label: '生图', endpoints: ['image'] },
   { key: 'audio', label: '语音', endpoints: ['tts', 'stt'] },
+  { key: 'video', label: '视频', endpoints: ['video'] },
   { key: 'mcp', label: 'MCP', endpoints: ['mcp'] },
 ]
 

@@ -17,7 +17,7 @@ OmniGate 把多个模型提供方聚合成一个 OpenAI 兼容端点,提供加�
 
 | | |
 |---|---|
-| **OpenAI 兼容代理** | `/v1/chat/completions`(SSE 流式)、`/v1/embeddings`(OpenAI 标准)、`/v1/rerank`(Cohere 骨架直通)、`/v1/images/generations`(生图,支持高清尺寸预设)、`/v1/models` |
+| **OpenAI 兼容代理** | `/v1/chat/completions`(SSE 流式)、`/v1/embeddings`、`/v1/rerank`、`/v1/images/generations`、`/v1/audio/speech`、`/v1/audio/transcriptions`、`/v1/videos`(异步视频生成)、`/v1/models` |
 | **混合协议端点** | `/v1/messages`(Anthropic 原生)、`/v1/responses`(OpenAI Responses 原生) — 直通模式,零损耗;跨协议转换时 `thinking` 以 `reasoning_content` 透出 |
 | **MCP 工具网关** | `/v1/mcp/<路由>` 聚合多个 MCP Server:一个会话集中管理,tools/list 自动汇总,tools/call 按工具路由到后端;对话测试页可把 MCP 工具直接注入模型自动调用 |
 | **虚拟密钥** | 消费者凭证体系:RPM 限流、美元预算与用量累计、按路由授权;管理台独立用量统计与预算重置 |
@@ -287,7 +287,7 @@ go test ./...
 - [x] **MCP 网关** — `/v1/mcp/<路由>` 多后端聚合、工具自动注入对话(v0.2.x 起交付)
 - [x] **Anthropic 原生协议** — `/v1/messages` 直通 + `thinking` 思考过程跨协议贯通
 - [x] **虚拟密钥** — RPM 限流、美元预算配额、按路由授权、独立用量统计
-- [x] **生图 / Embedding / Rerank 端点** — `/v1/images/generations`(高清尺寸预设)等类型化端点族
+- [x] **生图 / Embedding / Rerank / 语音 / 视频端点** — `/v1/images/generations`、`/v1/audio/*`、`/v1/videos`(异步提交→轮询→下载) 等类型化端点族
 - [ ] **Gemini 原生协议** — 适配 Google AI 端点
 - [ ] **软配额告警** — 用量阈值通知(虚拟密钥硬预算已具备)
 - [ ] **多实例集群模式** — 读写分离、配置共享

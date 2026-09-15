@@ -37,17 +37,20 @@ type ChatPlane interface {
 	Mcp(w http.ResponseWriter, r *http.Request)
 }
 
-// TypedPlane 非 chat 端点族（embeddings/rerank/images/audio）的代理处理器集合。
+// TypedPlane 非 chat 端点族（embeddings/rerank/images/audio/video）的代理处理器集合。
 type TypedPlane interface {
 	Embeddings(w http.ResponseWriter, r *http.Request)
 	Rerank(w http.ResponseWriter, r *http.Request)
 	Images(w http.ResponseWriter, r *http.Request)
 	Speech(w http.ResponseWriter, r *http.Request)
 	Transcriptions(w http.ResponseWriter, r *http.Request)
+	Videos(w http.ResponseWriter, r *http.Request)
+	GetVideo(w http.ResponseWriter, r *http.Request)
+	DownloadVideo(w http.ResponseWriter, r *http.Request)
 }
 
 // New 构造管理面服务。auth 为启动层静态鉴权配置（详见 AdminAuth）；
-// chat 为 chat 端点族处理器，typed 为 embeddings/rerank/images 处理器（均可为 nil，测试场景）。
+// chat 为 chat 端点族处理器，typed 为 embeddings/rerank/images/audio/video 处理器（均可为 nil，测试场景）。
 func New(st *store.Store, rt *config.RuntimeManager, auth AdminAuth, chat ChatPlane, typed TypedPlane) *Server {
 	return &Server{store: st, rt: rt, auth: auth, sessions: newSessionStore(), chat: chat, typed: typed,
 		vkHandler: NewVirtualKeyHandler(st), vkLimiter: newVKRateLimiter()}
@@ -169,6 +172,9 @@ func (s *Server) Router() http.Handler {
 			vr.Post("/images/generations", s.typed.Images)
 			vr.Post("/audio/speech", s.typed.Speech)
 			vr.Post("/audio/transcriptions", s.typed.Transcriptions)
+			vr.Post("/videos", s.typed.Videos)
+			vr.Get("/videos/{id}", s.typed.GetVideo)
+			vr.Get("/videos/{id}/content", s.typed.DownloadVideo)
 		}
 		vr.NotFound(func(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", "endpoint not found")

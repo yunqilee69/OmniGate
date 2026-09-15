@@ -49,7 +49,7 @@ func Open(path string) (*Store, error) {
 		&Provider{}, &ApiKey{}, &Model{}, &ModelKey{}, &ModelKeyBan{},
 		&Route{}, &RouteTarget{}, &AppConfig{}, &RequestLog{}, &RequestAttempt{},
 		&RequestLogDaily{},
-		&VirtualKey{},
+		&VirtualKey{}, &VideoTask{},
 		&MCPBackend{}, &RouteMcpTarget{},
 	); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)

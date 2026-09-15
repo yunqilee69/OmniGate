@@ -184,7 +184,7 @@ func ProbeModelKeysByName(db *store.Store, rt *config.RuntimeManager, name strin
 
 // probeModelKey 用指定密钥发起一次极小真实请求（探测核心，不写 request_log）。
 // 按模型类型构造最小载荷：chat → 一条 ping 消息；embedding → 单串输入；rerank → 单文档重排；image → 一句生图提示；
-// tts → 一句合成；stt → 极小静音 WAV。
+// tts → 一句合成；stt → 极小静音 WAV；video → 最短时长提交（会在上游排队一次真实渲染，仅验证连通与鉴权）。
 func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) ProbeResult {
 	res := ProbeResult{ModelID: m.ID, Model: m.Name, Provider: provider.Name, Protocol: m.Protocol, KeyID: key.ID}
 
@@ -208,6 +208,9 @@ func probeModelKey(m store.Model, provider store.Provider, key store.ApiKey) Pro
 	case "image":
 		req = map[string]any{"model": m.Name, "prompt": "ping"}
 		endpoint = strings.TrimRight(provider.BaseURL, "/") + "/images/generations"
+	case "video":
+		req = map[string]any{"model": m.Name, "prompt": "ping", "seconds": "4"}
+		endpoint = strings.TrimRight(provider.BaseURL, "/") + "/videos"
 	default:
 		req = map[string]any{
 			"model":      m.Name,
