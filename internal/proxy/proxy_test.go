@@ -289,6 +289,46 @@ func TestStreamEstimationWithoutUsage(t *testing.T) {
 	}
 }
 
+// TestStreamHangCloseNotSuccess 上游只吐了半截（无 [DONE]、无最终 usage）就关连接，
+// 不得因已有 prompt/completion 估算而记 success 并计费。
+func TestStreamHangCloseNotSuccess(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+		fl.Flush()
+	}))
+	defer up.Close()
+
+	p := store.Provider{Name: "zhipu", BaseURL: up.URL, TimeoutMs: 3000}
+	st.DB.Create(&p)
+	m := store.Model{ProviderID: p.ID, Name: "m0", InputPrice: 10, OutputPrice: 20}
+	st.DB.Create(&m)
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-h", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
+	rt := store.Route{Name: "glm-pool"}
+	st.DB.Create(&rt)
+	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
+
+	resp := postWithAuth(t, h, chatBody(true), vkToken)
+	if resp.StatusCode != 200 {
+		t.Fatalf("committed stream status %d", resp.StatusCode)
+	}
+	ls := logs(t, st)
+	if len(ls) != 1 {
+		t.Fatalf("expect 1 log, got %d", len(ls))
+	}
+	l := ls[0]
+	if l.Status != "error" || l.ErrorCode != "stream_broken" {
+		t.Fatalf("truncated stream must be stream_broken, got %+v", l)
+	}
+	if l.Cost != 0 {
+		t.Fatalf("truncated stream must not bill, cost=%v", l.Cost)
+	}
+}
+
 func TestFailoverOn500(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -589,7 +629,6 @@ func TestProviderModelDirectDeniedByVKAllowlist(t *testing.T) {
 		t.Fatalf("restricted VK must not bypass allowlist via provider/model, got %d — %s", resp.StatusCode, readAll(t, resp))
 	}
 }
-
 
 func setupSingleUpstream(t *testing.T, st *store.Store, url string, timeoutMs int) {
 	t.Helper()

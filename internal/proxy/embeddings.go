@@ -47,11 +47,16 @@ var embeddingKind = typedKind{
 		if json.Unmarshal(body, &parsed) != nil || parsed.Usage == nil {
 			return usageInfo{}
 		}
-		completion := parsed.Usage.TotalTokens - parsed.Usage.PromptTokens
+		prompt := parsed.Usage.PromptTokens
+		if prompt <= 0 && parsed.Usage.TotalTokens > 0 {
+			// 部分上游只给 total_tokens：向量请求没有输出 token，全部记为输入。
+			return usageInfo{prompt: parsed.Usage.TotalTokens}
+		}
+		completion := parsed.Usage.TotalTokens - prompt
 		if completion < 0 {
 			completion = 0
 		}
-		return usageInfo{prompt: parsed.Usage.PromptTokens, completion: completion}
+		return usageInfo{prompt: prompt, completion: completion}
 	},
 }
 
@@ -205,30 +210,38 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 	var errCodes []string
 	priorFails := 0
 	var attempts []store.RequestAttempt
+	finalLogged := false
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	useFallback := func() bool {
+		fbID := snap.Route.FallbackModelID
+		if fbID <= 0 {
+			return false
+		}
+		fallbackAtt, fallbackOK := h.sel.PickFallback(fbID, time.Now())
+		if !fallbackOK {
+			slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", fbID, "type", kind.modelType)
+			return false
+		}
+		slog.Info("using fallback model", "route", routeName, "fallback_model_id", fbID, "type", kind.modelType)
+		attemptStart := time.Now()
+		res := h.typedAttempt(w, r, req, fallbackAtt, kind, rt)
+		res.latencyMs, res.elapsed = time.Since(attemptStart).Milliseconds(), time.Since(attemptStart)
+		h.record(res, rt)
+		attempts = append(attempts, h.attemptRow(requestID, routeName, len(attempts), fallbackAtt, res, attemptStart))
+		h.writeLog(start, requestID, routeName, fallbackAtt, false,
+			res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, true, vkID, pendingID, attempts)
+		cw.setAttempt(res)
+		h.maybeCapture(requestID, routeName, cw)
+		return true
+	}
+
+	for attempt := range maxAttempts {
 		att, ok := h.sel.PickTyped(snap, tried, time.Now(), kind.modelType)
 		if !ok {
+			if useFallback() {
+				return
+			}
 			if attempt == 0 {
-				if fbID := snap.Route.FallbackModelID; fbID > 0 {
-					fallbackAtt, fallbackOK := h.sel.PickFallback(fbID, time.Now())
-					if fallbackOK {
-						slog.Info("using fallback model", "route", routeName, "fallback_model_id", fbID, "type", kind.modelType)
-						attemptStart := time.Now()
-						res := h.typedAttempt(w, r, req, fallbackAtt, kind, rt)
-						res.latencyMs, res.elapsed = time.Since(attemptStart).Milliseconds(), time.Since(attemptStart)
-						h.record(res, rt)
-						attempts = append(attempts, h.attemptRow(requestID, routeName, 0, fallbackAtt, res, attemptStart))
-						h.writeLog(start, requestID, routeName, fallbackAtt, false,
-							res.status, res.errCode, res.usage, res.ttft, time.Since(start), 0, res.errorBody, true, vkID, pendingID, attempts)
-						cw.setAttempt(res)
-						h.maybeCapture(requestID, routeName, cw)
-						return
-					}
-					slog.Warn("fallback model unavailable", "route", routeName, "fallback_model_id", fbID, "type", kind.modelType)
-				}
-
-				// all_backends_unavailable：没有可用模型，仍需记录尝试
 				attempts = append(attempts, h.attemptRow(requestID, routeName, 0, router.Attempt{}, attemptResult{
 					status:  "error",
 					errCode: errAllBackendsUnavailable,
@@ -253,16 +266,21 @@ func (h *Handler) serveTyped(w http.ResponseWriter, r *http.Request, kind typedK
 		if res.committed || !res.retryable {
 			h.writeLog(start, requestID, routeName, att, false,
 				res.status, res.errCode, res.usage, res.ttft, time.Since(start), priorFails, res.errorBody, false, vkID, pendingID, attempts)
+			finalLogged = true
 			break
 		}
 		priorFails++
 		errCodes = append(errCodes, res.errCode)
 	}
 
-	// 重试耗尽 / 转移途中无后端可选：最终结果尚未落库时在此补写。
-	if last.att.Model.ID != 0 && !last.committed && last.retryable {
-		h.writeLog(start, requestID, routeName, last.att, false,
-			last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails-1, last.errorBody, false, vkID, pendingID, attempts)
+	if !finalLogged {
+		if useFallback() {
+			return
+		}
+		if last.att.Model.ID != 0 && !last.committed && last.retryable {
+			h.writeLog(start, requestID, routeName, last.att, false,
+				last.status, last.errCode, last.usage, last.ttft, time.Since(start), priorFails-1, last.errorBody, false, vkID, pendingID, attempts)
+		}
 	}
 
 	if !last.committed {

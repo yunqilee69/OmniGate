@@ -149,6 +149,21 @@ func TestRateLimitedDoesNotResetBreakerCount(t *testing.T) {
 	}
 }
 
+func TestRateLimitedDoesNotUnbanPermBanned(t *testing.T) {
+	st, rec, rt := newStack(t)
+	mID, kID := seedCombo(t, st)
+	rec.RecordModelKeyFailure(mID, kID, "401", false, rt)
+	ban := banOf(t, st, mID, kID)
+	if ban.Status != "perm_banned" {
+		t.Fatalf("401 should perm-ban: %+v", ban)
+	}
+	rec.RecordModelKeyRateLimited(mID, kID, 7, 60)
+	ban = banOf(t, st, mID, kID)
+	if ban.Status != "perm_banned" {
+		t.Fatalf("429 must not unban perm_banned, got %+v", ban)
+	}
+}
+
 func TestBanAllAndUnbanAll(t *testing.T) {
 	st, rec, _ := newStack(t)
 	p := store.Provider{Name: "zhipu", BaseURL: "https://x"}

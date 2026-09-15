@@ -110,6 +110,24 @@ func TestEmbeddingsProxy(t *testing.T) {
 	}
 }
 
+func TestEmbeddingsTotalTokensOnlyAsPrompt(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1]}],"usage":{"total_tokens":12}}`)
+	}))
+	defer up.Close()
+	seedTypedRoute(t, st, up.URL+"/v1")
+	resp := typedPost(t, h, "/v1/embeddings", map[string]any{"model": "mixed", "input": "hello"}, vkToken)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	lg := logs(t, st)[0]
+	if lg.PromptTokens != 12 || lg.CompletionTokens != 0 {
+		t.Fatalf("total-only embeddings must bill as prompt, got prompt=%d completion=%d", lg.PromptTokens, lg.CompletionTokens)
+	}
+}
+
 func TestRerankProxy(t *testing.T) {
 	st, h, vkToken := newTestStackWithVK(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -372,7 +390,6 @@ func TestEmbeddingsProviderModelDirect(t *testing.T) {
 		t.Fatalf("upstream model = %q", gotModel)
 	}
 }
-
 
 // 编译期保证 Handler 实现 api.TypedPlane。
 var _ interface {

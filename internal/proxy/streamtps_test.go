@@ -35,6 +35,18 @@ func TestStreamTPS(t *testing.T) {
 	}
 }
 
+func TestProviderTimeoutZeroDefaults(t *testing.T) {
+	if got := providerTimeout(0); got != defaultProviderTimeout {
+		t.Fatalf("TimeoutMs=0 must default to 120s, got %v", got)
+	}
+	if got := providerTimeout(-1); got != defaultProviderTimeout {
+		t.Fatalf("TimeoutMs<0 must default to 120s, got %v", got)
+	}
+	if got := providerTimeout(80); got != 80*time.Millisecond {
+		t.Fatalf("TimeoutMs=80 want 80ms, got %v", got)
+	}
+}
+
 func TestRewriteJSONModel(t *testing.T) {
 	in := []byte(`{"model":"anthropic/claude-sonnet-4","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
 	out := rewriteJSONModel(in, "claude-sonnet-4")

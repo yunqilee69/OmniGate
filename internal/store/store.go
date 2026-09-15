@@ -2,6 +2,8 @@ package store
 
 import (
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -64,7 +66,9 @@ func Open(path string) (*Store, error) {
 	if err := migrateErrorCodeRename(db); err != nil {
 		return nil, fmt.Errorf("migrate error_code rename: %w", err)
 	}
-	return &Store{DB: db}, nil
+	st := &Store{DB: db}
+	st.reclaimPending()
+	return st, nil
 }
 
 // dropLegacyVKRateLimits 删除旧版 DB 落库限流计数表（幂等；新库无此表直接跳过）。
@@ -83,6 +87,26 @@ func (s *Store) Close() error {
 		return err
 	}
 	return sqlDB.Close()
+}
+
+// reclaimPending 把崩溃遗留的 pending 行改成 error。
+// 进程重启后这些行永远不会被 SettleRequest 收尾；不入日聚合、也不结算 VK。
+func (s *Store) reclaimPending() {
+	now := time.Now().Unix()
+	res := s.DB.Model(&RequestLog{}).
+		Where("status = ?", "pending").
+		Updates(map[string]any{
+			"status":     "error",
+			"error_code": "interrupted",
+			"total_ms":   gorm.Expr("CASE WHEN created_at > 0 THEN (? - created_at) * 1000 ELSE 0 END", now),
+		})
+	if res.Error != nil {
+		slog.Warn("reclaim pending request_log failed", "err", res.Error)
+		return
+	}
+	if res.RowsAffected > 0 {
+		slog.Info("reclaimed leftover pending request_log rows", "count", res.RowsAffected)
+	}
 }
 
 func migrateEndpointColumn(db *gorm.DB) error {

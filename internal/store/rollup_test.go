@@ -131,3 +131,53 @@ func TestBackfillKeepsExistingDaily(t *testing.T) {
 		t.Fatalf("backfilled day wrong: %+v", filled)
 	}
 }
+
+func TestDayStartUnixAndNextDay(t *testing.T) {
+	day := int64(20260331)
+	start := DayStartUnix(day)
+	next := NextDayStartUnix(day)
+	got := time.Unix(start, 0).In(time.Local)
+	if got.Year() != 2026 || got.Month() != time.March || got.Day() != 31 || got.Hour() != 0 {
+		t.Fatalf("DayStartUnix(20260331) = %v", got)
+	}
+	gotNext := time.Unix(next, 0).In(time.Local)
+	if gotNext.Year() != 2026 || gotNext.Month() != time.April || gotNext.Day() != 1 {
+		t.Fatalf("NextDayStartUnix must roll March 31 to April 1, got %v", gotNext)
+	}
+	if next-start != 86400 && next-start != 90000 && next-start != 82800 {
+		t.Fatalf("day length unexpected: %d", next-start)
+	}
+}
+
+func TestUpsertDailySkipsPendingAndClientError(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "pending.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	now := time.Now().Unix()
+	UpsertDaily(st.DB, &RequestLog{RequestID: "p", Route: "r", Model: "m", Provider: "p",
+		Status: "pending", CreatedAt: now})
+	UpsertDaily(st.DB, &RequestLog{RequestID: "c", Route: "r", Model: "m", Provider: "p",
+		Status: "client_error", CreatedAt: now, ErrorCode: "400"})
+	UpsertDaily(st.DB, &RequestLog{RequestID: "e", Route: "r", Model: "m", Provider: "p",
+		Status: "error", CreatedAt: now, ErrorCode: "500"})
+
+	var rows []RequestLogDaily
+	if err := st.DB.Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("pending must be skipped, client_error and error kept: %+v", rows)
+	}
+	byStatus := map[string]RequestLogDaily{}
+	for _, r := range rows {
+		byStatus[r.Status] = r
+	}
+	if byStatus["client_error"].Total != 1 || byStatus["client_error"].Errors != 0 {
+		t.Fatalf("client_error must not increment errors: %+v", byStatus["client_error"])
+	}
+	if byStatus["error"].Total != 1 || byStatus["error"].Errors != 1 {
+		t.Fatalf("error must increment errors: %+v", byStatus["error"])
+	}
+}

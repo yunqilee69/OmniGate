@@ -109,6 +109,55 @@ func TestVirtualKeyCRUD(t *testing.T) {
 	}
 }
 
+func TestUpdateVirtualKeyPreservesUsedUSD(t *testing.T) {
+	db := setupTestDB(t)
+	vk := &VirtualKey{Name: "orig", Status: "active", RPMLimit: 10, TotalBudgetUSD: 5, UsedUSD: 1.25, TotalRequests: 7, LastUsedAt: 100}
+	if err := db.CreateVirtualKey(vk); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB.Model(&VirtualKey{}).Where("id = ?", vk.ID).Updates(map[string]any{
+		"used_usd": 3.5, "total_requests": 9, "last_used_at": 200,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	stale := *vk
+	stale.Name = "renamed"
+	stale.UsedUSD = 1.25
+	stale.TotalRequests = 7
+	stale.LastUsedAt = 100
+	if err := db.UpdateVirtualKey(&stale); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetVirtualKey(vk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "renamed" {
+		t.Fatalf("name not updated: %+v", got)
+	}
+	if got.UsedUSD != 3.5 || got.TotalRequests != 9 || got.LastUsedAt != 200 {
+		t.Fatalf("usage columns must survive config update: %+v", got)
+	}
+}
+
+func TestResetVirtualKeyBudget(t *testing.T) {
+	db := setupTestDB(t)
+	vk := &VirtualKey{Name: "b", Status: "active", UsedUSD: 4.2, TotalRequests: 3}
+	if err := db.CreateVirtualKey(vk); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ResetVirtualKeyBudget(vk.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.GetVirtualKey(vk.ID)
+	if got.UsedUSD != 0 {
+		t.Fatalf("used_usd want 0, got %v", got.UsedUSD)
+	}
+	if got.TotalRequests != 3 {
+		t.Fatalf("reset-budget must not clear total_requests: %+v", got)
+	}
+}
+
 func TestCheckVKAuth(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
@@ -211,6 +260,25 @@ func TestCheckVKBudget(t *testing.T) {
 				t.Errorf("expected %v, got %v", tt.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestCheckVKBudgetReloadsUsedUSD(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	vk := &VirtualKey{Name: "stale", Status: "active", TotalBudgetUSD: 10, UsedUSD: 1}
+	if err := db.CreateVirtualKey(vk); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB.Model(&VirtualKey{}).Where("id = ?", vk.ID).Update("used_usd", 10).Error; err != nil {
+		t.Fatal(err)
+	}
+	stale := &VirtualKey{ID: vk.ID, TotalBudgetUSD: 10, UsedUSD: 1}
+	if err := db.CheckVKBudget(stale); err != ErrVKBudgetExceeded {
+		t.Fatalf("stale snapshot must reload used_usd, err=%v", err)
+	}
+	if stale.UsedUSD != 10 {
+		t.Fatalf("used_usd should be copied onto snapshot, got %v", stale.UsedUSD)
 	}
 }
 

@@ -211,8 +211,9 @@ func TestCostCachedPriceFallsBackToInput(t *testing.T) {
 	}
 }
 
-// Anthropic messages 的 input_tokens 不含 cache_read（两者互斥），须按各自单价相加：
-// 输入 10 / 缓存 2 / 输出 20、input=400 + cache_read=600、output=100 → 0.0072。
+// Anthropic messages 的 input_tokens 不含 cache_read（两者互斥）。
+// 落库把 cache_read 并入 prompt，计费时再拆开：输入 10 / 缓存 2 / 输出 20、
+// input=400 + cache_read=600、output=100 → prompt=1000 cached=600 → 0.0072。
 func TestCostAnthropicCacheRead(t *testing.T) {
 	st, rtm, vkToken := newStackWithRTMAndVK(t)
 	h := hWithRTM(st, rtm)
@@ -233,11 +234,54 @@ func TestCostAnthropicCacheRead(t *testing.T) {
 	if len(ls) != 1 {
 		t.Fatalf("expect 1 log, got %d", len(ls))
 	}
-	if ls[0].CachedTokens != 600 {
-		t.Fatalf("cache_read_input_tokens should be recorded, got %d", ls[0].CachedTokens)
+	if ls[0].CachedTokens != 600 || ls[0].PromptTokens != 1000 {
+		t.Fatalf("inclusive prompt want 1000/600, got prompt=%d cached=%d", ls[0].PromptTokens, ls[0].CachedTokens)
 	}
 	if !approxEq(ls[0].Cost, 0.0072) {
 		t.Fatalf("anthropic cache read should bill at cached_price, got %v", ls[0].Cost)
+	}
+}
+
+// cache_creation 按 input_price × 1.25 计费，并入 inclusive prompt。
+func TestCostAnthropicCacheCreation(t *testing.T) {
+	st, rtm, vkToken := newStackWithRTMAndVK(t)
+	h := hWithRTM(st, rtm)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":400,"output_tokens":100,"cache_read_input_tokens":100,"cache_creation_input_tokens":500}}`)
+	}))
+	defer up.Close()
+	seedCostModel(t, st, up.URL+"/v1", "ccw", store.Model{
+		Protocol: "messages", InputPrice: 10, CachedPrice: 2, OutputPrice: 20,
+	})
+	postAnthropic(t, h, "ccw", vkToken)
+	ls := logs(t, st)
+	if ls[0].PromptTokens != 1000 || ls[0].CachedTokens != 100 {
+		t.Fatalf("inclusive prompt want 1000/100, got prompt=%d cached=%d", ls[0].PromptTokens, ls[0].CachedTokens)
+	}
+	// (400×10 + 100×2 + 500×12.5 + 100×20) / 1e6 = 0.01245
+	if !approxEq(ls[0].Cost, 0.01245) {
+		t.Fatalf("cache_creation should bill at 1.25×input, got %v", ls[0].Cost)
+	}
+}
+
+func TestEstimatedUsageCostIsZero(t *testing.T) {
+	st, rtm, vkToken := newStackWithRTMAndVK(t)
+	h := hWithRTM(st, rtm)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"abcdefgh\"}}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer up.Close()
+	seedCostModel(t, st, up.URL, "est", store.Model{InputPrice: 10, OutputPrice: 20})
+	postChat(t, h, "est", vkToken)
+	ls := logs(t, st)
+	if !ls[0].TokensEstimated {
+		t.Fatalf("expect estimated usage: %+v", ls[0])
+	}
+	if ls[0].Cost != 0 {
+		t.Fatalf("estimated usage must cost 0, got %v", ls[0].Cost)
 	}
 }
 

@@ -50,6 +50,14 @@ func newTestServer(t *testing.T) (http.Handler, string) {
 	return h, vk
 }
 
+// todayQuery 对齐本地自然日 00:00:00..23:59:59，满足 rollupCoversRange，强制走日聚合。
+func todayQuery() string {
+	now := time.Now().Unix()
+	from := store.DayStartUnix(store.DayKey(now))
+	to := store.NextDayStartUnix(store.DayKey(now)) - 1
+	return fmt.Sprintf("from=%d&to=%d", from, to)
+}
+
 func do(t *testing.T, h http.Handler, method, path string, body any, token string) *httptest.ResponseRecorder {
 	t.Helper()
 	var buf bytes.Buffer
@@ -1036,7 +1044,8 @@ func TestStatsOverviewRollupLatency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ov := decodeObj(t, do(t, h, "GET", "/api/stats/overview", nil, "test-token"))
+	ov := decodeObj(t, do(t, h, "GET", "/api/stats/overview?"+todayQuery(), nil, "test-token"))
+
 	if ov["total"] != float64(200) || ov["success"] != float64(100) {
 		t.Fatalf("totals must cover every status: %v", ov)
 	}
@@ -1317,5 +1326,162 @@ func TestStatsTimeseriesAndBreakdownTPS(t *testing.T) {
 	}
 	if got["r2"] != 0 {
 		t.Fatalf("r2 avg_tps want 0 (no samples), got %v", got["r2"])
+	}
+}
+
+func TestStatsOverviewSubDayDoesNotUseRollup(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	yesterday := now - 86400
+	if err := st.DB.Create(&store.RequestLogDaily{
+		Day: store.DayKey(yesterday), Route: "r", Model: "m", Provider: "p", Status: "success",
+		Total: 50, Success: 50, PromptTokens: 999,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.RequestLog{
+		RequestID: "now", Route: "r", Model: "m", Provider: "p", Status: "success",
+		PromptTokens: 3, CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	from, to := now-3600, now
+	ov := decodeObj(t, do(t, h, "GET", fmt.Sprintf("/api/stats/overview?from=%d&to=%d", from, to), nil, "test-token"))
+	if ov["total"] != float64(1) {
+		t.Fatalf("24h/sub-day window must not expand to full daily rollup, got total=%v", ov["total"])
+	}
+	if ov["prompt_tokens"] != float64(3) {
+		t.Fatalf("prompt_tokens want 3, got %v", ov["prompt_tokens"])
+	}
+}
+
+func TestStatsPendingAndClientErrorExcluded(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	rows := []store.RequestLog{
+		{RequestID: "ok", Route: "r", Model: "m", Provider: "p", Status: "success", CreatedAt: now},
+		{RequestID: "err", Route: "r", Model: "m", Provider: "p", Status: "error", CreatedAt: now},
+		{RequestID: "ce", Route: "r", Model: "m", Provider: "p", Status: "client_error", CreatedAt: now},
+		{RequestID: "pend", Route: "r", Model: "m", Provider: "p", Status: "pending", CreatedAt: now},
+	}
+	for i := range rows {
+		if err := st.DB.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	ov := decodeObj(t, do(t, h, "GET", "/api/stats/overview", nil, "test-token"))
+	if ov["total"] != float64(3) {
+		t.Fatalf("pending must be excluded from total, got %v", ov["total"])
+	}
+	if ov["errors"] != float64(1) {
+		t.Fatalf("only status=error counts as errors, got %v", ov["errors"])
+	}
+}
+
+func TestStatsOverviewHonorsRouteFilter(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	rows := []store.RequestLog{
+		{RequestID: "a", Route: "glm", Model: "m", Provider: "p", Status: "success", PromptTokens: 10, CreatedAt: now},
+		{RequestID: "b", Route: "other", Model: "m", Provider: "p", Status: "success", PromptTokens: 99, CreatedAt: now},
+	}
+	for i := range rows {
+		if err := st.DB.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	ov := decodeObj(t, do(t, h, "GET", "/api/stats/overview?route=glm", nil, "test-token"))
+	if ov["total"] != float64(1) || ov["prompt_tokens"] != float64(10) {
+		t.Fatalf("route filter wrong: %v", ov)
+	}
+}
+
+func TestStatsOverviewFilterProviderModel(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	rows := []store.RequestLog{
+		{RequestID: "a", Route: "r", Model: "glm-5", Provider: "Zhipu", Status: "success", CreatedAt: now},
+		{RequestID: "b", Route: "r", Model: "glm-5", Provider: "Bailian", Status: "success", CreatedAt: now},
+	}
+	for i := range rows {
+		if err := st.DB.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	ov := decodeObj(t, do(t, h, "GET", "/api/stats/overview?model=Zhipu/glm-5", nil, "test-token"))
+	if ov["total"] != float64(1) {
+		t.Fatalf("provider/model filter wrong: %v", ov)
+	}
+}
+
+func TestStatsFallbackUsesLocalDayWindow(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	day := store.DayKey(now)
+	if err := st.DB.Create(&store.RequestLogDaily{
+		Day: day, Route: "r", Model: "m", Provider: "p", Status: "success", Total: 2, Success: 2,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.RequestLog{
+		RequestID: "fb", Route: "r", Model: "m", Provider: "p", Status: "success",
+		IsFallback: true, CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	ov := decodeObj(t, do(t, h, "GET", "/api/stats/overview?"+todayQuery(), nil, "test-token"))
+
+	if ov["fallback_count"] != float64(1) {
+		t.Fatalf("fallback_count want 1, got %v", ov["fallback_count"])
+	}
+}
+
+func TestLogsEndpointFamilyFilter(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	rows := []store.RequestLog{
+		{RequestID: "c", Route: "r", Endpoint: "completions", Status: "success", CreatedAt: now},
+		{RequestID: "m", Route: "r", Endpoint: "messages", Status: "success", CreatedAt: now},
+		{RequestID: "e", Route: "r", Endpoint: "embedding", Status: "success", CreatedAt: now},
+	}
+	for i := range rows {
+		if err := st.DB.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := decodeObj(t, do(t, h, "GET", "/api/logs?endpoint=chat", nil, "test-token"))
+	if got["total"].(float64) != 2 {
+		t.Fatalf("chat family should match completions+messages, got %v", got["total"])
+	}
+}
+
+func TestGetVKStatsSQLAndTimeRange(t *testing.T) {
+	h, st, _ := newTestServerWithStore(t)
+	now := time.Now().Unix()
+	vk := store.VirtualKey{Name: "vk-a", Status: "active"}
+	if err := st.CreateVirtualKey(&vk); err != nil {
+		t.Fatal(err)
+	}
+	rows := []store.RequestLog{
+		{RequestID: "ok", Route: "r", Status: "success", VKID: vk.ID, Cost: 0.5, CreatedAt: now},
+		{RequestID: "err", Route: "r", Status: "error", VKID: vk.ID, Cost: 0.1, CreatedAt: now},
+		{RequestID: "pend", Route: "r", Status: "pending", VKID: vk.ID, Cost: 9, CreatedAt: now},
+		{RequestID: "old", Route: "r", Status: "success", VKID: vk.ID, Cost: 8, CreatedAt: now - 86400*3},
+	}
+	for i := range rows {
+		if err := st.DB.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	items := decodeArr(t, do(t, h, "GET", fmt.Sprintf("/api/stats/vk?from=%d&to=%d", now-60, now+60), nil, "test-token"))
+	if len(items) != 1 {
+		t.Fatalf("expect 1 vk row, got %v", items)
+	}
+	row := items[0].(map[string]any)
+	if row["requests"] != float64(2) || row["success_count"] != float64(1) || row["error_count"] != float64(1) {
+		t.Fatalf("vk stats wrong: %v", row)
+	}
+	if row["total_cost"] != 0.6 {
+		t.Fatalf("vk cost want 0.6, got %v", row["total_cost"])
 	}
 }

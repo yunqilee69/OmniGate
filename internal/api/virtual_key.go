@@ -268,15 +268,18 @@ func (h *VirtualKeyHandler) ResetBudget(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	vk, err := h.db.GetVirtualKey(id)
-	if err != nil {
+	if _, err := h.db.GetVirtualKey(id); err != nil {
 		writeErr(w, 404, "not_found", "virtual key not found")
 		return
 	}
 
-	vk.UsedUSD = 0
+	if err := h.db.ResetVirtualKeyBudget(id); err != nil {
+		writeErr(w, 500, "db_error", err.Error())
+		return
+	}
 
-	if err := h.db.UpdateVirtualKey(vk); err != nil {
+	vk, err := h.db.GetVirtualKey(id)
+	if err != nil {
 		writeErr(w, 500, "db_error", err.Error())
 		return
 	}

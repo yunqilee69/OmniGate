@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/cloudomni/omnigate/internal/store"
@@ -141,5 +142,70 @@ func TestRouteFallbackHotUpdate(t *testing.T) {
 	ls := logs(t, st)
 	if ls[1].Model != "m1" || !ls[1].IsFallback {
 		t.Fatalf("second log wrong: %+v", ls[1])
+	}
+}
+
+// TestRouteFallbackAfterHops 主后端有候选但全部失败后，仍应走兜底模型。
+func TestRouteFallbackAfterHops(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	var hits int
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		auth := r.Header.Get("Authorization")
+		if strings.Contains(auth, "sk-dead") {
+			w.WriteHeader(500)
+			fmt.Fprint(w, `{"error":{"message":"boom"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"model":"m1","choices":[{"message":{"role":"assistant","content":"from fallback"}}]}`)
+	}))
+	defer up.Close()
+
+	p := store.Provider{Name: "zhipu", BaseURL: up.URL, TimeoutMs: 3000}
+	if err := st.DB.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	m0 := store.Model{ProviderID: p.ID, Name: "m0"}
+	if err := st.DB.Create(&m0).Error; err != nil {
+		t.Fatal(err)
+	}
+	k0 := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-dead", Status: "active"}
+	if err := st.DB.Create(&k0).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.ModelKey{ModelID: m0.ID, KeyID: k0.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	m1 := store.Model{ProviderID: p.ID, Name: "m1"}
+	if err := st.DB.Create(&m1).Error; err != nil {
+		t.Fatal(err)
+	}
+	k1 := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-alive", Status: "active"}
+	if err := st.DB.Create(&k1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.ModelKey{ModelID: m1.ID, KeyID: k1.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	rt := store.Route{Name: "glm-pool", FallbackModelID: m1.ID}
+	if err := st.DB.Create(&rt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m0.ID, Weight: 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postWithAuth(t, h, chatBody(false), vkToken)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expect 200 from fallback after hops, got %d: %s", resp.StatusCode, b)
+	}
+	ls := logs(t, st)
+	if len(ls) != 1 || ls[0].Model != "m1" || !ls[0].IsFallback {
+		t.Fatalf("fallback after hops log wrong: %+v", ls)
+	}
+	if hits < 2 {
+		t.Fatalf("expect primary then fallback hits, got %d", hits)
 	}
 }

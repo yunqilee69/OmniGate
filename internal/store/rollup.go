@@ -49,28 +49,51 @@ func tpsBucketIdx(tps float64) int {
 	return 9
 }
 
-// DayKey 把 unix 秒转成 yyyymmdd（UTC+8，与 dayjs 默认一致）。
+// DayKey 把 unix 秒转成 yyyymmdd（进程本地时区，与 dayjs 默认一致）。
 func DayKey(unixSec int64) int64 {
 	t := time.Unix(unixSec, 0).Local()
 	return int64(t.Year()*10000 + int(t.Month())*100 + t.Day())
 }
 
+// DayStartUnix 返回本地时区该 yyyymmdd 当天 00:00:00 的 unix 秒。
+func DayStartUnix(day int64) int64 {
+	y := int(day / 10000)
+	m := time.Month((day / 100) % 100)
+	d := int(day % 100)
+	return time.Date(y, m, d, 0, 0, 0, 0, time.Local).Unix()
+}
+
+// NextDayStartUnix 返回本地时区该 yyyymmdd 次日 00:00:00 的 unix 秒。
+// time.Date 会正规化溢出（3 月 32 日 → 4 月 1 日），不能对 yyyymmdd 直接 +1。
+func NextDayStartUnix(day int64) int64 {
+	y := int(day / 10000)
+	m := time.Month((day / 100) % 100)
+	d := int(day % 100)
+	return time.Date(y, m, d+1, 0, 0, 0, 0, time.Local).Unix()
+}
+
 // UpsertDaily 把一条 request_log 同步 UPSERT 进 request_log_daily。
 // 与 Create(&entry) 串行调用，失败仅记日志，不影响主流程。
 func UpsertDaily(db *gorm.DB, log *RequestLog) {
+	if log.Status == "pending" {
+		return
+	}
 	day := DayKey(log.CreatedAt)
 	if log.CreatedAt == 0 {
 		day = DayKey(time.Now().Unix())
 	}
 	status := log.Status
-	ti := ttftBucketIdx(log.TTFTMs)
-	tb := totalBucketIdx(log.TotalMs)
+	ti, tb := -1, -1
+	if status == "success" {
+		ti = ttftBucketIdx(log.TTFTMs)
+		tb = totalBucketIdx(log.TotalMs)
+	}
 	pb := tpsBucketIdx(log.Tps)
 	successDelta := int64(0)
 	errorDelta := int64(0)
 	if status == "success" {
 		successDelta = 1
-	} else {
+	} else if status == "error" {
 		errorDelta = 1
 	}
 
@@ -150,9 +173,9 @@ func Backfill(db *gorm.DB) error {
 	now := time.Now().Unix()
 	rows, err := db.Raw(`
 SELECT
-  (CAST(strftime('%Y', created_at, 'unixepoch') AS INTEGER)) * 10000
-+ (CAST(strftime('%m', created_at, 'unixepoch') AS INTEGER)) * 100
-+ (CAST(strftime('%d', created_at, 'unixepoch') AS INTEGER))         AS day,
+  (CAST(strftime('%Y', created_at, 'unixepoch', 'localtime') AS INTEGER)) * 10000
++ (CAST(strftime('%m', created_at, 'unixepoch', 'localtime') AS INTEGER)) * 100
++ (CAST(strftime('%d', created_at, 'unixepoch', 'localtime') AS INTEGER))         AS day,
   route, model, provider, status,
   COUNT(*) AS total,
   SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
@@ -163,6 +186,7 @@ SELECT
   COALESCE(SUM(cost),0)              AS cost,
   COALESCE(SUM(retries),0)           AS retries_sum
 FROM request_log
+WHERE status <> 'pending'
 GROUP BY day, route, model, provider, status`).Rows()
 	if err != nil {
 		return err
@@ -190,51 +214,52 @@ GROUP BY day, route, model, provider, status`).Rows()
 	// 第二遍：把每行的 ttft/total/tps 直方桶计算出来（同 SQL 用 SUM(CASE) 一次性生成）。
 	histRows, err := db.Raw(`
 SELECT
-  (CAST(strftime('%Y', created_at, 'unixepoch') AS INTEGER)) * 10000
-+ (CAST(strftime('%m', created_at, 'unixepoch') AS INTEGER)) * 100
-+ (CAST(strftime('%d', created_at, 'unixepoch') AS INTEGER))         AS day,
+  (CAST(strftime('%Y', created_at, 'unixepoch', 'localtime') AS INTEGER)) * 10000
++ (CAST(strftime('%m', created_at, 'unixepoch', 'localtime') AS INTEGER)) * 100
++ (CAST(strftime('%d', created_at, 'unixepoch', 'localtime') AS INTEGER))         AS day,
   route, model, provider, status,
-  SUM(CASE WHEN ttft_ms < 50                       THEN 1 ELSE 0 END) AS t0,
-  SUM(CASE WHEN ttft_ms >= 50     AND ttft_ms < 100     THEN 1 ELSE 0 END) AS t1,
-  SUM(CASE WHEN ttft_ms >= 100    AND ttft_ms < 200     THEN 1 ELSE 0 END) AS t2,
-  SUM(CASE WHEN ttft_ms >= 200    AND ttft_ms < 500     THEN 1 ELSE 0 END) AS t3,
-  SUM(CASE WHEN ttft_ms >= 500    AND ttft_ms < 1000    THEN 1 ELSE 0 END) AS t4,
-  SUM(CASE WHEN ttft_ms >= 1000   AND ttft_ms < 2000    THEN 1 ELSE 0 END) AS t5,
-  SUM(CASE WHEN ttft_ms >= 2000   AND ttft_ms < 5000    THEN 1 ELSE 0 END) AS t6,
-  SUM(CASE WHEN ttft_ms >= 5000   AND ttft_ms < 10000   THEN 1 ELSE 0 END) AS t7,
-  SUM(CASE WHEN ttft_ms >= 10000  AND ttft_ms < 30000   THEN 1 ELSE 0 END) AS t8,
-  SUM(CASE WHEN ttft_ms >= 30000                        THEN 1 ELSE 0 END) AS t9,
-  SUM(CASE WHEN total_ms < 100                        THEN 1 ELSE 0 END) AS T0,
-  SUM(CASE WHEN total_ms >= 100    AND total_ms < 300    THEN 1 ELSE 0 END) AS T1,
-  SUM(CASE WHEN total_ms >= 300    AND total_ms < 1000   THEN 1 ELSE 0 END) AS T2,
-  SUM(CASE WHEN total_ms >= 1000   AND total_ms < 3000   THEN 1 ELSE 0 END) AS T3,
-  SUM(CASE WHEN total_ms >= 3000   AND total_ms < 10000  THEN 1 ELSE 0 END) AS T4,
-  SUM(CASE WHEN total_ms >= 10000  AND total_ms < 30000  THEN 1 ELSE 0 END) AS T5,
-  SUM(CASE WHEN total_ms >= 30000  AND total_ms < 60000  THEN 1 ELSE 0 END) AS T6,
-  SUM(CASE WHEN total_ms >= 60000  AND total_ms < 120000 THEN 1 ELSE 0 END) AS T7,
-  SUM(CASE WHEN total_ms >= 120000 AND total_ms < 300000 THEN 1 ELSE 0 END) AS T8,
-  SUM(CASE WHEN total_ms >= 300000                       THEN 1 ELSE 0 END) AS T9,
-  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+  SUM(CASE WHEN status='success' AND ttft_ms < 50                       THEN 1 ELSE 0 END) AS t0,
+  SUM(CASE WHEN status='success' AND ttft_ms >= 50     AND ttft_ms < 100     THEN 1 ELSE 0 END) AS t1,
+  SUM(CASE WHEN status='success' AND ttft_ms >= 100    AND ttft_ms < 200     THEN 1 ELSE 0 END) AS t2,
+  SUM(CASE WHEN status='success' AND ttft_ms >= 200    AND ttft_ms < 500     THEN 1 ELSE 0 END) AS t3,
+  SUM(CASE WHEN status='success' AND ttft_ms >= 500    AND ttft_ms < 1000    THEN 1 ELSE 0 END) AS t4,
+  SUM(CASE WHEN status='success' AND ttft_ms >= 1000   AND ttft_ms < 2000    THEN 1 ELSE 0 END) AS t5,
+  SUM(CASE WHEN status='success' AND ttft_ms >= 2000   AND ttft_ms < 5000    THEN 1 ELSE 0 END) AS t6,
+  SUM(CASE WHEN status='success' AND ttft_ms >= 5000   AND ttft_ms < 10000   THEN 1 ELSE 0 END) AS t7,
+  SUM(CASE WHEN status='success' AND ttft_ms >= 10000  AND ttft_ms < 30000   THEN 1 ELSE 0 END) AS t8,
+  SUM(CASE WHEN status='success' AND ttft_ms >= 30000                        THEN 1 ELSE 0 END) AS t9,
+  SUM(CASE WHEN status='success' AND total_ms < 100                        THEN 1 ELSE 0 END) AS T0,
+  SUM(CASE WHEN status='success' AND total_ms >= 100    AND total_ms < 300    THEN 1 ELSE 0 END) AS T1,
+  SUM(CASE WHEN status='success' AND total_ms >= 300    AND total_ms < 1000   THEN 1 ELSE 0 END) AS T2,
+  SUM(CASE WHEN status='success' AND total_ms >= 1000   AND total_ms < 3000   THEN 1 ELSE 0 END) AS T3,
+  SUM(CASE WHEN status='success' AND total_ms >= 3000   AND total_ms < 10000  THEN 1 ELSE 0 END) AS T4,
+  SUM(CASE WHEN status='success' AND total_ms >= 10000  AND total_ms < 30000  THEN 1 ELSE 0 END) AS T5,
+  SUM(CASE WHEN status='success' AND total_ms >= 30000  AND total_ms < 60000  THEN 1 ELSE 0 END) AS T6,
+  SUM(CASE WHEN status='success' AND total_ms >= 60000  AND total_ms < 120000 THEN 1 ELSE 0 END) AS T7,
+  SUM(CASE WHEN status='success' AND total_ms >= 120000 AND total_ms < 300000 THEN 1 ELSE 0 END) AS T8,
+  SUM(CASE WHEN status='success' AND total_ms >= 300000                       THEN 1 ELSE 0 END) AS T9,
+  SUM(CASE WHEN status='success' AND is_stream AND NOT tokens_estimated AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
             AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 1   THEN 1 ELSE 0 END) AS p0,
-  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+  SUM(CASE WHEN status='success' AND is_stream AND NOT tokens_estimated AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
             AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 1   AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 5   THEN 1 ELSE 0 END) AS p1,
-  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+  SUM(CASE WHEN status='success' AND is_stream AND NOT tokens_estimated AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
             AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 5   AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 10  THEN 1 ELSE 0 END) AS p2,
-  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+  SUM(CASE WHEN status='success' AND is_stream AND NOT tokens_estimated AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
             AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 10  AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 20  THEN 1 ELSE 0 END) AS p3,
-  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+  SUM(CASE WHEN status='success' AND is_stream AND NOT tokens_estimated AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
             AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 20  AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 40  THEN 1 ELSE 0 END) AS p4,
-  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+  SUM(CASE WHEN status='success' AND is_stream AND NOT tokens_estimated AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
             AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 40  AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 80  THEN 1 ELSE 0 END) AS p5,
-  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+  SUM(CASE WHEN status='success' AND is_stream AND NOT tokens_estimated AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
             AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 80  AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 150 THEN 1 ELSE 0 END) AS p6,
-  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+  SUM(CASE WHEN status='success' AND is_stream AND NOT tokens_estimated AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
             AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 150 AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 300 THEN 1 ELSE 0 END) AS p7,
-  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+  SUM(CASE WHEN status='success' AND is_stream AND NOT tokens_estimated AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
             AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 300 AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) < 600 THEN 1 ELSE 0 END) AS p8,
-  SUM(CASE WHEN status='success' AND is_stream AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
+  SUM(CASE WHEN status='success' AND is_stream AND NOT tokens_estimated AND completion_tokens > 0 AND total_ms - ttft_ms >= 500
             AND CAST(completion_tokens AS REAL) * 1000 / (total_ms - ttft_ms) >= 600 THEN 1 ELSE 0 END) AS p9
 FROM request_log
+WHERE status <> 'pending'
 GROUP BY day, route, model, provider, status`).Rows()
 	if err != nil {
 		return err

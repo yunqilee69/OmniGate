@@ -3,7 +3,8 @@ import { Button, DatePicker, Modal, Select, Space, Table, message } from 'antd'
 import dayjs, { Dayjs } from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
-import { formatCounts } from '../utils/format'
+import { FAMILY_TABS, endpointLabel } from '../constants/endpoints'
+import { formatCounts, formatCost } from '../utils/format'
 import StatusTag from '../components/StatusTag'
 
 interface Log {
@@ -42,15 +43,6 @@ const statusTag = (s: string) => {
   return <StatusTag tone="error">错误</StatusTag>
 }
 
-const endpointLabel = (v?: string) => ({
-  completions: '对话',
-  messages: '对话 (Anthropic)',
-  responses: 'Responses',
-  embedding: '向量化',
-  rerank: '重排',
-  image: '生图',
-  mcp: 'MCP',
-}[v ?? ''] ?? v)
 
 export default function Logs() {
   const nav = useNavigate()
@@ -90,7 +82,7 @@ export default function Logs() {
       message.error(e instanceof Error ? e.message : String(e))
     }
   }
-  useEffect(() => { load(1) }, [filterRoute, filterProvider, filterStatus, filterEndpoint, filterVK, range])
+  useEffect(() => { setPage(1); load(1) }, [filterRoute, filterProvider, filterStatus, filterEndpoint, filterVK, range])
   useEffect(() => {
     api<{ id: number; name: string; endpoint?: string }[]>('GET', '/api/routes').then(setRoutes).catch(() => {})
     api<Provider[]>('GET', '/api/providers').then((ps) => {
@@ -137,9 +129,7 @@ export default function Logs() {
         <Select
           allowClear placeholder="路由类型" style={{ width: 140 }}
           value={filterEndpoint} onChange={setFilterEndpoint}
-          options={[...new Set(routes.map((r) => r.endpoint).filter(Boolean))].map((v) => ({
-            value: v, label: endpointLabel(v),
-          }))}
+          options={FAMILY_TABS.map((f) => ({ value: f.key, label: f.label }))}
         />
         <Select
           allowClear placeholder="虚拟密钥" style={{ width: 180 }}
@@ -200,9 +190,9 @@ export default function Logs() {
           </div>
         )} />
         <Table.Column title="缓存率" width={80} render={(_, l: Log) => {
-          if (l.prompt_tokens === 0) return '-'
-          const rate = (l.cached_tokens / l.prompt_tokens * 100).toFixed(1)
-          return `${rate}%`
+          const denom = l.cached_tokens > l.prompt_tokens ? l.prompt_tokens + l.cached_tokens : l.prompt_tokens
+          if (denom <= 0) return '-'
+          return `${(l.cached_tokens / denom * 100).toFixed(1)}%`
         }} />
         <Table.Column title="首字/总耗时" width={120} render={(_, l: Log) => (
           <div style={{ lineHeight: '18px', color: '#666' }}>
@@ -213,7 +203,7 @@ export default function Logs() {
         <Table.Column title="速度" width={118} render={(_, l: Log) => (
           l.tps > 0 ? <code style={{ whiteSpace: 'nowrap' }}>{l.tps.toFixed(1)} tok/s</code> : <span style={{ color: '#8f8f8f' }}>-</span>
         )} />
-        <Table.Column title="费用" dataIndex="cost" width={90} render={(v) => v.toFixed(5)} />
+        <Table.Column title="费用" dataIndex="cost" width={90} render={(v) => formatCost(Number(v), 'USD')} />
         <Table.Column title="重试" dataIndex="retries" width={60} />
       </Table>
     </div>

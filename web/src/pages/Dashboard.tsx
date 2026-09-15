@@ -127,7 +127,7 @@ export default function Dashboard() {
         api('GET', `/api/stats/timeseries?from=${from}&to=${to}&bucket=1h${cur}`),
         api('GET', '/api/health'),
         api('GET', `/api/stats/breakdown?dim=model&from=${from}&to=${to}${cur}`),
-        api('GET', '/api/stats/vk'),
+        api('GET', `/api/stats/vk?from=${from}&to=${to}${cur}`),
       ])
       setOv(o)
       setSeries(ts.points ?? [])

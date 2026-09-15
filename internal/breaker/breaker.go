@@ -85,6 +85,7 @@ func (rec *Recorder) RecordModelKeyFailure(modelID, keyID int64, errCode string,
 }
 
 // RecordModelKeyRateLimited 429：组合级短冷却，优先 Retry-After；不计入熔断计数。
+// 已永久禁用的组合不能被 429 解成 temp_banned，否则密钥失效后一次限流就会重新放行。
 func (rec *Recorder) RecordModelKeyRateLimited(modelID, keyID int64, retryAfterS, defaultS int) {
 	if retryAfterS <= 0 {
 		retryAfterS = defaultS
@@ -93,6 +94,13 @@ func (rec *Recorder) RecordModelKeyRateLimited(modelID, keyID int64, retryAfterS
 		retryAfterS = 86400
 	}
 	bannedUntil := time.Now().Add(time.Duration(retryAfterS) * time.Second).Unix()
+
+	var existing store.ModelKeyBan
+	err := rec.db.DB.Where("model_id = ? AND key_id = ?", modelID, keyID).First(&existing).Error
+	if err == nil && existing.Status == "perm_banned" {
+		rec.db.DB.Model(&existing).Update("last_error", "429")
+		return
+	}
 
 	ban := store.ModelKeyBan{
 		ModelID:     modelID,

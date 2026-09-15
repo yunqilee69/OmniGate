@@ -70,7 +70,7 @@ function chartData(points: TimeseriesPoint[], bucket: BucketSize): TimeseriesPoi
 export default function Stats() {
   const [dim, setDim] = useState<StatsDimension>('route')
   const [bucket, setBucket] = useState<BucketSize>('1d')
-  const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(6, 'day').startOf('day'), dayjs()])
+  const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(6, 'day').startOf('day'), dayjs().endOf('day')])
   const [items, setItems] = useState<Item[]>([])
   const [statusItems, setStatusItems] = useState<Item[]>([])
   const [errorItems, setErrorItems] = useState<Item[]>([])
@@ -102,22 +102,25 @@ export default function Stats() {
       return
     }
 
-    const from = range[0].unix()
-    const to = range[1].unix()
-    const base = `from=${from}&to=${to}&currency=${currency}`
-    const timeseriesQuery = new URLSearchParams({ from: String(from), to: String(to), bucket: queryBucket(bucket), currency })
-    if (route) timeseriesQuery.set('route', route)
-    if (model) timeseriesQuery.set('model', model)
-    if (provider) timeseriesQuery.set('provider', provider)
+    const from = range[0].startOf('day').unix()
+    const to = range[1].endOf('day').unix()
+    const qs = new URLSearchParams({ from: String(from), to: String(to), currency })
+    if (route) qs.set('route', route)
+    if (model) qs.set('model', model)
+    if (provider) qs.set('provider', provider)
+    const base = qs.toString()
+    const timeseriesQuery = new URLSearchParams(qs)
+    timeseriesQuery.set('bucket', queryBucket(bucket))
+    const unfiltered = `from=${from}&to=${to}&currency=${currency}`
     Promise.all([
       api<Overview>('GET', `/api/stats/overview?${base}`),
       api<Item[]>('GET', `/api/stats/breakdown?dim=${dim}&${base}`),
       api<TimeseriesResponse>('GET', `/api/stats/timeseries?${timeseriesQuery.toString()}`),
       api<Item[]>('GET', `/api/stats/breakdown?dim=status&${base}`),
       api<Item[]>('GET', `/api/stats/breakdown?dim=error_code&${base}`),
-      api<Item[]>('GET', `/api/stats/breakdown?dim=route&${base}`),
-      api<Item[]>('GET', `/api/stats/breakdown?dim=model&${base}`),
-      api<Item[]>('GET', `/api/stats/breakdown?dim=provider&${base}`),
+      api<Item[]>('GET', `/api/stats/breakdown?dim=route&${unfiltered}`),
+      api<Item[]>('GET', `/api/stats/breakdown?dim=model&${unfiltered}`),
+      api<Item[]>('GET', `/api/stats/breakdown?dim=provider&${unfiltered}`),
     ]).then(([overview, breakdown, timeseries, statuses, errors, routes, models, providers]) => {
       setOv(overview)
       setItems(breakdown)
@@ -156,7 +159,7 @@ export default function Stats() {
           <Select allowClear value={route} onChange={setRoute} options={filterOptions('route')} placeholder="路由" style={{ width: 156 }} />
           <Select allowClear value={model} onChange={setModel} options={filterOptions('model')} placeholder="模型" style={{ width: 176 }} showSearch />
           <Select allowClear value={provider} onChange={setProvider} options={filterOptions('provider')} placeholder="提供商" style={{ width: 150 }} />
-          <DatePicker.RangePicker value={range} onChange={(value) => value?.[0] && value[1] && setRange([value[0], value[1]])} />
+          <DatePicker.RangePicker value={range} onChange={(value) => value?.[0] && value[1] && setRange([value[0].startOf('day'), value[1].endOf('day')])} />
           <CurrencyToggle value={currency} onChange={setCurrency} />
         </Space>
       </Card>

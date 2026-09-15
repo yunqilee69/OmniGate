@@ -118,10 +118,89 @@ func TestSettleRequestNoVKCreditOnFailure(t *testing.T) {
 	}
 }
 
+// TestSettleRequestNoVKCreditOnEstimated 估算 token 不计费、不结算 VK。
+func TestSettleRequestNoVKCreditOnEstimated(t *testing.T) {
+	db := setupTestDB(t)
+	vk := &VirtualKey{Name: "test", Status: "active"}
+	if err := db.CreateVirtualKey(vk); err != nil {
+		t.Fatal(err)
+	}
+	log := RequestLog{RequestID: "req-est", Route: "r", Status: "success", VKID: vk.ID, Cost: 1.0, TokensEstimated: true}
+	if err := db.SettleRequest(&log, nil); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := db.GetVirtualKey(vk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.UsedUSD != 0 || updated.TotalRequests != 0 {
+		t.Fatalf("estimated usage must not credit vk: %+v", updated)
+	}
+}
+
 // TestLegacyVKRateLimitsTableDropped 旧版 DB 落库限流表在 Open 时被删除。
 func TestLegacyVKRateLimitsTableDropped(t *testing.T) {
 	db := setupTestDB(t)
 	if db.DB.Migrator().HasTable("vk_rate_limits") {
 		t.Fatal("legacy vk_rate_limits table should be dropped on Open")
+	}
+}
+
+// TestSettleRequestVKBudgetCap 有额度时 used_usd + cost 不得超过总额，超额不入账。
+func TestSettleRequestVKBudgetCap(t *testing.T) {
+	db := setupTestDB(t)
+	vk := &VirtualKey{Name: "capped", Status: "active", TotalBudgetUSD: 1.0, UsedUSD: 0.8}
+	if err := db.CreateVirtualKey(vk); err != nil {
+		t.Fatal(err)
+	}
+	log := RequestLog{RequestID: "req-cap", Route: "r", Status: "success", VKID: vk.ID, Cost: 0.5}
+	if err := db.SettleRequest(&log, nil); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := db.GetVirtualKey(vk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.UsedUSD != 0.8 || updated.TotalRequests != 0 {
+		t.Fatalf("over-budget settle must not credit: %+v", updated)
+	}
+}
+
+// TestSettleRequestVKUnlimitedStillCredits 总额度 0=不限制，仍累加 used_usd。
+func TestSettleRequestVKUnlimitedStillCredits(t *testing.T) {
+	db := setupTestDB(t)
+	vk := &VirtualKey{Name: "open", Status: "active", TotalBudgetUSD: 0}
+	if err := db.CreateVirtualKey(vk); err != nil {
+		t.Fatal(err)
+	}
+	log := RequestLog{RequestID: "req-open", Route: "r", Status: "success", VKID: vk.ID, Cost: 12.5}
+	if err := db.SettleRequest(&log, nil); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := db.GetVirtualKey(vk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.UsedUSD != 12.5 || updated.TotalRequests != 1 {
+		t.Fatalf("unlimited vk must still credit: %+v", updated)
+	}
+}
+
+// TestReclaimPendingOnOpen 崩溃遗留的 pending 行在 Open 时改成 error(interrupted)。
+func TestReclaimPendingOnOpen(t *testing.T) {
+	db := setupTestDB(t)
+	now := time.Now().Unix()
+	if err := db.DB.Create(&RequestLog{
+		RequestID: "stale-pending", Route: "r", Status: "pending", CreatedAt: now - 30,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	db.reclaimPending()
+	var got RequestLog
+	if err := db.DB.Where("request_id = ?", "stale-pending").First(&got).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "error" || got.ErrorCode != "interrupted" {
+		t.Fatalf("pending must be reclaimed: %+v", got)
 	}
 }

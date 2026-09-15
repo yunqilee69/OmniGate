@@ -60,9 +60,24 @@ func (s *Store) ListVirtualKeys() ([]VirtualKey, error) {
 	return vks, nil
 }
 
-// UpdateVirtualKey 更新虚拟 key。
+// UpdateVirtualKey 更新虚拟 key 的配置字段。
+// 用量列（used_usd / total_requests / last_used_at）由 SettleRequest 原子累加，
+// 全行 Save 会用过期快照盖掉并发结算。Updates(struct) 会跳过零值（status=active、
+// rpm_limit=0、total_budget=0 都写不进去），所以只写调用方已改的非空列。
 func (s *Store) UpdateVirtualKey(vk *VirtualKey) error {
-	return s.DB.Save(vk).Error
+	updates := map[string]any{
+		"name":             vk.Name,
+		"status":           vk.Status,
+		"rpm_limit":        vk.RPMLimit,
+		"total_budget_usd": vk.TotalBudgetUSD,
+		"allowed_routes":   vk.AllowedRoutes,
+	}
+	return s.DB.Model(&VirtualKey{}).Where("id = ?", vk.ID).Updates(updates).Error
+}
+
+// ResetVirtualKeyBudget 把 used_usd 置 0。单独写这一列，避免全行 Save 覆盖并发结算。
+func (s *Store) ResetVirtualKeyBudget(id int64) error {
+	return s.DB.Model(&VirtualKey{}).Where("id = ?", id).Update("used_usd", 0).Error
 }
 
 // DeleteVirtualKey 删除虚拟 key。
@@ -103,11 +118,22 @@ func (s *Store) CheckVKRouteAccess(vk *VirtualKey, routeID int64) error {
 }
 
 // CheckVKBudget 检查虚拟 key 配额是否足够（预检查，不扣费）。
+// 必须读库：请求入口注入的 vk 快照不含并发扣费后的 used_usd。
+// 读到的最新 used_usd / total_budget 写回 vk，供调用方写响应头。
 func (s *Store) CheckVKBudget(vk *VirtualKey) error {
-	if vk.TotalBudgetUSD == 0 {
+	if vk == nil {
+		return ErrVKNotFound
+	}
+	fresh, err := s.GetVirtualKey(vk.ID)
+	if err != nil {
+		return err
+	}
+	vk.UsedUSD = fresh.UsedUSD
+	vk.TotalBudgetUSD = fresh.TotalBudgetUSD
+	if fresh.TotalBudgetUSD == 0 {
 		return nil // 0=不限制
 	}
-	if vk.UsedUSD >= vk.TotalBudgetUSD {
+	if fresh.UsedUSD >= fresh.TotalBudgetUSD {
 		return ErrVKBudgetExceeded
 	}
 	return nil

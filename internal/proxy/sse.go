@@ -13,6 +13,7 @@ type sseScan struct {
 	text    strings.Builder
 	usage   *sseUsage
 	scanned bool
+	done    bool
 }
 
 type sseUsage struct {
@@ -56,7 +57,11 @@ func (s *sseScan) handleLine(line []byte) {
 		return
 	}
 	payload := strings.TrimSpace(string(rest))
-	if payload == "" || payload == "[DONE]" {
+	if payload == "" {
+		return
+	}
+	if payload == "[DONE]" {
+		s.done = true
 		return
 	}
 	var chunk struct {
@@ -81,3 +86,5 @@ func (s *sseScan) handleLine(line []byte) {
 func (s *sseScan) Usage() *sseUsage { return s.usage }
 
 func (s *sseScan) Text() string { return s.text.String() }
+
+func (s *sseScan) Done() bool { return s.done }

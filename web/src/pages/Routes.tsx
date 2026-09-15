@@ -5,6 +5,10 @@ import {
 } from 'antd'
 import { PlusOutlined, DeleteOutlined, CodeOutlined } from '@ant-design/icons'
 import { api } from '../api'
+import {
+  ENDPOINT_META, ENDPOINT_ORDER, FAMILY_KEYS,
+  endpointFamily, familyDefaultEndpoint, familyLabel,
+} from '../constants/endpoints'
 
 interface Target {
   id: number
@@ -35,30 +39,6 @@ interface Route {
 interface Model { id: number; name: string; provider_id: number; protocol: string; type: string }
 interface Provider { id: number; name: string }
 interface MCPBackend { id: number; name: string; target_url: string; status: string }
-const ENDPOINT_META: Record<string, { path: string; hint?: string }> = {
-  completions: { path: '/v1/chat/completions', hint: 'OpenAI' },
-  messages: { path: '/v1/messages', hint: 'Anthropic' },
-  responses: { path: '/v1/responses', hint: 'OpenAI' },
-  embedding: { path: '/v1/embeddings', hint: '向量化' },
-  rerank: { path: '/v1/rerank', hint: '重排' },
-  image: { path: '/v1/images/generations', hint: '生图' },
-  mcp: { path: '/v1/mcp/{route_name}', hint: 'MCP 工具聚合' },
-}
-const ENDPOINT_ORDER = Object.keys(ENDPOINT_META)
-const FAMILY_TABS: { key: string; label: string; endpoints: string[] }[] = [
-  { key: 'chat', label: '对话', endpoints: ['completions', 'messages', 'responses'] },
-  { key: 'embedding', label: '向量', endpoints: ['embedding'] },
-  { key: 'rerank', label: '重排', endpoints: ['rerank'] },
-  { key: 'image', label: '生图', endpoints: ['image'] },
-  { key: 'mcp', label: 'MCP', endpoints: ['mcp'] },
-]
-const FAMILY_KEYS = FAMILY_TABS.map((f) => f.key)
-const endpointFamily = (ep: string) =>
-  FAMILY_TABS.find((f) => f.endpoints.includes(ep))?.key ?? ep
-const familyLabel = (key: string) =>
-  FAMILY_TABS.find((f) => f.key === key)?.label ?? key
-const familyDefaultEndpoint = (key: string) =>
-  FAMILY_TABS.find((f) => f.key === key)?.endpoints[0] ?? 'completions'
 const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 

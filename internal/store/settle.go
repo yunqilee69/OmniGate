@@ -37,14 +37,22 @@ func (s *Store) SettleRequest(log *RequestLog, attempts []RequestAttempt) error 
 
 		UpsertDaily(tx, log)
 
-		// 成功请求才结算 VK 用量（used_usd 与 total_requests 同步累加）。
-		if log.VKID > 0 && log.Status == "success" {
-			if err := tx.Model(&VirtualKey{}).Where("id = ?", log.VKID).Updates(map[string]any{
+		// 成功且非估算才结算 VK 用量：估算 token 会把虚假费用写入预算。
+		// 原子条件更新：有总额度时 used_usd + cost 不得超过 total_budget_usd，
+		// 并发成功请求不会把预算冲穿。无额度（0=不限制）仍无条件累加。
+		if log.VKID > 0 && log.Status == "success" && !log.TokensEstimated {
+			now := time.Now().Unix()
+			q := tx.Model(&VirtualKey{}).Where("id = ?", log.VKID).
+				Where("total_budget_usd = 0 OR used_usd + ? <= total_budget_usd", log.Cost)
+			res := q.Updates(map[string]any{
 				"used_usd":       gorm.Expr("used_usd + ?", log.Cost),
 				"total_requests": gorm.Expr("total_requests + 1"),
-				"last_used_at":   time.Now().Unix(),
-			}).Error; err != nil {
-				slog.Warn("record vk usage failed", "err", err, "vk_id", log.VKID, "request_id", log.RequestID)
+				"last_used_at":   now,
+			})
+			if res.Error != nil {
+				slog.Warn("record vk usage failed", "err", res.Error, "vk_id", log.VKID, "request_id", log.RequestID)
+			} else if res.RowsAffected == 0 {
+				slog.Warn("vk budget exceeded at settle", "vk_id", log.VKID, "cost", log.Cost, "request_id", log.RequestID)
 			}
 		}
 		return nil

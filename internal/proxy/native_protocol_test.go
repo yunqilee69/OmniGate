@@ -201,3 +201,102 @@ func TestNativeMessagesProviderModelEndpointMismatch(t *testing.T) {
 	}
 }
 
+func TestNativeMessagesStreamCapturesUsage(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		for _, s := range []string{
+			`event: message_start` + "\n" + `data: {"type":"message_start","message":{"id":"msg_01","usage":{"input_tokens":25,"output_tokens":1,"cache_read_input_tokens":4,"cache_creation_input_tokens":6}}}`,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}`,
+			`data: {"type":"message_stop"}`,
+		} {
+			fmt.Fprintln(w, s)
+			fmt.Fprintln(w)
+			fl.Flush()
+		}
+	}))
+	defer up.Close()
+	p := store.Provider{Name: "claude-stream", BaseURL: up.URL + "/v1", TimeoutMs: 3000}
+	st.DB.Create(&p)
+	m := store.Model{ProviderID: p.ID, Name: "claude", Protocol: "messages", Type: "chat", InputPrice: 10, CachedPrice: 2, OutputPrice: 20}
+	st.DB.Create(&m)
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-m", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
+	rt := store.Route{Name: "claude-stream", Endpoint: "messages"}
+	st.DB.Create(&rt)
+	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
+
+	body, _ := json.Marshal(map[string]any{
+		"model": "claude-stream", "stream": true, "max_tokens": 16,
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+vkToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status %d — %s", rec.Code, rec.Body.String())
+	}
+	ls := logs(t, st)
+	if len(ls) != 1 {
+		t.Fatalf("expect 1 log, got %d", len(ls))
+	}
+	if ls[0].TokensEstimated {
+		t.Fatalf("native stream must capture usage, not estimate: %+v", ls[0])
+	}
+	if ls[0].PromptTokens != 35 || ls[0].CachedTokens != 4 || ls[0].CompletionTokens != 7 {
+		t.Fatalf("native stream usage wrong: %+v", ls[0])
+	}
+}
+
+// TestNativeMessagesStreamHangCloseNotSuccess message_start 已带 input_tokens，
+// 上游随即断开：不得把半截流记成 success。
+func TestNativeMessagesStreamHangCloseNotSuccess(t *testing.T) {
+	st, h, vkToken := newTestStackWithVK(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		fmt.Fprintln(w, `event: message_start`)
+		fmt.Fprintln(w, `data: {"type":"message_start","message":{"id":"msg_01","usage":{"input_tokens":25,"output_tokens":1}}}`)
+		fmt.Fprintln(w)
+		fl.Flush()
+	}))
+	defer up.Close()
+	p := store.Provider{Name: "claude-hang", BaseURL: up.URL + "/v1", TimeoutMs: 3000}
+	st.DB.Create(&p)
+	m := store.Model{ProviderID: p.ID, Name: "claude", Protocol: "messages", Type: "chat", InputPrice: 10, OutputPrice: 20}
+	st.DB.Create(&m)
+	k := store.ApiKey{ProviderID: p.ID, KeyValue: "sk-m", Status: "active"}
+	st.DB.Create(&k)
+	st.DB.Create(&store.ModelKey{ModelID: m.ID, KeyID: k.ID})
+	rt := store.Route{Name: "claude-hang", Endpoint: "messages"}
+	st.DB.Create(&rt)
+	st.DB.Create(&store.RouteTarget{RouteID: rt.ID, ModelID: m.ID, Weight: 1})
+
+	body, _ := json.Marshal(map[string]any{
+		"model": "claude-hang", "stream": true, "max_tokens": 16,
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+vkToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("committed native stream status %d — %s", rec.Code, rec.Body.String())
+	}
+	ls := logs(t, st)
+	if len(ls) != 1 {
+		t.Fatalf("expect 1 log, got %d", len(ls))
+	}
+	if ls[0].Status != "error" || ls[0].ErrorCode != "stream_broken" {
+		t.Fatalf("truncated anthropic stream must be stream_broken, got %+v", ls[0])
+	}
+	if ls[0].Cost != 0 {
+		t.Fatalf("truncated anthropic stream must not bill, cost=%v", ls[0].Cost)
+	}
+}

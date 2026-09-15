@@ -24,6 +24,10 @@ type ProtocolAdapter interface {
 	// streamFinal 流结束时补发（usage 块 + [DONE]）；openai 直通协议返回 nil
 	streamFinal() []string
 	streamUsage() *usageInfo
+	// streamComplete 上游是否给出了流结束信号（openai 直通看 [DONE]；
+	// anthropic 看 message_delta.stop_reason；responses 看 completed/incomplete）。
+	// 仅有 usage 不够：Anthropic message_start 在首包就带 input_tokens。
+	streamComplete() bool
 }
 
 // -------------------- openai（直通） --------------------
@@ -48,6 +52,7 @@ func (openaiAdapter) convertBuffered(body []byte) ([]byte, usageInfo, error) {
 func (openaiAdapter) convertStreamChunk([]byte) []string { return nil }
 func (openaiAdapter) streamFinal() []string              { return nil }
 func (openaiAdapter) streamUsage() *usageInfo            { return nil }
+func (openaiAdapter) streamComplete() bool               { return false }
 
 // -------------------- 通用工具 --------------------
 
@@ -139,8 +144,9 @@ func anthropicFinishReason(r anthropic.StopReason) openai.FinishReason {
 // -------------------- anthropic (/v1/messages) --------------------
 
 type anthropicAdapter struct {
-	inputTok, outputTok, cachedTok int
-	seenUsage                      bool
+	inputTok, outputTok, cachedTok, cacheWriteTok int
+	seenUsage                                     bool
+	complete                                      bool
 }
 
 func newAnthropicAdapter() *anthropicAdapter { return &anthropicAdapter{} }
@@ -314,16 +320,16 @@ func (a *anthropicAdapter) convertBuffered(body []byte) ([]byte, usageInfo, erro
 			Message: assistant,
 		}},
 		Usage: openai.Usage{
-			PromptTokens:     int(msg.Usage.InputTokens),
+			PromptTokens:     int(msg.Usage.InputTokens + msg.Usage.CacheReadInputTokens + msg.Usage.CacheCreationInputTokens),
 			CompletionTokens: int(msg.Usage.OutputTokens),
-			TotalTokens:      int(msg.Usage.InputTokens + msg.Usage.OutputTokens),
+			TotalTokens:      int(msg.Usage.InputTokens + msg.Usage.CacheReadInputTokens + msg.Usage.CacheCreationInputTokens + msg.Usage.OutputTokens),
 		},
 	}
 	conv, err := json.Marshal(resp)
 	if err != nil {
 		return nil, usageInfo{}, err
 	}
-	return conv, usageInfo{prompt: int(msg.Usage.InputTokens), completion: int(msg.Usage.OutputTokens), cached: int(msg.Usage.CacheReadInputTokens)}, nil
+	return conv, anthropicUsage(msg.Usage.InputTokens, msg.Usage.OutputTokens, msg.Usage.CacheReadInputTokens, msg.Usage.CacheCreationInputTokens), nil
 }
 
 func (a *anthropicAdapter) convertStreamChunk(payload []byte) []string {
@@ -333,18 +339,14 @@ func (a *anthropicAdapter) convertStreamChunk(payload []byte) []string {
 	}
 	switch evt.Type {
 	case "message_start":
-		a.inputTok = int(evt.Message.Usage.InputTokens)
-		a.cachedTok = int(evt.Message.Usage.CacheReadInputTokens)
-		a.seenUsage = true
+		a.applyAnthropicUsage(evt.Message.Usage.InputTokens, evt.Message.Usage.OutputTokens,
+			evt.Message.Usage.CacheReadInputTokens, evt.Message.Usage.CacheCreationInputTokens)
 	case "message_delta":
-		a.outputTok = int(evt.Usage.OutputTokens)
-		if evt.Usage.InputTokens > 0 {
-			a.inputTok = int(evt.Usage.InputTokens)
+		a.applyAnthropicUsage(evt.Usage.InputTokens, evt.Usage.OutputTokens,
+			evt.Usage.CacheReadInputTokens, evt.Usage.CacheCreationInputTokens)
+		if evt.Delta.StopReason != "" {
+			a.complete = true
 		}
-		if evt.Usage.CacheReadInputTokens > 0 {
-			a.cachedTok = int(evt.Usage.CacheReadInputTokens)
-		}
-		a.seenUsage = true
 		return []string{marshalChunk(openai.ChatCompletionStreamResponse{
 			Choices: []openai.ChatCompletionStreamChoice{{
 				Index: 0, FinishReason: anthropicFinishReason(evt.Delta.StopReason),
@@ -386,15 +388,39 @@ func (a *anthropicAdapter) streamUsage() *usageInfo {
 	if !a.seenUsage {
 		return nil
 	}
-	u := usageInfo{prompt: a.inputTok, completion: a.outputTok, cached: a.cachedTok}
+	u := usageInfo{prompt: a.inputTok, completion: a.outputTok, cached: a.cachedTok, cacheWrite: a.cacheWriteTok}
 	return &u
+}
+
+func (a *anthropicAdapter) streamComplete() bool { return a.complete }
+
+func anthropicUsage(input, output, cacheRead, cacheWrite int64) usageInfo {
+	return usageInfo{
+		prompt:     int(input + cacheRead + cacheWrite),
+		completion: int(output),
+		cached:     int(cacheRead),
+		cacheWrite: int(cacheWrite),
+	}
+}
+
+func (a *anthropicAdapter) applyAnthropicUsage(input, output, cacheRead, cacheWrite int64) {
+	if input > 0 || cacheRead > 0 || cacheWrite > 0 {
+		a.inputTok = int(input + cacheRead + cacheWrite)
+		a.cachedTok = int(cacheRead)
+		a.cacheWriteTok = int(cacheWrite)
+	}
+	if output > 0 {
+		a.outputTok = int(output)
+	}
+	a.seenUsage = true
 }
 
 // -------------------- openai responses (/responses) --------------------
 
 type responsesAdapter struct {
-	usage openai.ResponseUsage
-	seen  bool
+	usage    openai.ResponseUsage
+	seen     bool
+	complete bool
 }
 
 func newResponsesAdapter() *responsesAdapter { return &responsesAdapter{} }
@@ -527,6 +553,14 @@ func (r *responsesAdapter) convertBuffered(body []byte) ([]byte, usageInfo, erro
 	if src.Status == openai.ResponseStatusIncomplete {
 		finish = openai.FinishReasonLength
 	}
+	u := usageInfo{}
+	if src.Usage != nil {
+		cached := 0
+		if src.Usage.InputTokensDetails != nil {
+			cached = src.Usage.InputTokensDetails.CachedTokens
+		}
+		u = usageInfo{prompt: src.Usage.InputTokens, completion: src.Usage.OutputTokens, cached: cached}
+	}
 	var toolCalls []openai.ToolCall
 	for _, item := range src.Output {
 		m, ok := item.(map[string]any)
@@ -543,10 +577,6 @@ func (r *responsesAdapter) convertBuffered(body []byte) ([]byte, usageInfo, erro
 	}
 	if len(toolCalls) > 0 {
 		finish = openai.FinishReasonToolCalls
-	}
-	u := usageInfo{}
-	if src.Usage != nil {
-		u = usageInfo{prompt: src.Usage.InputTokens, completion: src.Usage.OutputTokens}
 	}
 	resp := openai.ChatCompletionResponse{
 		ID: src.ID, Object: "chat.completion", Model: src.Model,
@@ -590,6 +620,7 @@ func (r *responsesAdapter) convertStreamChunk(payload []byte) []string {
 			})}
 		}
 	case openai.ResponseStreamEventCompleted, openai.ResponseStreamEventIncomplete:
+		r.complete = true
 		if evt.Response != nil && evt.Response.Usage != nil {
 			r.usage = *evt.Response.Usage
 			r.seen = true
@@ -618,9 +649,15 @@ func (r *responsesAdapter) streamUsage() *usageInfo {
 	if !r.seen {
 		return nil
 	}
-	u := usageInfo{prompt: r.usage.InputTokens, completion: r.usage.OutputTokens}
+	cached := 0
+	if r.usage.InputTokensDetails != nil {
+		cached = r.usage.InputTokensDetails.CachedTokens
+	}
+	u := usageInfo{prompt: r.usage.InputTokens, completion: r.usage.OutputTokens, cached: cached}
 	return &u
 }
+
+func (r *responsesAdapter) streamComplete() bool { return r.complete }
 
 func AdapterFor(protocol string) ProtocolAdapter {
 	switch protocol {

@@ -376,7 +376,7 @@ HTTP 503
   │    │     ├─ 记录 ttft_ms —— ⚠️ 从此不可再换后端重试
   │    │     └─ SSE 逐块透传给客户端，边转发边累计 token
   │    │        收尾按 completion/(total-ttft) 计算流式速度 tps
-  │    └─ 流中途上游断开：无法重试，记 error(stream_broken)，客户端收到已截断的流结束
+  │    └─ 流中途上游断开：无法重试，记 error(stream_broken)。成功必须看到结束信号（OpenAI `[DONE]`/最终 usage、Anthropic `message_delta.stop_reason`、Responses `completed`）；仅有 token（如 Anthropic `message_start.usage`）不够。客户端取消未完成的流记 `client_disconnected`，不计入熔断。
   └─ 收尾：写 request_log（成功/失败均写），更新 key.last_used_at、成本计算
 ```
 
@@ -490,11 +490,12 @@ POST /api/maintenance/clear-stats             # body {"confirm":true}；清空�
 | 费用 | cost（按 model 价格表计算，未配价格则为 0） |
 | 重试 | retries |
 
-**计费模式**：`model.billing_mode` 为 `token`（缺省/历史行）或 `per_call`。按量：`cost = 未命中输入 × input_price + 命中输入 × cached_price + 输出 × output_price`（单价均为每 1M token）。按次：成功调用记 `per_call_price`，失败/客户端错误为 0，忽略 token 用量。CNY 定价再按 `pricing.usd_cny` 折算为 USD 入库。
+**计费模式**：`model.billing_mode` 为 `token`（缺省/历史行）或 `per_call`。按量：`cost = 未命中输入 × input_price + 命中输入 × cached_price + cache_creation × input_price×1.25 + 输出 × output_price`（单价均为每 1M token）。按次：成功调用记 `per_call_price`，失败/客户端错误为 0，忽略 token 用量。CNY 定价再按 `pricing.usd_cny` 折算为 USD 入库。估算 usage（上游未回 token）cost=0，且不结算虚拟密钥预算。VK 用量用 `UPDATE ... WHERE total_budget_usd = 0 OR used_usd + cost <= total_budget_usd` 原子入账，配置更新 Omit `used_usd`；崩溃遗留的 `pending` 行在 `store.Open` 改成 `error(interrupted)`，不入日聚合、不结算 VK。
 
-**缓存命中计费**（仅 `billing_mode=token`）：`cached_tokens` 单价取 `model.cached_price`，未配置（0 或负值）回退 `input_price`——历史行为即命中量按输入价计费，回退保持兼容。命中量口径随协议而异：`completions`/`responses` 的 `prompt_tokens_details.cached_tokens` 含在 `prompt_tokens` 内（需扣除后分别计价），`messages` 的 `input_tokens` 与 `cache_read_input_tokens` 互斥（直接相加）。
+**缓存命中计费**（仅 `billing_mode=token`）：`cached_tokens` 单价取 `model.cached_price`，未配置（0 或负值）回退 `input_price`。落库口径统一为 inclusive：`prompt_tokens` 含 cache_read 与 cache_creation，计费时先扣除再按各自单价。Anthropic `cache_creation_input_tokens` 默认按输入价 × 1.25（5m cache write 官方倍率）。
 
-统计查询优先走每日预聚合表 `request_log_daily`（写入路径同步 UPSERT，`day × route × model × provider × status` 粒度 + 10 桶延迟直方图与 10 桶生成速度直方图，均值/p95 由桶反查）；延迟类指标（平均首字响应/平均耗时/p95）只统计 `status='success'` 的行——错误行延迟恒为 0，混入会把计数堆进 0 号桶；p95 自低桶累加定位所在桶后，按桶内均匀分布线性插值出具体值（开区间尾桶以末边界 ×2 作插值上界），故仍是...
+统计查询优先走每日预聚合表 `request_log_daily`（写入路径同步 UPSERT，`day × route × model × provider × status` 粒度 + 10 桶延迟直方图与 10 桶生成速度直方图，均值/p95 由桶反查）。仅当 `from`/`to` 覆盖完整本地自然日时走日聚合，否则（Dashboard「最近 24 小时」、任意子日窗）回退明细表，避免把滚动窗放大成昨天+今天两整天。`pending` 不入日聚合；`errors` 只计 `status='error'`（`client_error` 计入 total 但不计 errors）。延迟类指标只统计成功行。日键按进程本地时区（`strftime(..., 'localtime')`），fallback 计数用 `DayStartUnix`/`NextDayStartUnix` 换算半开区间，不能把 `yyyymmdd` 当 unix 秒。p95 自低桶累加定位所在桶后，按桶内均匀分布线性插值出具体值（开区间尾桶以末边界 ×2 作插值上界）；TPS p95 走浮点分位，不截成整数。总览/分布/时间序列均接受 `route`/`model`/`provider`/`status` 过滤。请求级 TPS 用最终成功那一跳的生成窗口（`attempt.latency - ttft`），不是端到端墙钟。
+
 
 ### 8.2 隐私设计
 
