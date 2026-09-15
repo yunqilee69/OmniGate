@@ -391,7 +391,7 @@ go test -race ./...
 5. ✅ 冒烟测试：启动守护进程，访问 `/v1/models` 与 `/manage/`，检查 UI 加载
 
 **不要提交**：
-- `internal/webui/dist/*`（构建时重新生成）
+- `internal/webui/dist/*`（构建时重新生成；唯一例外是 `.gitkeep`，`go:embed all:dist` 不接受空目录，`npm run build` 的 `postbuild` 会自动补回，勿删勿提交其删除）
 - 本地 `omnigate.db`、`config.yaml`、`logs/`
 - 二进制 `./omnigate`
 ---

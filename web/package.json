@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "postbuild": "node -e \"require('fs').writeFileSync('../internal/webui/dist/.gitkeep','')\""
   },
   "dependencies": {
     "@ant-design/icons": "^5.4.0",
